@@ -164,8 +164,14 @@ func earningsHandler(w http.ResponseWriter, r *http.Request) {
 func stockHandler(w http.ResponseWriter, r *http.Request) {
 	polygonApiKey := r.URL.Query().Get("apikey")
 	ticker := r.URL.Query().Get("symbol")
+	yesterday := time.Now().AddDate(0, 0, -1)
+	twoYearsAgo := time.Now().AddDate(-2, 0, 0)
+	year, month, day := yesterday.Date()
+	yesterdayDate := fmt.Sprintf("%d-%02d-%02d", year, month, day)
+	year, month, day = twoYearsAgo.Date()
+	twoYearsAgoDate := fmt.Sprintf("%d-%02d-%02d", year, month, day)
 
-	apiURL := fmt.Sprintf("https://api.polygon.io/v2/aggs/ticker/%s/range/1/day/2024-01-01/2024-12-29?adjusted=true&sort=asc&apiKey=%s", ticker, polygonApiKey)
+	apiURL := fmt.Sprintf("https://api.polygon.io/v2/aggs/ticker/%s/range/1/day/%s/%s?adjusted=true&sort=asc&apiKey=%s", ticker, twoYearsAgoDate, yesterdayDate, polygonApiKey)
 	data, err := fetchPolygonAPI(apiURL)
 	if err != nil {
 		http.Error(w, "Error fetching data", http.StatusInternalServerError)
