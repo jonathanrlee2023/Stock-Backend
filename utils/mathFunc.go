@@ -114,7 +114,7 @@ func CalculateHistoricalVolatility(prices StockResponse, tradingDaysPerYear floa
 		diff := r - mean
 		variance += diff * diff
 	}
-	variance /= float64(len(returns) - 1) // Using n-1 for sample variance
+	variance /= float64(len(returns) - 1)
 
 	// Convert daily volatility to annualized volatility
 	annualizedVol := math.Sqrt(variance * tradingDaysPerYear)
