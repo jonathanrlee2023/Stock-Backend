@@ -8,6 +8,8 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -161,9 +163,12 @@ func earningsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(earningsData)
 }
 
+// handle stock api calls, calculate volatility, standard deviation, and most recent stock price
 func stockHandler(w http.ResponseWriter, r *http.Request) {
 	polygonApiKey := r.URL.Query().Get("apikey")
 	ticker := r.URL.Query().Get("symbol")
+
+	// format yesterday and two years ago date
 	yesterday := time.Now().AddDate(0, 0, -1)
 	twoYearsAgo := time.Now().AddDate(-2, 0, 0)
 	year, month, day := yesterday.Date()
@@ -171,17 +176,57 @@ func stockHandler(w http.ResponseWriter, r *http.Request) {
 	year, month, day = twoYearsAgo.Date()
 	twoYearsAgoDate := fmt.Sprintf("%d-%02d-%02d", year, month, day)
 
-	apiURL := fmt.Sprintf("https://api.polygon.io/v2/aggs/ticker/%s/range/1/day/%s/%s?adjusted=true&sort=asc&apiKey=%s", ticker, twoYearsAgoDate, yesterdayDate, polygonApiKey)
-	data, err := fetchPolygonAPI(apiURL)
-	if err != nil {
-		http.Error(w, "Error fetching data", http.StatusInternalServerError)
+	// Define cache folder and file name
+	cacheFolder := "StockDataCache"
+	fileName := fmt.Sprintf("%s.json", ticker)
+	filePath := filepath.Join(cacheFolder, fileName)
+
+	// Ensure the cache folder exists
+	if err := os.MkdirAll(cacheFolder, 0755); err != nil {
+		http.Error(w, "Error creating cache folder", http.StatusInternalServerError)
 		return
 	}
-	var result utils.StockResponse
 
-	if err := json.Unmarshal(data, &result); err != nil {
-		http.Error(w, "Error parsing data", http.StatusInternalServerError)
-		return
+	// Check if the file exists
+	var result utils.StockResponse
+	if utils.FileExists(filePath) {
+		// Read the file and decode the data
+		fileData, err := os.ReadFile(filePath)
+		if err != nil {
+			http.Error(w, "Error reading cached data", http.StatusInternalServerError)
+			return
+		}
+
+		if err := json.Unmarshal(fileData, &result); err != nil {
+			http.Error(w, "Error parsing cached data", http.StatusInternalServerError)
+			return
+		}
+		fmt.Println("Read data from cache")
+	} else {
+		// Fetch data from API
+		apiURL := fmt.Sprintf("https://api.polygon.io/v2/aggs/ticker/%s/range/1/day/%s/%s?adjusted=true&sort=asc&apiKey=%s", ticker, twoYearsAgoDate, yesterdayDate, polygonApiKey)
+		data, err := fetchPolygonAPI(apiURL)
+		if err != nil {
+			http.Error(w, "Error fetching data", http.StatusInternalServerError)
+			return
+		}
+
+		if err := json.Unmarshal(data, &result); err != nil {
+			http.Error(w, "Error parsing data", http.StatusInternalServerError)
+			return
+		}
+
+		// Write the data to a file for caching
+		fileData, err := json.Marshal(result)
+		if err != nil {
+			http.Error(w, "Error saving cached data", http.StatusInternalServerError)
+			return
+		}
+
+		if err := os.WriteFile(filePath, fileData, 0644); err != nil {
+			http.Error(w, "Error writing cached data", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	standardDev := utils.StandardDev(result)

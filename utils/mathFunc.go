@@ -96,7 +96,7 @@ func CalculateHistoricalVolatility(prices StockResponse, tradingDaysPerYear floa
 
 	// Calculate daily returns
 	returns := make([]float64, prices.Count-1)
-	for i := 1; i < len(keys); i++ {
+	for i := len(keys) / 2; i < len(keys); i++ {
 		// Using log returns for more accurate volatility calculation
 		returns[i-1] = math.Log(closePrice[keys[i]] / closePrice[keys[i-1]])
 	}
