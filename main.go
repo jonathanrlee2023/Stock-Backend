@@ -186,9 +186,9 @@ func stockHandler(w http.ResponseWriter, r *http.Request) {
 
 	standardDev := utils.StandardDev(result)
 
-	volatility := utils.CalculateHistoricalVolatility(result, float64(result.ResultsCount))
+	volatility, yesterdayPrice := utils.CalculateHistoricalVolatility(result, float64(result.ResultsCount))
 
-	returnedStatistics := utils.StockStatistics{Volatility: volatility, StdDev: standardDev}
+	returnedStatistics := utils.StockStatistics{Volatility: volatility, StdDev: standardDev, RecentClose: yesterdayPrice}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(returnedStatistics)

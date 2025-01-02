@@ -76,9 +76,9 @@ func StandardDev(result StockResponse) float64 {
 	return stdDev
 }
 
-func CalculateHistoricalVolatility(prices StockResponse, tradingDaysPerYear float64) float64 {
+func CalculateHistoricalVolatility(prices StockResponse, tradingDaysPerYear float64) (float64, float64) {
 	if prices.ResultsCount < 2 {
-		return 0
+		return 0, 0
 	}
 
 	closePrice := make(map[int64]float64)
@@ -119,7 +119,7 @@ func CalculateHistoricalVolatility(prices StockResponse, tradingDaysPerYear floa
 	// Convert daily volatility to annualized volatility
 	annualizedVol := math.Sqrt(variance * tradingDaysPerYear)
 
-	return annualizedVol
+	return annualizedVol, closePrice[keys[len(keys)-1]]
 }
 
 // Option represents the parameters of an option contract

@@ -74,6 +74,7 @@ type StockResponse struct {
 }
 
 type StockStatistics struct {
-	StdDev     float64 `json:"StandardDeviation"`
-	Volatility float64 `json:"Volatility"`
+	StdDev      float64 `json:"StandardDeviation"`
+	Volatility  float64 `json:"Volatility"`
+	RecentClose float64 `json:"RecentClose"`
 }
