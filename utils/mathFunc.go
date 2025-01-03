@@ -119,7 +119,7 @@ func CalculateHistoricalVolatility(prices StockResponse, tradingDaysPerYear floa
 	// Convert daily volatility to annualized volatility
 	annualizedVol := math.Sqrt(variance * tradingDaysPerYear)
 
-	return annualizedVol, closePrice[keys[len(keys)-1]]
+	return annualizedVol * 100, closePrice[keys[len(keys)-1]]
 }
 
 // Option represents the parameters of an option contract
