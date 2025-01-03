@@ -14,6 +14,15 @@ import (
 )
 
 func main() {
+	// Empty cache folder everytime API is turned on
+	folderPath := "./StockDataCache"
+	err := utils.DeleteContents(folderPath)
+	if err != nil {
+		fmt.Println("Error:", err)
+	} else {
+		fmt.Println("Folder contents deleted successfully!")
+	}
+	// start api
 	mux := http.NewServeMux()
 	mux.HandleFunc("/options", optionsHandler)
 	mux.HandleFunc("/earnings", earningsHandler)

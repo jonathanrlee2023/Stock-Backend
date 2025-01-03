@@ -3,6 +3,7 @@ package utils
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
 func CreateFile(name string) string {
@@ -58,4 +59,23 @@ func FileExists(fileName string) bool {
 		return false
 	}
 	return err == nil
+}
+
+func DeleteContents(folderPath string) error {
+	// Read the directory contents
+	dirEntries, err := os.ReadDir(folderPath)
+	if err != nil {
+		return fmt.Errorf("failed to read directory: %w", err)
+	}
+
+	// Iterate through each entry and delete it
+	for _, entry := range dirEntries {
+		entryPath := filepath.Join(folderPath, entry.Name())
+		err := os.RemoveAll(entryPath)
+		if err != nil {
+			return fmt.Errorf("failed to delete %s: %w", entryPath, err)
+		}
+	}
+
+	return nil
 }
