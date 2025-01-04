@@ -94,49 +94,46 @@ func optionsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	optionSuffixes := []string{"241227P00590000", "241227C00600000"}
+	optionSuffixes := "250110P00130000"
 
-	var apiUrl []string
+	var apiUrl string
 	var symbolJSON utils.OptionsSymbol
 
-	for _, suffix := range optionSuffixes {
-		apiUrl = append(apiUrl, fmt.Sprintf(
-			"https://data.alpaca.markets/v1beta1/options/bars?symbols=%s%s&timeframe=%s&start=%s&end=%s&limit=1000&sort=desc",
-			url.QueryEscape(symbol),
-			suffix,
-			url.QueryEscape(timeframe),
-			url.QueryEscape(start),
-			url.QueryEscape(end),
-		))
+	apiUrl = fmt.Sprintf(
+		"https://data.alpaca.markets/v1beta1/options/bars?symbols=%s%s&timeframe=%s&start=%s&end=%s&limit=1000&sort=desc",
+		url.QueryEscape(symbol),
+		optionSuffixes,
+		url.QueryEscape(timeframe),
+		url.QueryEscape(start),
+		url.QueryEscape(end),
+	)
+	fmt.Println(apiUrl[0])
+	symbolData := make(map[time.Time]float64)
+	data, err := fetchAlpacaAPIWithHeaders(apiUrl, alpacaKeyID, alpacaSecretKey)
+	if err != nil {
+		http.Error(w, "Error fetching data", http.StatusInternalServerError)
+		return
 	}
 
-	for i, url := range apiUrl {
-		symbolData := make(map[time.Time]float64)
-		data, err := fetchAlpacaAPIWithHeaders(url, alpacaKeyID, alpacaSecretKey)
-		if err != nil {
-			http.Error(w, "Error fetching data", http.StatusInternalServerError)
-			return
-		}
+	var result utils.AlpacaOptionsResponse
+	var pricesJson []utils.CombinedOptions
 
-		var result utils.AlpacaOptionsResponse
-		var pricesJson []utils.CombinedOptions
-
-		if err := json.Unmarshal(data, &result); err != nil {
-			http.Error(w, "Error parsing data", http.StatusInternalServerError)
-			return
-		}
-
-		fullKey := symbol + optionSuffixes[i]
-		symbolData = utils.SlopeFunctions(result, fullKey)
-
-		for x, value := range symbolData {
-			pricesJson = append(pricesJson, utils.CombinedOptions{Price: value, Timestamp: x})
-		}
-
-		optionsJson := utils.OptionsPrices{Options: pricesJson}
-
-		symbolJSON.Symbol = append(symbolJSON.Symbol, optionsJson)
+	if err := json.Unmarshal(data, &result); err != nil {
+		http.Error(w, "Error parsing data", http.StatusInternalServerError)
+		return
 	}
+
+	fullKey := symbol + optionSuffixes
+	symbolData = utils.SlopeFunctions(result, fullKey)
+
+	for x, value := range symbolData {
+		pricesJson = append(pricesJson, utils.CombinedOptions{Price: value, Timestamp: x})
+	}
+
+	optionsJson := utils.OptionsPrices{Options: pricesJson}
+
+	symbolJSON.Symbol = optionsJson
+
 	responseData, err := json.Marshal(symbolJSON)
 	if err != nil {
 		http.Error(w, "Error encoding response", http.StatusInternalServerError)

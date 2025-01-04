@@ -14,51 +14,49 @@ func SlopeFunctions(result AlpacaOptionsResponse, fullKey string) map[time.Time]
 	points := make(map[time.Time]float64)
 	functions := make(map[time.Time][]float64)
 	priceMap := make(map[time.Time]float64)
-	var slope float64
-	var intercept float64
-
 	var timeArr []time.Time
 
+	// Populate `timeArr` and `priceMap`
 	for _, x := range symbolData {
 		timeArr = append(timeArr, x.T)
 		priceMap[x.T] = x.C
 	}
 
+	// Sort `timeArr` to ensure chronological order
 	sort.Slice(timeArr, func(i, j int) bool {
 		return timeArr[i].Before(timeArr[j])
 	})
 
+	// If less than two points, return nil as slopes cannot be calculated
 	if len(timeArr) < 2 {
-		return nil // Not enough data to calculate slopes
+		return nil
 	}
 
+	// Calculate slopes
 	for i := 0; i < len(timeArr)-1; i++ {
-		y2 := priceMap[timeArr[i+1]] // Closing price at i
-		y1 := priceMap[timeArr[i]]   // Closing price at i-1
-
+		y2 := priceMap[timeArr[i+1]] // Closing price at i+1
+		y1 := priceMap[timeArr[i]]   // Closing price at i
 		timeDiff := timeArr[i+1].Sub(timeArr[i]).Minutes()
-		fmt.Println(timeArr[i])
 
-		// Avoid division by zero if time difference is too small
+		// Avoid division by zero
 		if timeDiff == 0 {
 			continue
 		}
 
 		// Calculate slope
-		slope = (y2 - y1) / timeDiff
-		fmt.Println(slope)
-
-		intercept = y1 - slope*float64(timeArr[i].Sub(timeArr[0]).Minutes())
-
-		functions[timeArr[i]] = append(functions[timeArr[i]], slope, intercept, math.Abs(timeDiff))
+		slope := (y2 - y1) / timeDiff
+		functions[timeArr[i]] = []float64{slope, timeDiff}
 	}
 
-	for timestamp, params := range functions {
-		slope, intercept, timeRange := params[0], params[1], params[2]
-		for offset := 0.0; offset <= timeRange; offset += 5 {
-			extrapolatedTime := timestamp.Add(time.Duration(offset) * time.Minute)
-			extrapolatedPoint := slope*offset + intercept
-			points[extrapolatedTime] = extrapolatedPoint
+	// Generate points using slopes
+	for i := 0; i < len(timeArr)-1; i++ {
+		currentTime := timeArr[i]
+		slope := functions[currentTime][0]
+		duration := int(functions[currentTime][1])
+
+		for j := 0; j <= duration; j += 5 {
+			pointTime := currentTime.Add(time.Duration(j) * time.Minute)
+			points[pointTime] = priceMap[currentTime] + (slope * float64(j))
 		}
 	}
 
