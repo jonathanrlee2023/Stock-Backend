@@ -16,13 +16,13 @@ func SlopeFunctions(result AlpacaOptionsResponse, fullKey string) map[time.Time]
 	priceMap := make(map[time.Time]float64)
 	var timeArr []time.Time
 
-	// Populate `timeArr` and `priceMap`
+	// Populate timeArr and priceMap with prices and their according times
 	for _, x := range symbolData {
 		timeArr = append(timeArr, x.T)
 		priceMap[x.T] = x.C
 	}
 
-	// Sort `timeArr` to ensure chronological order
+	// Sort timeArr to ensure chronological order
 	sort.Slice(timeArr, func(i, j int) bool {
 		return timeArr[i].Before(timeArr[j])
 	})
