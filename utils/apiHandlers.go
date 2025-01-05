@@ -71,6 +71,28 @@ func OptionsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	time.Sleep(100 * time.Millisecond) // 100 milliseconds = 0.1 seconds
+
+	fileName := fmt.Sprintf("%s.json", symbol)
+	filePath := filepath.Join("StockDataCache", fileName)
+
+	var stockResult StockResponse
+
+	if FileExists(filePath) {
+		// Read the file and decode the data
+		fileData, err := os.ReadFile(filePath)
+		if err != nil {
+			http.Error(w, "Error reading cached data", http.StatusInternalServerError)
+			return
+		}
+
+		if err := json.Unmarshal(fileData, &stockResult); err != nil {
+			http.Error(w, "Error parsing cached data", http.StatusInternalServerError)
+			return
+		}
+		fmt.Println(stockResult.Results[stockResult.Count-1].T)
+	}
+
 	optionSuffixes := "250110P00130000"
 
 	var apiUrl string

@@ -53,12 +53,9 @@ func ReadFile(FileName string) string {
 }
 
 // Checks if the file with a certain name exists
-func FileExists(fileName string) bool {
-	_, err := os.Stat(fileName)
-	if os.IsNotExist(err) {
-		return false
-	}
-	return err == nil
+func FileExists(filePath string) bool {
+	_, err := os.Stat(filePath)
+	return !os.IsNotExist(err)
 }
 
 func DeleteContents(folderPath string) error {
