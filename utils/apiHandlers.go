@@ -95,12 +95,12 @@ func OptionsHandler(w http.ResponseWriter, r *http.Request) {
 
 	year, month, day := NextWeekFriday()
 	roundedPrice := RoundToNearestFive(stockResult.Results[stockResult.Count-1].C)
+	formattedRoundedPrice := fmt.Sprintf("%03d", roundedPrice)
 
-	optionSuffixes := fmt.Sprintf("%d%s%sC00%s000", year-2000, month, day, roundedPrice)
+	optionSuffixes := fmt.Sprintf("%d%s%sC00%s000", year-2000, month, day, formattedRoundedPrice)
 	fmt.Println(optionSuffixes)
 
 	var apiUrl string
-	var symbolJSON OptionsSymbol
 
 	apiUrl = fmt.Sprintf(
 		"https://data.alpaca.markets/v1beta1/options/bars?symbols=%s%s&timeframe=%s&start=%s&end=%s&limit=1000&sort=desc",
@@ -135,7 +135,7 @@ func OptionsHandler(w http.ResponseWriter, r *http.Request) {
 
 	optionsJson := OptionsPrices{Options: pricesJson}
 
-	symbolJSON.Symbol = optionsJson
+	symbolJSON := OptionsSymbol{Symbol: optionsJson, Ticker: symbol, Price: roundedPrice, ExpirationDate: fmt.Sprintf("%d-%s-%s", year, month, day)}
 
 	responseData, err := json.Marshal(symbolJSON)
 	if err != nil {
@@ -213,6 +213,11 @@ func EarningsHandler(w http.ResponseWriter, r *http.Request) {
 func StockHandler(w http.ResponseWriter, r *http.Request) {
 	polygonApiKey := r.URL.Query().Get("apikey")
 	ticker := r.URL.Query().Get("symbol")
+
+	if polygonApiKey == "" || ticker == "" {
+		http.Error(w, "Missing required query parameters", http.StatusBadRequest)
+		return
+	}
 
 	// format yesterday and two years ago date
 	yesterday := time.Now().AddDate(0, 0, -1)

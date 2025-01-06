@@ -50,7 +50,10 @@ type OptionsPrices struct {
 }
 
 type OptionsSymbol struct {
-	Symbol OptionsPrices `json:"symbol"`
+	Ticker         string        `json:"ticker"`
+	Price          int           `json:"price"`
+	Symbol         OptionsPrices `json:"symbol"`
+	ExpirationDate string        `json:"expirationDate"`
 }
 
 type StockResponse struct {

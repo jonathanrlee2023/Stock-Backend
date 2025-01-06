@@ -188,9 +188,6 @@ func impliedVolatility(opt Option, initVol float64) (float64, error) {
 	return 0, fmt.Errorf("failed to converge after %d iterations", maxIter)
 }
 
-func RoundToNearestFive(value float64) string {
-	rounded := math.Round(value/5) * 5
-
-	// Convert the rounded result to a string with 3 digits, padded with zeros if necessary
-	return fmt.Sprintf("%03d", int(rounded))
+func RoundToNearestFive(value float64) int {
+	return int(math.Round(value/5) * 5)
 }
