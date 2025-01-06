@@ -71,7 +71,8 @@ func OptionsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	time.Sleep(100 * time.Millisecond) // 100 milliseconds = 0.1 seconds
+	// sleep for 0.20 seconds to assure file will be created and read
+	time.Sleep(200 * time.Millisecond)
 
 	fileName := fmt.Sprintf("%s.json", symbol)
 	filePath := filepath.Join("StockDataCache", fileName)
@@ -90,10 +91,13 @@ func OptionsHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Error parsing cached data", http.StatusInternalServerError)
 			return
 		}
-		fmt.Println(stockResult.Results[stockResult.Count-1].T)
 	}
 
-	optionSuffixes := "250110P00130000"
+	year, month, day := NextWeekFriday()
+	roundedPrice := RoundToNearestFive(stockResult.Results[stockResult.Count-1].C)
+
+	optionSuffixes := fmt.Sprintf("%d%s%sC00%s000", year-2000, month, day, roundedPrice)
+	fmt.Println(optionSuffixes)
 
 	var apiUrl string
 	var symbolJSON OptionsSymbol
@@ -106,6 +110,7 @@ func OptionsHandler(w http.ResponseWriter, r *http.Request) {
 		url.QueryEscape(start),
 		url.QueryEscape(end),
 	)
+	fmt.Println(apiUrl)
 	symbolData := make(map[time.Time]float64)
 	data, err := fetchAlpacaAPIWithHeaders(apiUrl, alpacaKeyID, alpacaSecretKey)
 	if err != nil {
@@ -245,6 +250,7 @@ func StockHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// Fetch data from API
 		apiURL := fmt.Sprintf("https://api.polygon.io/v2/aggs/ticker/%s/range/1/day/%s/%s?adjusted=true&sort=asc&apiKey=%s", ticker, twoYearsAgoDate, yesterdayDate, polygonApiKey)
+		fmt.Println(apiURL)
 		data, err := fetchPolygonAPI(apiURL)
 		if err != nil {
 			http.Error(w, "Error fetching data", http.StatusInternalServerError)
