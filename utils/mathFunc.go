@@ -191,3 +191,72 @@ func impliedVolatility(opt Option, initVol float64) (float64, error) {
 func RoundToNearestFive(value float64) int {
 	return int(math.Round(value/5) * 5)
 }
+
+func CalculateEarningsVolatility(stockResult StockResponse, earningsResult EarningsResponse) EarningsVolatility {
+	prices := make(map[string]float64)
+	priceJump := make(map[string][]float64)
+	reportedDates := make(map[string]string)
+	var formattedDate string
+	twoYearsAgo := time.Now().AddDate(-2, 0, 0)
+
+	for _, result := range stockResult.Results {
+		timestamp := time.Unix((result.T / 1000), 0).UTC()
+		formattedDate = timestamp.Format("2006-01-02")
+		prices[formattedDate] = result.C
+	}
+
+	for _, result := range earningsResult.QuarterlyEarnings {
+		parsedDate, err := time.Parse("2006-01-02", result.ReportedDate)
+		if err != nil {
+			fmt.Println("Error parsing time: ", err)
+		}
+		if parsedDate.After(twoYearsAgo) {
+			reportedDates[result.ReportedDate] = result.ReportTime
+		}
+	}
+
+	for date, reportTime := range reportedDates {
+		if reportTime == "pre-market" {
+			parsedDate, err := time.Parse("2006-01-02", date)
+			if err != nil {
+				fmt.Println("Error parsing time:", err)
+				continue
+			}
+			dayBeforeParsedDate := parsedDate.AddDate(0, 0, -1).Format("2006-01-02")
+			if _, exists := prices[dayBeforeParsedDate]; exists {
+				continue
+			}
+			difference := prices[date] - prices[dayBeforeParsedDate]
+			percentDifference := (difference / prices[dayBeforeParsedDate]) * 100
+			priceJump[date] = append(priceJump[date], difference, percentDifference)
+		} else if reportTime == "post-market" {
+			parsedDate, err := time.Parse("2006-01-02", date)
+			if err != nil {
+				fmt.Println("Error parsing time:", err)
+				continue
+			}
+			dayAfterParsedDate := parsedDate.AddDate(0, 0, 1).Format("2006-01-02")
+			difference := prices[dayAfterParsedDate] - prices[date]
+			percentDifference := (difference / prices[date]) * 100
+			priceJump[date] = append(priceJump[date], difference, percentDifference)
+		}
+	}
+	var earningsVolatilityJSON EarningsVolatility
+	earningsVolatilityJSON.Ticker = stockResult.Ticker
+	for date, prices := range priceJump {
+		if len(prices) < 2 {
+			continue // Skip if there are not enough values (difference and percent)
+		}
+		earningsVolatilityJSON.Volatility = append(earningsVolatilityJSON.Volatility, struct {
+			ReportDate        string  `json:"reportedDate"`
+			DollarDifference  float64 `json:"dollarDifference"`
+			PercentDifference float64 `json:"percentDifference"`
+		}{
+			ReportDate:        date,
+			DollarDifference:  prices[0],
+			PercentDifference: prices[1],
+		})
+	}
+
+	return earningsVolatilityJSON
+}

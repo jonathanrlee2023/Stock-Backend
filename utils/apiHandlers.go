@@ -91,6 +91,8 @@ func OptionsHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Error parsing cached data", http.StatusInternalServerError)
 			return
 		}
+	} else {
+		http.Error(w, "Error reading data", http.StatusInternalServerError)
 	}
 
 	year, month, day := NextWeekFriday()
@@ -146,7 +148,7 @@ func OptionsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(responseData)
 }
 
-func EarningsHandler(w http.ResponseWriter, r *http.Request) {
+func EarningsCalenderHandler(w http.ResponseWriter, r *http.Request) {
 	ticker := r.URL.Query().Get("symbol")
 	alphaVantageApiKey := r.URL.Query().Get("apikey")
 
@@ -285,6 +287,50 @@ func StockHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(returnedStatistics)
+}
+
+func EarningsVolatilityHandler(w http.ResponseWriter, r *http.Request) {
+	ticker := r.URL.Query().Get("ticker")
+	earningsFileName := fmt.Sprintf("%searnings.json", ticker)
+	earningsFilePath := filepath.Join("EarningsDataCache", earningsFileName)
+	stockFileName := fmt.Sprintf("%s.json", ticker)
+	stockFilePath := filepath.Join("StockDataCache", stockFileName)
+
+	var stockResult StockResponse
+	var earningsResult EarningsResponse
+	// sleep for 0.20 seconds to assure file will be created and read
+	time.Sleep(200 * time.Millisecond)
+
+	if FileExists(earningsFilePath) && FileExists(stockFilePath) {
+		// Read the file and decode the data
+		stockFileData, err := os.ReadFile(stockFilePath)
+		if err != nil {
+			http.Error(w, "Error reading cached data", http.StatusInternalServerError)
+			return
+		}
+
+		if err := json.Unmarshal(stockFileData, &stockResult); err != nil {
+			http.Error(w, "Error parsing cached data", http.StatusInternalServerError)
+			return
+		}
+		// Read the file and decode the data
+		earningsFileData, err := os.ReadFile(earningsFilePath)
+		if err != nil {
+			http.Error(w, "Error reading cached data", http.StatusInternalServerError)
+			return
+		}
+
+		if err := json.Unmarshal(earningsFileData, &earningsResult); err != nil {
+			http.Error(w, "Error parsing cached data", http.StatusInternalServerError)
+			return
+		}
+	} else {
+		http.Error(w, "Error reading data", http.StatusInternalServerError)
+	}
+
+	returnedEarningsVolatility := CalculateEarningsVolatility(stockResult, earningsResult)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(returnedEarningsVolatility)
 }
 
 func CorsMiddleware(next http.Handler) http.Handler {

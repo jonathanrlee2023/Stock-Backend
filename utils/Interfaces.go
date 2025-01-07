@@ -81,3 +81,12 @@ type StockStatistics struct {
 	Volatility  float64 `json:"Volatility"`
 	RecentClose float64 `json:"RecentClose"`
 }
+
+type EarningsVolatility struct {
+	Ticker     string `json:"ticker"`
+	Volatility []struct {
+		ReportDate        string  `json:"reportedDate"`
+		DollarDifference  float64 `json:"dollarDifference"`
+		PercentDifference float64 `json:"percentDifference"`
+	} `json:"volatility"`
+}

@@ -19,8 +19,9 @@ func main() {
 	// start api
 	mux := http.NewServeMux()
 	mux.HandleFunc("/options", utils.OptionsHandler)
-	mux.HandleFunc("/earnings", utils.EarningsHandler)
+	mux.HandleFunc("/earningsCalender", utils.EarningsCalenderHandler)
 	mux.HandleFunc("/stock", utils.StockHandler)
+	mux.HandleFunc("/earningsVolatility", utils.EarningsVolatilityHandler)
 
 	handler := utils.CorsMiddleware(mux)
 
