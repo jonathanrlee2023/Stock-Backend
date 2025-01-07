@@ -98,7 +98,6 @@ func OptionsHandler(w http.ResponseWriter, r *http.Request) {
 	formattedRoundedPrice := fmt.Sprintf("%03d", roundedPrice)
 
 	optionSuffixes := fmt.Sprintf("%d%s%sC00%s000", year-2000, month, day, formattedRoundedPrice)
-	fmt.Println(optionSuffixes)
 
 	var apiUrl string
 
@@ -110,7 +109,6 @@ func OptionsHandler(w http.ResponseWriter, r *http.Request) {
 		url.QueryEscape(start),
 		url.QueryEscape(end),
 	)
-	fmt.Println(apiUrl)
 	symbolData := make(map[time.Time]float64)
 	data, err := fetchAlpacaAPIWithHeaders(apiUrl, alpacaKeyID, alpacaSecretKey)
 	if err != nil {
@@ -255,7 +253,6 @@ func StockHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// Fetch data from API
 		apiURL := fmt.Sprintf("https://api.polygon.io/v2/aggs/ticker/%s/range/1/day/%s/%s?adjusted=true&sort=asc&apiKey=%s", ticker, twoYearsAgoDate, yesterdayDate, polygonApiKey)
-		fmt.Println(apiURL)
 		data, err := fetchPolygonAPI(apiURL)
 		if err != nil {
 			http.Error(w, "Error fetching data", http.StatusInternalServerError)
