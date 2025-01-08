@@ -214,7 +214,7 @@ func CalculateEarningsVolatility(stockResult StockResponse, earningsResult Earni
 			reportedDates[result.ReportedDate] = result.ReportTime
 		}
 	}
-
+	var exists bool
 	for date, reportTime := range reportedDates {
 		if reportTime == "pre-market" {
 			parsedDate, err := time.Parse("2006-01-02", date)
@@ -223,12 +223,25 @@ func CalculateEarningsVolatility(stockResult StockResponse, earningsResult Earni
 				continue
 			}
 			dayBeforeParsedDate := parsedDate.AddDate(0, 0, -1).Format("2006-01-02")
-			if _, exists := prices[dayBeforeParsedDate]; exists {
-				continue
+			i := 0
+			for {
+				_, exists = prices[dayBeforeParsedDate]
+				if exists || i > 5 {
+					break
+				}
+				parsedDate, err := time.Parse("2006-01-02", dayBeforeParsedDate)
+				if err != nil {
+					fmt.Println("Error parsing date:", err)
+					break
+				}
+				dayBeforeParsedDate = parsedDate.AddDate(0, 0, -1).Format("2006-01-02")
+				i++
 			}
-			difference := prices[date] - prices[dayBeforeParsedDate]
-			percentDifference := (difference / prices[dayBeforeParsedDate]) * 100
-			priceJump[date] = append(priceJump[date], difference, percentDifference)
+			if exists {
+				difference := prices[date] - prices[dayBeforeParsedDate]
+				percentDifference := (difference / prices[dayBeforeParsedDate]) * 100
+				priceJump[date] = append(priceJump[date], difference, percentDifference)
+			}
 		} else if reportTime == "post-market" {
 			parsedDate, err := time.Parse("2006-01-02", date)
 			if err != nil {
@@ -236,16 +249,31 @@ func CalculateEarningsVolatility(stockResult StockResponse, earningsResult Earni
 				continue
 			}
 			dayAfterParsedDate := parsedDate.AddDate(0, 0, 1).Format("2006-01-02")
-			difference := prices[dayAfterParsedDate] - prices[date]
-			percentDifference := (difference / prices[date]) * 100
-			priceJump[date] = append(priceJump[date], difference, percentDifference)
+
+			for {
+				_, exists = prices[dayAfterParsedDate]
+				if exists {
+					break
+				}
+				parsedDate, err := time.Parse("2006-01-02", dayAfterParsedDate)
+				if err != nil {
+					fmt.Println("Error parsing date:", err)
+					break
+				}
+				dayAfterParsedDate = parsedDate.AddDate(0, 0, 1).Format("2006-01-02")
+			}
+			if exists {
+				difference := prices[dayAfterParsedDate] - prices[date]
+				percentDifference := (difference / prices[date]) * 100
+				priceJump[date] = append(priceJump[date], difference, percentDifference)
+			}
 		}
 	}
 	var earningsVolatilityJSON EarningsVolatility
 	earningsVolatilityJSON.Ticker = stockResult.Ticker
 	for date, prices := range priceJump {
 		if len(prices) < 2 {
-			continue // Skip if there are not enough values (difference and percent)
+			continue
 		}
 		earningsVolatilityJSON.Volatility = append(earningsVolatilityJSON.Volatility, struct {
 			ReportDate        string  `json:"reportedDate"`
