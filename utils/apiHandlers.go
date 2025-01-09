@@ -383,10 +383,10 @@ func TodayStockHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// Fetch data from API
 		apiUrl = fmt.Sprintf(
-			"https://data.alpaca.markets/v2/stocks/bars?symbols=%s&timeframe=%s&start=%sT14%3A30%3A00Z&limit=100&adjustment=split&feed=sip&sort=asc",
+			"https://data.alpaca.markets/v2/stocks/bars?symbols=%s&timeframe=%s&start=%sT14%3A30%3A00Z&end=%sT22%3A30%3A00Z&limit=200&adjustment=split&feed=sip&sort=asc",
 			url.QueryEscape(symbol),
 			url.QueryEscape(timeframe),
-			todayDate)
+			todayDate, todayDate)
 		data, err := fetchAlpacaAPIWithHeaders(apiUrl, alpacaKeyID, alpacaSecretKey)
 		if err != nil {
 			http.Error(w, "Error fetching data", http.StatusInternalServerError)
