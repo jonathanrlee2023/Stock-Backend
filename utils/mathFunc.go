@@ -9,7 +9,7 @@ import (
 	"gonum.org/v1/gonum/stat"
 )
 
-func SlopeFunctions(result AlpacaOptionsResponse, fullKey string) map[time.Time]float64 {
+func SlopeFunctions(result AlpacaResponse, fullKey string) map[time.Time]float64 {
 	symbolData := result.Bars[fullKey]
 	points := make(map[time.Time]float64)
 	functions := make(map[time.Time][]float64)

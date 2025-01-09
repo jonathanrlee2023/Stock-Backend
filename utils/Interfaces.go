@@ -2,7 +2,7 @@ package utils
 
 import "time"
 
-type AlpacaOptionsResponse struct {
+type AlpacaResponse struct {
 	Bars map[string][]struct {
 		C  float64   `json:"c"`
 		H  float64   `json:"h"`
@@ -45,15 +45,21 @@ type CombinedOptions struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
-type OptionsPrices struct {
-	Options []CombinedOptions `json:"options"`
+type OptionsSymbol struct {
+	Ticker         string            `json:"ticker"`
+	Price          int               `json:"price"`
+	Symbol         []CombinedOptions `json:"symbol"`
+	ExpirationDate string            `json:"expirationDate"`
 }
 
-type OptionsSymbol struct {
-	Ticker         string        `json:"ticker"`
-	Price          int           `json:"price"`
-	Symbol         OptionsPrices `json:"symbol"`
-	ExpirationDate string        `json:"expirationDate"`
+type CombinedStock struct {
+	Price     float64   `json:"price"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
+type StockSymbol struct {
+	Ticker string          `json:"ticker"`
+	Symbol []CombinedStock `json:"symbol"`
 }
 
 type StockResponse struct {

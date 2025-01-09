@@ -118,7 +118,7 @@ func OptionsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var result AlpacaOptionsResponse
+	var result AlpacaResponse
 	var pricesJson []CombinedOptions
 
 	if err := json.Unmarshal(data, &result); err != nil {
@@ -133,9 +133,7 @@ func OptionsHandler(w http.ResponseWriter, r *http.Request) {
 		pricesJson = append(pricesJson, CombinedOptions{Price: value, Timestamp: x})
 	}
 
-	optionsJson := OptionsPrices{Options: pricesJson}
-
-	symbolJSON := OptionsSymbol{Symbol: optionsJson, Ticker: symbol, Price: roundedPrice, ExpirationDate: fmt.Sprintf("%d-%s-%s", year, month, day)}
+	symbolJSON := OptionsSymbol{Symbol: pricesJson, Ticker: symbol, Price: roundedPrice, ExpirationDate: fmt.Sprintf("%d-%s-%s", year, month, day)}
 
 	responseData, err := json.Marshal(symbolJSON)
 	if err != nil {
@@ -331,6 +329,106 @@ func EarningsVolatilityHandler(w http.ResponseWriter, r *http.Request) {
 	returnedEarningsVolatility := CalculateEarningsVolatility(stockResult, earningsResult)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(returnedEarningsVolatility)
+}
+
+func TodayStockHandler(w http.ResponseWriter, r *http.Request) {
+	alpacaKeyID := r.Header.Get("APCA-API-Key-ID")
+	alpacaSecretKey := r.Header.Get("APCA-API-SECRET-KEY")
+
+	if alpacaKeyID == "" || alpacaSecretKey == "" {
+		http.Error(w, "Missing Alpaca API keys in headers", http.StatusBadRequest)
+		return
+	}
+
+	symbol := r.URL.Query().Get("symbol")
+	timeframe := r.URL.Query().Get("timeframe")
+
+	if symbol == "" || timeframe == "" {
+		http.Error(w, "Missing required query parameters", http.StatusBadRequest)
+		return
+	}
+
+	// sleep for 0.20 seconds to assure file will be created and read
+	time.Sleep(200 * time.Millisecond)
+
+	cacheFolder := "TodayStockDataCache"
+	fileName := fmt.Sprintf("Today%s.json", symbol)
+	filePath := filepath.Join("StockDataCache", fileName)
+
+	today := time.Now()
+	year, month, day := today.Date()
+	todayDate := fmt.Sprintf("%d-%02d-%02d", year, month, day)
+
+	var stockResult AlpacaResponse
+	var apiUrl string
+	// Ensure the cache folder exists
+	if err := os.MkdirAll(cacheFolder, 0755); err != nil {
+		http.Error(w, "Error creating cache folder", http.StatusInternalServerError)
+		return
+	}
+
+	// Check if the file exists
+	if FileExists(filePath) {
+		// Read the file and decode the data
+		fileData, err := os.ReadFile(filePath)
+		if err != nil {
+			http.Error(w, "Error reading cached data", http.StatusInternalServerError)
+			return
+		}
+
+		if err := json.Unmarshal(fileData, &stockResult); err != nil {
+			http.Error(w, "Error parsing cached data", http.StatusInternalServerError)
+			return
+		}
+	} else {
+		// Fetch data from API
+		apiUrl = fmt.Sprintf(
+			"https://data.alpaca.markets/v2/stocks/bars?symbols=%s&timeframe=%s&start=%sT14%3A30%3A00Z&limit=100&adjustment=split&feed=sip&sort=asc",
+			url.QueryEscape(symbol),
+			url.QueryEscape(timeframe),
+			todayDate)
+		data, err := fetchAlpacaAPIWithHeaders(apiUrl, alpacaKeyID, alpacaSecretKey)
+		if err != nil {
+			http.Error(w, "Error fetching data", http.StatusInternalServerError)
+			return
+		}
+
+		if err := json.Unmarshal(data, &stockResult); err != nil {
+			http.Error(w, "Error parsing data", http.StatusInternalServerError)
+			return
+		}
+
+		// Write the data to a file for caching
+		fileData, err := json.Marshal(stockResult)
+		if err != nil {
+			http.Error(w, "Error saving cached data", http.StatusInternalServerError)
+			return
+		}
+
+		if err := os.WriteFile(filePath, fileData, 0644); err != nil {
+			http.Error(w, "Error writing cached data", http.StatusInternalServerError)
+			return
+		}
+	}
+	var pricesJson []CombinedStock
+
+	symbolData := SlopeFunctions(stockResult, symbol)
+
+	for x, value := range symbolData {
+		pricesJson = append(pricesJson, CombinedStock{Price: value, Timestamp: x})
+	}
+
+	symbolJSON := StockSymbol{Symbol: pricesJson, Ticker: symbol}
+
+	responseData, err := json.Marshal(symbolJSON)
+	if err != nil {
+		http.Error(w, "Error encoding response", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(responseData)
 }
 
 func CorsMiddleware(next http.Handler) http.Handler {

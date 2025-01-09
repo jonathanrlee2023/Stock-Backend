@@ -9,12 +9,14 @@ import (
 
 func main() {
 	// Empty cache folder everytime API is turned on
-	folderPath := "./StockDataCache"
-	err := utils.DeleteContents(folderPath)
-	if err != nil {
-		fmt.Println("Error:", err)
-	} else {
-		fmt.Println("Folder contents deleted successfully!")
+	folderPath := []string{"./StockDataCache", "./TodayStockDataCache"}
+	for _, value := range folderPath {
+		err := utils.DeleteContents(value)
+		if err != nil {
+			fmt.Println("Error:", err)
+		} else {
+			fmt.Println("Folder contents deleted successfully!")
+		}
 	}
 	// start api
 	mux := http.NewServeMux()
@@ -22,6 +24,7 @@ func main() {
 	mux.HandleFunc("/earningsCalender", utils.EarningsCalenderHandler)
 	mux.HandleFunc("/stock", utils.StockHandler)
 	mux.HandleFunc("/earningsVolatility", utils.EarningsVolatilityHandler)
+	mux.HandleFunc("/todayStock", utils.TodayStockHandler)
 
 	handler := utils.CorsMiddleware(mux)
 
