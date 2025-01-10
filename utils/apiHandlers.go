@@ -450,6 +450,70 @@ func TodayStockHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(responseData)
 }
 
+func EconomicDataHandler(w http.ResponseWriter, r *http.Request) {
+	alphaVantageApiKey := r.URL.Query().Get("apikey")
+	economicCategory := r.URL.Query().Get("category")
+
+	today := time.Now()
+	_, month, _ := today.Date()
+	todayMonth := fmt.Sprintf("%02d", month)
+
+	// Define cache folder and file name
+
+	cacheFolder := "EconomicData"
+	fileName := fmt.Sprintf("%s%sData.json", todayMonth, economicCategory)
+	filePath := filepath.Join(cacheFolder, fileName)
+	// Ensure the cache folder exists
+	if err := os.MkdirAll(cacheFolder, 0755); err != nil {
+		http.Error(w, "Error creating cache folder", http.StatusInternalServerError)
+		return
+	}
+
+	// Check if the file exists
+	var result EconomicData
+	if FileExists(fileName) {
+		// Read the file and decode the data
+		fileData, err := os.ReadFile(fileName)
+		if err != nil {
+			http.Error(w, "Error reading cached data", http.StatusInternalServerError)
+			return
+		}
+
+		if err := json.Unmarshal(fileData, &result); err != nil {
+			http.Error(w, "Error parsing cached data", http.StatusInternalServerError)
+			return
+		}
+	} else {
+		// Fetch data from API
+		apiURL := fmt.Sprintf("https://www.alphavantage.co/query?function=%s&apikey=%s", economicCategory, alphaVantageApiKey)
+		data, err := fetchAlphaVantageAPI(apiURL)
+		if err != nil {
+			http.Error(w, "Error fetching data", http.StatusInternalServerError)
+			return
+		}
+
+		if err := json.Unmarshal(data, &result); err != nil {
+			http.Error(w, "Error parsing data", http.StatusInternalServerError)
+			return
+		}
+
+		// Write the data to a file for caching
+		fileData, err := json.Marshal(result)
+		if err != nil {
+			http.Error(w, "Error saving cached data", http.StatusInternalServerError)
+			return
+		}
+
+		if err := os.WriteFile(filePath, fileData, 0644); err != nil {
+			http.Error(w, "Error writing cached data", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
 func CorsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")

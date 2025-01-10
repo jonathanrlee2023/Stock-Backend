@@ -96,3 +96,15 @@ type EarningsVolatility struct {
 		PercentDifference float64 `json:"percentDifference"`
 	} `json:"volatility"`
 }
+
+type EconomicData struct {
+	Name     string `json:"name"`
+	Interval string `json:"interval"`
+	Unit     string `json:"unit"`
+	Data     []Data `json:"data"`
+}
+
+type Data struct {
+	Date  string `json:"date"`
+	Value string `json:"value"`
+}
