@@ -28,3 +28,19 @@ func NextWeekFriday() (int, string, string) {
 
 	return year, month, day
 }
+
+func MostRecentWeekday(t time.Time) time.Time {
+	if t.Weekday() >= time.Monday && t.Weekday() <= time.Friday {
+		return t
+	}
+
+	daysToSubtract := 0
+	switch t.Weekday() {
+	case time.Saturday:
+		daysToSubtract = 1
+	case time.Sunday:
+		daysToSubtract = 2
+	}
+
+	return t.AddDate(0, 0, -daysToSubtract)
+}

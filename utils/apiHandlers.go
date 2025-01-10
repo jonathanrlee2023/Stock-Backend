@@ -65,10 +65,17 @@ func OptionsHandler(w http.ResponseWriter, r *http.Request) {
 	start := r.URL.Query().Get("start")
 	end := r.URL.Query().Get("end")
 	timeframe := r.URL.Query().Get("timeframe")
+	typeOfOption := r.URL.Query().Get("type")
 
-	if symbol == "" || start == "" || end == "" || timeframe == "" {
+	if symbol == "" || start == "" || end == "" || timeframe == "" || typeOfOption == "" {
 		http.Error(w, "Missing required query parameters", http.StatusBadRequest)
 		return
+	}
+
+	if typeOfOption == "Call" {
+		typeOfOption = "C"
+	} else if typeOfOption == "Put" {
+		typeOfOption = "P"
 	}
 
 	// sleep for 0.20 seconds to assure file will be created and read
@@ -99,7 +106,7 @@ func OptionsHandler(w http.ResponseWriter, r *http.Request) {
 	roundedPrice := RoundToNearestFive(stockResult.Results[stockResult.Count-1].C)
 	formattedRoundedPrice := fmt.Sprintf("%03d", roundedPrice)
 
-	optionSuffixes := fmt.Sprintf("%d%s%sC00%s000", year-2000, month, day, formattedRoundedPrice)
+	optionSuffixes := fmt.Sprintf("%d%s%s%s00%s000", year-2000, month, day, typeOfOption, formattedRoundedPrice)
 
 	var apiUrl string
 
@@ -355,12 +362,12 @@ func TodayStockHandler(w http.ResponseWriter, r *http.Request) {
 	fileName := fmt.Sprintf("Today%s.json", symbol)
 	filePath := filepath.Join("StockDataCache", fileName)
 
-	today := time.Now()
-	year, month, day := today.Date()
+	mostRecentWeekday := MostRecentWeekday(time.Now())
+	year, month, day := mostRecentWeekday.Date()
 	todayDate := fmt.Sprintf("%d-%02d-%02d", year, month, day)
+	fmt.Println(todayDate)
 
 	var stockResult AlpacaResponse
-	var apiUrl string
 	// Ensure the cache folder exists
 	if err := os.MkdirAll(cacheFolder, 0755); err != nil {
 		http.Error(w, "Error creating cache folder", http.StatusInternalServerError)
@@ -382,11 +389,23 @@ func TodayStockHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		// Fetch data from API
-		apiUrl = fmt.Sprintf(
-			"https://data.alpaca.markets/v2/stocks/bars?symbols=%s&timeframe=%s&start=%sT14%3A30%3A00Z&end=%sT22%3A30%3A00Z&limit=200&adjustment=split&feed=sip&sort=asc",
-			url.QueryEscape(symbol),
-			url.QueryEscape(timeframe),
-			todayDate, todayDate)
+		baseURL := "https://data.alpaca.markets/v2/stocks/bars"
+
+		// Build query parameters
+		params := url.Values{}
+		params.Add("symbols", symbol)
+		params.Add("timeframe", timeframe)
+		params.Add("start", fmt.Sprintf("%sT14:30:00Z", todayDate))
+		params.Add("end", fmt.Sprintf("%sT22:30:00Z", todayDate))
+		params.Add("limit", "200")
+		params.Add("adjustment", "split")
+		params.Add("feed", "sip")
+		params.Add("sort", "asc")
+
+		// Combine base URL with query parameters
+		apiUrl := fmt.Sprintf("%s?%s", baseURL, params.Encode())
+
+		fmt.Println(apiUrl)
 		data, err := fetchAlpacaAPIWithHeaders(apiUrl, alpacaKeyID, alpacaSecretKey)
 		if err != nil {
 			http.Error(w, "Error fetching data", http.StatusInternalServerError)
