@@ -97,7 +97,7 @@ type EarningsVolatility struct {
 	} `json:"volatility"`
 }
 
-type EconomicData struct {
+type EconomicDataResponse struct {
 	Name     string `json:"name"`
 	Interval string `json:"interval"`
 	Unit     string `json:"unit"`
@@ -107,4 +107,10 @@ type EconomicData struct {
 type Data struct {
 	Date  string `json:"date"`
 	Value string `json:"value"`
+}
+
+type EconomicDataResult struct {
+	Date      string  `json:"date"`
+	FFR       string  `json:"ffr"`
+	Inflation float64 `json:"inflation"`
 }
