@@ -387,6 +387,7 @@ func TodayStockHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Error parsing cached data", http.StatusInternalServerError)
 			return
 		}
+		fmt.Println("File Exists")
 	} else {
 		// Fetch data from API
 		baseURL := "https://data.alpaca.markets/v2/stocks/bars"
@@ -404,6 +405,7 @@ func TodayStockHandler(w http.ResponseWriter, r *http.Request) {
 
 		// Combine base URL with query parameters
 		apiUrl := fmt.Sprintf("%s?%s", baseURL, params.Encode())
+		fmt.Println(apiUrl)
 
 		data, err := fetchAlpacaAPIWithHeaders(apiUrl, alpacaKeyID, alpacaSecretKey)
 		if err != nil {
@@ -513,25 +515,23 @@ func EconomicDataHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	inflationResult := make([]float64, len(result[1].Data)-1)
+	var inflationResult float64
 
-	for i := 0; i < len(result[1].Data)-1; i++ {
-		floatValue1, err1 := strconv.ParseFloat(result[1].Data[i+1].Value, 64)
-		if err1 != nil {
-			http.Error(w, "Invalid data for current value", http.StatusInternalServerError)
-			return
-		}
-		floatValue2, err2 := strconv.ParseFloat(result[1].Data[i].Value, 64)
-		if err2 != nil {
-			http.Error(w, "Invalid data for previous value", http.StatusInternalServerError)
-			return
-		}
-
-		// Calculate inflation in percentage
-		inflationResult[i] = ((floatValue1 - floatValue2) / floatValue2) * 100
+	floatValue1, err1 := strconv.ParseFloat(result[1].Data[0].Value, 64)
+	if err1 != nil {
+		http.Error(w, "Invalid data for current value", http.StatusInternalServerError)
+		return
+	}
+	floatValue2, err2 := strconv.ParseFloat(result[1].Data[11].Value, 64)
+	if err2 != nil {
+		http.Error(w, "Invalid data for previous value", http.StatusInternalServerError)
+		return
 	}
 
-	economicResult = EconomicDataResult{Date: result[0].Data[0].Date, FFR: result[0].Data[0].Value, Inflation: inflationResult[0]}
+	// Calculate inflation in percentage
+	inflationResult = ((floatValue1 - floatValue2) / floatValue2) * 100
+
+	economicResult = EconomicDataResult{Date: result[0].Data[0].Date, FFR: result[0].Data[0].Value, Inflation: inflationResult}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(economicResult)
 }
@@ -539,8 +539,13 @@ func EconomicDataHandler(w http.ResponseWriter, r *http.Request) {
 func CorsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "*")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 
 		next.ServeHTTP(w, r)
 	})
