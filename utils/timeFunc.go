@@ -44,3 +44,26 @@ func MostRecentWeekday(t time.Time) time.Time {
 
 	return t.AddDate(0, 0, -daysToSubtract)
 }
+
+func FindCommonTimes(slice1, slice2 []time.Time) (earliest, latest *time.Time) {
+	i, j := 0, 0
+
+	for i < len(slice1) && j < len(slice2) {
+		if slice1[i].Equal(slice2[j]) {
+			// Record the earliest common time if not already set
+			if earliest == nil {
+				earliest = &slice1[i]
+			}
+			// Update the latest common time
+			latest = &slice1[i]
+			i++
+			j++
+		} else if slice1[i].Before(slice2[j]) {
+			i++
+		} else {
+			j++
+		}
+	}
+
+	return earliest, latest
+}

@@ -25,6 +25,7 @@ func main() {
 	mux.HandleFunc("/todayStock", utils.TodayStockHandler)
 	mux.HandleFunc("/economicData", utils.EconomicDataHandler)
 	mux.HandleFunc("/impliedVolatility", utils.OptionVolatilityHandler)
+	mux.HandleFunc("/combinedOptions", utils.CombinedOptionsHandler)
 
 	handler := CorsMiddleware(mux)
 

@@ -248,3 +248,139 @@ func OptionVolatilityHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(volatility)
 }
+
+func CombinedOptionsHandler(w http.ResponseWriter, r *http.Request) {
+	alpacaKeyID := r.Header.Get("APCA-API-Key-ID")
+	alpacaSecretKey := r.Header.Get("APCA-API-SECRET-KEY")
+
+	if alpacaKeyID == "" || alpacaSecretKey == "" {
+		http.Error(w, "Missing Alpaca API keys in headers", http.StatusBadRequest)
+		return
+	}
+
+	symbol := r.URL.Query().Get("symbol")
+
+	if symbol == "" {
+		http.Error(w, "Missing required query parameters", http.StatusBadRequest)
+		return
+	}
+
+	var apiUrl string
+
+	yesterday := MostRecentWeekday(time.Now().AddDate(0, 0, -1))
+	year, month, day := yesterday.Date()
+	yesterdayDate := fmt.Sprintf("%d-%02d-%02d", year, month, day)
+
+	apiUrl = fmt.Sprintf(
+		"http://localhost:8080/options?symbol=%s&start=%s&end=%s&timeframe=10Min&type=Call",
+		symbol,
+		yesterdayDate,
+		yesterdayDate,
+	)
+	data, err := fetchAlpacaAPIWithHeaders(apiUrl, alpacaKeyID, alpacaSecretKey)
+	if err != nil {
+		http.Error(w, "Error fetching data", http.StatusInternalServerError)
+		return
+	}
+
+	var callResult OptionsSymbol
+
+	if err := json.Unmarshal(data, &callResult); err != nil {
+		http.Error(w, "Error parsing data 1", http.StatusInternalServerError)
+		return
+	}
+
+	callData := make(map[time.Time]float64)
+	var callTimestamps []time.Time
+	for _, value := range callResult.Symbol {
+		callData[value.Timestamp] = value.Price
+		callTimestamps = append(callTimestamps, value.Timestamp)
+	}
+
+	sort.Slice(callTimestamps, func(i, j int) bool {
+		return callTimestamps[i].After(callTimestamps[j])
+	})
+
+	apiUrl = fmt.Sprintf(
+		"http://localhost:8080/options?symbol=%s&start=%s&end=%s&timeframe=10Min&type=Put",
+		symbol,
+		yesterdayDate,
+		yesterdayDate,
+	)
+	data, err = fetchAlpacaAPIWithHeaders(apiUrl, alpacaKeyID, alpacaSecretKey)
+	if err != nil {
+		http.Error(w, "Error fetching data", http.StatusInternalServerError)
+		return
+	}
+
+	var putResult OptionsSymbol
+
+	if err := json.Unmarshal(data, &putResult); err != nil {
+		http.Error(w, "Error parsing data 1", http.StatusInternalServerError)
+		return
+	}
+
+	putData := make(map[time.Time]float64)
+	var putTimestamps []time.Time
+	for _, value := range putResult.Symbol {
+		putData[value.Timestamp] = value.Price
+		putTimestamps = append(putTimestamps, value.Timestamp)
+	}
+
+	sort.Slice(putTimestamps, func(i, j int) bool {
+		return putTimestamps[i].After(putTimestamps[j])
+	})
+
+	earliestCommon, latestCommon := FindCommonTimes(callTimestamps, putTimestamps)
+	combinedOptions := make(map[time.Time]float64)
+
+	x := true
+	optionTime := earliestCommon
+	for x {
+		combinedOptions[*optionTime] = putData[*optionTime] + callData[*optionTime]
+		optionTime.Add(5 * time.Minute)
+		if optionTime.After(*latestCommon) {
+			x = false
+		}
+	}
+
+	var pricesJson []CombinedOptions
+	for x, value := range combinedOptions {
+		pricesJson = append(pricesJson, CombinedOptions{Price: value, Timestamp: x})
+	}
+
+	year2, month2, day2 := NextWeekFriday()
+	fileName := fmt.Sprintf("%s.json", symbol)
+	filePath := filepath.Join("StockDataCache", fileName)
+
+	var stockResult StockResponse
+
+	if FileExists(filePath) {
+		// Read the file and decode the data
+		fileData, err := os.ReadFile(filePath)
+		if err != nil {
+			http.Error(w, "Error reading cached data", http.StatusInternalServerError)
+			return
+		}
+
+		if err := json.Unmarshal(fileData, &stockResult); err != nil {
+			http.Error(w, "Error parsing cached data", http.StatusInternalServerError)
+			return
+		}
+	} else {
+		http.Error(w, "Error reading data", http.StatusInternalServerError)
+	}
+
+	roundedPrice := RoundToNearestFive(stockResult.Results[stockResult.Count-1].C)
+
+	symbolJSON := OptionsSymbol{Symbol: pricesJson, Ticker: symbol, Price: roundedPrice, ExpirationDate: fmt.Sprintf("%d-%s-%s", year2, month2, day2)}
+	responseData, err := json.Marshal(symbolJSON)
+	if err != nil {
+		http.Error(w, "Error encoding response", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(responseData)
+}
