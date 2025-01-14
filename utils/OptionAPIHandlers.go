@@ -78,7 +78,6 @@ func OptionsHandler(w http.ResponseWriter, r *http.Request) {
 		url.QueryEscape(start),
 		url.QueryEscape(end),
 	)
-	fmt.Println(apiUrl)
 	symbolData := make(map[time.Time]float64)
 	data, err := fetchAlpacaAPIWithHeaders(apiUrl, alpacaKeyID, alpacaSecretKey)
 	if err != nil {
@@ -155,8 +154,6 @@ func OptionVolatilityHandler(w http.ResponseWriter, r *http.Request) {
 		daysUntilFriday += 7
 	}
 
-	fmt.Println(daysUntilFriday)
-
 	yearsTillNextFriday := float64(daysUntilFriday) / 365.0
 
 	today := time.Now()
@@ -195,7 +192,6 @@ func OptionVolatilityHandler(w http.ResponseWriter, r *http.Request) {
 	yesterdayDate := fmt.Sprintf("%d-%02d-%02d", year, month, day)
 
 	apiURL := fmt.Sprintf("http://localhost:8080/options?symbol=%s&start=%s&end=%s&timeframe=10Min&type=%s", ticker, yesterdayDate, yesterdayDate, optionType)
-	fmt.Println(apiURL)
 	data, err := fetchAlpacaAPIWithHeaders(apiURL, alpacaKeyID, alpacaSecretKey)
 	if err != nil {
 		http.Error(w, "Error fetching data", http.StatusInternalServerError)
@@ -229,7 +225,6 @@ func OptionVolatilityHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	option := Option{S: mostRecentPrice, K: float64(roundedPrice), T: yearsTillNextFriday, R: riskFreeRate / 100.0, P: mostRecentOptionPrice, CP: optionType}
-	fmt.Println(option)
 
 	apiURL = fmt.Sprintf("http://localhost:8080/stock?symbol=%s&apikey=X8531ZcJaqW6j7l9tG1PVFBZnwMNRs72", ticker)
 	statisticsData, err := fetchDefaultAPI(apiURL)
@@ -244,8 +239,6 @@ func OptionVolatilityHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Error parsing data 2", http.StatusInternalServerError)
 		return
 	}
-
-	fmt.Println(statisticsResult.Volatility)
 
 	impliedVolatility, err := impliedVolatility(option, statisticsResult.Volatility/100.0)
 
