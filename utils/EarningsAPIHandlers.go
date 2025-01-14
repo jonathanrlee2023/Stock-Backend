@@ -84,7 +84,7 @@ func EarningsCalenderHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// Fetch data from API
 		apiURL := fmt.Sprintf("https://www.alphavantage.co/query?function=EARNINGS&symbol=%s&apikey=%s", ticker, alphaVantageApiKey)
-		data, err := fetchAlphaVantageAPI(apiURL)
+		data, err := fetchDefaultAPI(apiURL)
 		if err != nil {
 			http.Error(w, "Error fetching data", http.StatusInternalServerError)
 			return

@@ -49,7 +49,7 @@ func EconomicDataHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		} else {
 			apiURL := fmt.Sprintf("https://www.alphavantage.co/query?function=%s&apikey=%s", economicCategory, alphaVantageApiKey)
-			data, err := fetchAlphaVantageAPI(apiURL)
+			data, err := fetchDefaultAPI(apiURL)
 			if err != nil {
 				http.Error(w, "Error fetching data", http.StatusInternalServerError)
 				return

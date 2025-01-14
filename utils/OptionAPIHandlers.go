@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"time"
 )
 
@@ -76,6 +78,7 @@ func OptionsHandler(w http.ResponseWriter, r *http.Request) {
 		url.QueryEscape(start),
 		url.QueryEscape(end),
 	)
+	fmt.Println(apiUrl)
 	symbolData := make(map[time.Time]float64)
 	data, err := fetchAlpacaAPIWithHeaders(apiUrl, alpacaKeyID, alpacaSecretKey)
 	if err != nil {
@@ -112,5 +115,143 @@ func OptionsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func OptionVolatilityHandler(w http.ResponseWriter, r *http.Request) {
+	alpacaKeyID := r.Header.Get("APCA-API-Key-ID")
+	alpacaSecretKey := r.Header.Get("APCA-API-SECRET-KEY")
 
+	if alpacaKeyID == "" || alpacaSecretKey == "" {
+		http.Error(w, "Missing Alpaca API keys in headers", http.StatusBadRequest)
+		return
+	}
+
+	optionType := r.URL.Query().Get("type")
+	ticker := r.URL.Query().Get("ticker")
+
+	fileName := fmt.Sprintf("%s.json", ticker)
+	filePath := filepath.Join("StockDataCache", fileName)
+
+	var stockResult StockResponse
+
+	if FileExists(filePath) {
+		// Read the file and decode the data
+		fileData, err := os.ReadFile(filePath)
+		if err != nil {
+			http.Error(w, "Error reading cached data", http.StatusInternalServerError)
+			return
+		}
+
+		if err := json.Unmarshal(fileData, &stockResult); err != nil {
+			http.Error(w, "Error parsing cached data", http.StatusInternalServerError)
+			return
+		}
+	} else {
+		http.Error(w, "Error reading data", http.StatusInternalServerError)
+	}
+
+	mostRecentPrice := stockResult.Results[stockResult.Count-1].C
+	roundedPrice := RoundToNearestFive(stockResult.Results[stockResult.Count-1].C)
+
+	daysUntilFriday := int(time.Friday) - int(time.Now().Weekday())
+	if daysUntilFriday <= 0 {
+		daysUntilFriday += 7
+	}
+
+	fmt.Println(daysUntilFriday)
+
+	yearsTillNextFriday := float64(daysUntilFriday) / 365.0
+
+	today := time.Now()
+	_, month, _ := today.Date()
+	todayMonth := fmt.Sprintf("%02d", month)
+
+	fileName = fmt.Sprintf("%sFEDERAL_FUNDS_RATEDATA.json", todayMonth)
+	filePath = filepath.Join("EconomicData", fileName)
+
+	var economicResult EconomicDataResponse
+
+	if FileExists(filePath) {
+		// Read the file and decode the data
+		fileData, err := os.ReadFile(filePath)
+		if err != nil {
+			http.Error(w, "Error reading cached data", http.StatusInternalServerError)
+			return
+		}
+
+		if err := json.Unmarshal(fileData, &economicResult); err != nil {
+			http.Error(w, "Error parsing cached data", http.StatusInternalServerError)
+			return
+		}
+	} else {
+		http.Error(w, "Error reading data", http.StatusInternalServerError)
+	}
+
+	riskFreeRateString := economicResult.Data[0].Value
+	riskFreeRate, err := strconv.ParseFloat(riskFreeRateString, 64)
+	if err != nil {
+		http.Error(w, "Invalid data for current value", http.StatusInternalServerError)
+		return
+	}
+	yesterday := MostRecentWeekday(time.Now().AddDate(0, 0, -1))
+	year, month, day := yesterday.Date()
+	yesterdayDate := fmt.Sprintf("%d-%02d-%02d", year, month, day)
+
+	apiURL := fmt.Sprintf("http://localhost:8080/options?symbol=%s&start=%s&end=%s&timeframe=10Min&type=%s", ticker, yesterdayDate, yesterdayDate, optionType)
+	fmt.Println(apiURL)
+	data, err := fetchAlpacaAPIWithHeaders(apiURL, alpacaKeyID, alpacaSecretKey)
+	if err != nil {
+		http.Error(w, "Error fetching data", http.StatusInternalServerError)
+		return
+	}
+
+	var result OptionsSymbol
+
+	if err := json.Unmarshal(data, &result); err != nil {
+		http.Error(w, "Error parsing data 1", http.StatusInternalServerError)
+		return
+	}
+
+	symbolData := make(map[time.Time]float64)
+	var timestamps []time.Time
+	for _, value := range result.Symbol {
+		symbolData[value.Timestamp] = value.Price
+		timestamps = append(timestamps, value.Timestamp)
+	}
+
+	sort.Slice(timestamps, func(i, j int) bool {
+		return timestamps[i].After(timestamps[j])
+	})
+
+	mostRecentOptionPrice := symbolData[timestamps[0]]
+
+	if optionType == "Call" {
+		optionType = "C"
+	} else if optionType == "Put" {
+		optionType = "P"
+	}
+
+	option := Option{S: mostRecentPrice, K: float64(roundedPrice), T: yearsTillNextFriday, R: riskFreeRate / 100.0, P: mostRecentOptionPrice, CP: optionType}
+	fmt.Println(option)
+
+	apiURL = fmt.Sprintf("http://localhost:8080/stock?symbol=%s&apikey=X8531ZcJaqW6j7l9tG1PVFBZnwMNRs72", ticker)
+	statisticsData, err := fetchDefaultAPI(apiURL)
+	if err != nil {
+		http.Error(w, "Error fetching data", http.StatusInternalServerError)
+		return
+	}
+
+	var statisticsResult StockStatistics
+
+	if err := json.Unmarshal(statisticsData, &statisticsResult); err != nil {
+		http.Error(w, "Error parsing data 2", http.StatusInternalServerError)
+		return
+	}
+
+	fmt.Println(statisticsResult.Volatility)
+
+	impliedVolatility, err := impliedVolatility(option, statisticsResult.Volatility/100.0)
+
+	volatility := ImpliedVolatility{Volatility: impliedVolatility * 100}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(volatility)
 }

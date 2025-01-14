@@ -114,3 +114,7 @@ type EconomicDataResult struct {
 	FFR       string  `json:"ffr"`
 	Inflation float64 `json:"inflation"`
 }
+
+type ImpliedVolatility struct {
+	Volatility float64 `json:"volatility"`
+}

@@ -56,7 +56,7 @@ func StockHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// Fetch data from API
 		apiURL := fmt.Sprintf("https://api.polygon.io/v2/aggs/ticker/%s/range/1/day/%s/%s?adjusted=true&sort=asc&apiKey=%s", ticker, twoYearsAgoDate, yesterdayDate, polygonApiKey)
-		data, err := fetchPolygonAPI(apiURL)
+		data, err := fetchDefaultAPI(apiURL)
 		if err != nil {
 			http.Error(w, "Error fetching data", http.StatusInternalServerError)
 			return

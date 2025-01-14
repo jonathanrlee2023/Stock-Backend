@@ -14,8 +14,6 @@ func main() {
 		err := utils.DeleteContents(value)
 		if err != nil {
 			fmt.Println("Error:", err)
-		} else {
-			fmt.Println("Folder contents deleted successfully!")
 		}
 	}
 	// start api
@@ -26,6 +24,7 @@ func main() {
 	mux.HandleFunc("/earningsVolatility", utils.EarningsVolatilityHandler)
 	mux.HandleFunc("/todayStock", utils.TodayStockHandler)
 	mux.HandleFunc("/economicData", utils.EconomicDataHandler)
+	mux.HandleFunc("/impliedVolatility", utils.OptionVolatilityHandler)
 
 	handler := CorsMiddleware(mux)
 
