@@ -9,6 +9,7 @@ import (
 	"gonum.org/v1/gonum/stat"
 )
 
+// Calculates prices in 5 minute increments of options using intervals and slopes
 func SlopeFunctions(result AlpacaResponse, fullKey string) map[time.Time]float64 {
 	symbolData := result.Bars[fullKey]
 	points := make(map[time.Time]float64)
@@ -63,6 +64,7 @@ func SlopeFunctions(result AlpacaResponse, fullKey string) map[time.Time]float64
 	return points
 }
 
+// Calculates the standard deviation of a stock over the past year
 func StandardDev(result StockResponse) float64 {
 	var data []float64
 	for _, price := range result.Results {
@@ -74,6 +76,7 @@ func StandardDev(result StockResponse) float64 {
 	return stdDev
 }
 
+// Calculates the annual volatility of a given stock
 func CalculateHistoricalVolatility(prices StockResponse, tradingDaysPerYear float64) (float64, float64) {
 	if prices.ResultsCount < 2 {
 		return 0, 0

@@ -9,6 +9,7 @@ import (
 	"time"
 )
 
+// Returns the day-to-day price jump after earnings call
 func EarningsVolatilityHandler(w http.ResponseWriter, r *http.Request) {
 	ticker := r.URL.Query().Get("ticker")
 	earningsFileName := fmt.Sprintf("%searnings.json", ticker)
@@ -53,6 +54,7 @@ func EarningsVolatilityHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(returnedEarningsVolatility)
 }
 
+// Calls the AlphaVantage API and retrieves the previous earnings dates and EPS results for a given company
 func EarningsCalenderHandler(w http.ResponseWriter, r *http.Request) {
 	ticker := r.URL.Query().Get("symbol")
 	alphaVantageApiKey := r.URL.Query().Get("apikey")

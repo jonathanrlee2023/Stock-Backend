@@ -90,6 +90,7 @@ func StockHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(returnedStatistics)
 }
 
+// Retrieves today's prices for a given stock
 func TodayStockHandler(w http.ResponseWriter, r *http.Request) {
 	alpacaKeyID := r.Header.Get("APCA-API-Key-ID")
 	alpacaSecretKey := r.Header.Get("APCA-API-SECRET-KEY")

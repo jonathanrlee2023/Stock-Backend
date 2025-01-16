@@ -10,6 +10,7 @@ import (
 	"time"
 )
 
+// Fetches and calculates the interest and inflation rates
 func EconomicDataHandler(w http.ResponseWriter, r *http.Request) {
 	economicCategories := []string{"FEDERAL_FUNDS_RATE", "CPI"}
 	alphaVantageApiKey := r.URL.Query().Get("apikey")

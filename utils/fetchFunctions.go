@@ -5,6 +5,7 @@ import (
 	"net/http"
 )
 
+// Makes an API call to the Alpaca Api with the api key and secret key
 func fetchAlpacaAPIWithHeaders(url, keyID, secretKey string) ([]byte, error) {
 	req, _ := http.NewRequest("GET", url, nil)
 
@@ -20,6 +21,7 @@ func fetchAlpacaAPIWithHeaders(url, keyID, secretKey string) ([]byte, error) {
 	return body, nil
 }
 
+// default api calls with no special headers
 func fetchDefaultAPI(url string) ([]byte, error) {
 	req, _ := http.NewRequest("GET", url, nil)
 

@@ -12,6 +12,7 @@ import (
 	"time"
 )
 
+// Fetches the options prices for a close to at-the-money option and calculates the prices every 5 min if any gaps
 func OptionsHandler(w http.ResponseWriter, r *http.Request) {
 	alpacaKeyID := r.Header.Get("APCA-API-Key-ID")
 	alpacaSecretKey := r.Header.Get("APCA-API-SECRET-KEY")
@@ -113,6 +114,7 @@ func OptionsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(responseData)
 }
 
+// Uses the Black scholes formula to calculate implied volatility
 func OptionVolatilityHandler(w http.ResponseWriter, r *http.Request) {
 	alpacaKeyID := r.Header.Get("APCA-API-Key-ID")
 	alpacaSecretKey := r.Header.Get("APCA-API-SECRET-KEY")
@@ -249,6 +251,7 @@ func OptionVolatilityHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(volatility)
 }
 
+// Combines the call and put options into one option to visualize price changes
 func CombinedOptionsHandler(w http.ResponseWriter, r *http.Request) {
 	alpacaKeyID := r.Header.Get("APCA-API-Key-ID")
 	alpacaSecretKey := r.Header.Get("APCA-API-SECRET-KEY")

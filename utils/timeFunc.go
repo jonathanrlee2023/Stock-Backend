@@ -5,6 +5,7 @@ import (
 	"time"
 )
 
+// Calculates and formats the date for next friday
 func NextWeekFriday() (int, string, string) {
 	// Get the current time
 	now := time.Now()
@@ -29,6 +30,7 @@ func NextWeekFriday() (int, string, string) {
 	return year, month, day
 }
 
+// Returns a time.Time for the most recent weekday
 func MostRecentWeekday(t time.Time) time.Time {
 	if t.Weekday() >= time.Monday && t.Weekday() <= time.Friday {
 		return t
@@ -45,6 +47,7 @@ func MostRecentWeekday(t time.Time) time.Time {
 	return t.AddDate(0, 0, -daysToSubtract)
 }
 
+// Takes two slices of time.Time and finds the earliest and latest common times
 func FindCommonTimes(slice1, slice2 []time.Time) (earliest, latest *time.Time) {
 	i, j := 0, 0
 
