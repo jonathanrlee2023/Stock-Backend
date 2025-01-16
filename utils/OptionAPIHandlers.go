@@ -191,7 +191,7 @@ func OptionVolatilityHandler(w http.ResponseWriter, r *http.Request) {
 	year, month, day := yesterday.Date()
 	yesterdayDate := fmt.Sprintf("%d-%02d-%02d", year, month, day)
 
-	apiURL := fmt.Sprintf("http://localhost:8080/options?symbol=%s&start=%s&end=%s&timeframe=10Min&type=%s", ticker, yesterdayDate, yesterdayDate, optionType)
+	apiURL := fmt.Sprintf("http://localhost:8080/options?symbol=%s&start=%s&end=%s&timeframe=5Min&type=%s", ticker, yesterdayDate, yesterdayDate, optionType)
 	data, err := fetchAlpacaAPIWithHeaders(apiURL, alpacaKeyID, alpacaSecretKey)
 	if err != nil {
 		http.Error(w, "Error fetching data", http.StatusInternalServerError)
@@ -272,7 +272,7 @@ func CombinedOptionsHandler(w http.ResponseWriter, r *http.Request) {
 	yesterdayDate := fmt.Sprintf("%d-%02d-%02d", year, month, day)
 
 	apiUrl = fmt.Sprintf(
-		"http://localhost:8080/options?symbol=%s&start=%s&end=%s&timeframe=10Min&type=Call",
+		"http://localhost:8080/options?symbol=%s&start=%s&end=%s&timeframe=5Min&type=Call",
 		symbol,
 		yesterdayDate,
 		yesterdayDate,
@@ -302,7 +302,7 @@ func CombinedOptionsHandler(w http.ResponseWriter, r *http.Request) {
 	})
 
 	apiUrl = fmt.Sprintf(
-		"http://localhost:8080/options?symbol=%s&start=%s&end=%s&timeframe=10Min&type=Put",
+		"http://localhost:8080/options?symbol=%s&start=%s&end=%s&timeframe=5Min&type=Put",
 		symbol,
 		yesterdayDate,
 		yesterdayDate,
@@ -332,16 +332,18 @@ func CombinedOptionsHandler(w http.ResponseWriter, r *http.Request) {
 	})
 
 	earliestCommon, latestCommon := FindCommonTimes(callTimestamps, putTimestamps)
+	if earliestCommon == nil || latestCommon == nil {
+		http.Error(w, "No common timestamps found", http.StatusBadRequest)
+		return
+	}
+
 	combinedOptions := make(map[time.Time]float64)
 
-	x := true
-	optionTime := earliestCommon
-	for x {
-		combinedOptions[*optionTime] = putData[*optionTime] + callData[*optionTime]
-		optionTime.Add(5 * time.Minute)
-		if optionTime.After(*latestCommon) {
-			x = false
-		}
+	optionTime := *earliestCommon // Dereference the pointer to get the time.Time value
+
+	for !optionTime.After(*latestCommon) {
+		combinedOptions[optionTime] = putData[optionTime] + callData[optionTime]
+		optionTime = optionTime.Add(5 * time.Minute)
 	}
 
 	var pricesJson []CombinedOptions
