@@ -54,11 +54,11 @@ func FindCommonTimes(slice1, slice2 []time.Time) (earliest, latest *time.Time) {
 	for i < len(slice1) && j < len(slice2) {
 		if slice1[i].Equal(slice2[j]) {
 			// Record the earliest common time if not already set
-			if latest == nil {
-				latest = &slice1[i]
+			if earliest == nil {
+				earliest = &slice1[i]
 			}
 			// Update the latest common time
-			earliest = &slice1[i]
+			latest = &slice1[i]
 			i++
 			j++
 		} else if slice1[i].Before(slice2[j]) {

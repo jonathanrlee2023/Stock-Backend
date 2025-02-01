@@ -301,7 +301,7 @@ func CombinedOptionsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sort.Slice(callTimestamps, func(i, j int) bool {
-		return callTimestamps[i].After(callTimestamps[j])
+		return callTimestamps[i].Before(callTimestamps[j])
 	})
 
 	apiUrl = fmt.Sprintf(
@@ -331,9 +331,8 @@ func CombinedOptionsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sort.Slice(putTimestamps, func(i, j int) bool {
-		return putTimestamps[i].After(putTimestamps[j])
+		return putTimestamps[i].Before(putTimestamps[j])
 	})
-
 	earliestCommon, latestCommon := FindCommonTimes(callTimestamps, putTimestamps)
 	if earliestCommon == nil || latestCommon == nil {
 		http.Error(w, "No common timestamps found", http.StatusBadRequest)
