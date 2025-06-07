@@ -5,6 +5,7 @@ import os
 import time
 import stream_func
 from datetime import datetime, timedelta
+from filelock import FileLock
 
 
 load_dotenv()  # loads variables from .env into environment
@@ -16,6 +17,7 @@ appSecret = os.getenv("appSecret")
 client = schwabdev.Client(app_key=appKey, app_secret=appSecret)
 
 streamer = client.stream 
+
 
 try:
     print("Starting stream...")
@@ -33,11 +35,13 @@ try:
         for names in stream_func.file_names:
             existing_data = None
             timestamp = int(time.time())
-            with open(f"{names}.json", "r") as f:
+            with open(names, "r") as f:
                 existing_data = json.load(f)
             existing_data[timestamp] = stream_func.new_data[names]
-            with open(f'{names}.json', "w") as f:
-                json.dump(existing_data, f)
+            lock = FileLock(f'{names}.lock')
+            with lock:
+                with open(names, "w") as f:
+                    json.dump(existing_data, f)
 except Exception as e:
     print("Stream error:", e)
 finally:

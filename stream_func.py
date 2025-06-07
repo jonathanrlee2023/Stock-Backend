@@ -1,5 +1,6 @@
 import json
 import os
+from filelock import FileLock
 
 option_labels = {
     '0': 'Symbol',
@@ -49,12 +50,13 @@ def start_options_stream(streamer):
             month_filled = month.zfill(2)
             option_id = f'{year}{month_filled}{day}{c_or_p.upper()}{strike_str}'
             streamer.send(streamer.level_one_options(f"{ticker}  {option_id}", "1,2,3,4,5,28,29,30,31", command='ADD'))
-            full_option_id = f"{ticker}_{option_id}"
-            file_names.append(full_option_id)
             file_path = f"{ticker}_{option_id}.json"
-            if not os.path.exists(file_path):
-                with open(file_path, "w") as f:
-                    json.dump({}, f)
+            file_names.append(file_path)
+            lock = FileLock(f'{file_path}.lock')
+            with lock:
+                if not os.path.exists(file_path):
+                    with open(file_path, "w") as f:
+                        json.dump({}, f)
 
 def start_stock_stream(streamer):
     global ticker
@@ -64,11 +66,13 @@ def start_stock_stream(streamer):
             break
         caps_ticker = ticker.upper()
         streamer.send(streamer.level_one_equities(f"{caps_ticker}", "1,2,3,4,5", command='ADD'))
-        file_names.append(caps_ticker)
         file_path = f"{caps_ticker}.json"
-        if not os.path.exists(file_path):
-            with open(file_path, "w") as f:
-                json.dump({}, f)
+        file_names.append(file_path)
+        lock = FileLock(f'{file_path}.lock')
+        with lock:
+            if not os.path.exists(file_path):
+                with open(file_path, "w") as f:
+                    json.dump({}, f)
 
 def receive_data(response):
     parsed = json.loads(response)
