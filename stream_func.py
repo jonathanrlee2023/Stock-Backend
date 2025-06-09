@@ -31,35 +31,33 @@ file_names = []
 new_data = {}
 labeled_data = {}
 
-def start_options_stream(streamer):
-    global ticker
-    while True:
-        ticker = input("Enter ticker you want to see options for or 'Done' if you are done: ")
-        if ticker == 'Done':
-            break
-        while True:
-            c_or_p = input("Enter 'C' for call and 'P' for put or 'Done' if you are done: ")
-            if c_or_p == 'Done':
-                break
-            option_price = input('Enter option price: ')
-            strike_int = int(float(option_price) * 1000)
-            strike_str = str(strike_int).zfill(8)
-            day = input('Enter day of expiration: ')
-            month = input('Enter month of expiration: ')
-            year = input('Enter last two digits of year of expiration: ')
-            month_filled = month.zfill(2)
-            option_id = f'{year}{month_filled}{day}{c_or_p.upper()}{strike_str}'
-            streamer.send(streamer.level_one_options(f"{ticker}  {option_id}", "1,2,3,4,5,28,29,30,31", command='ADD'))
-            file_path = f"{ticker}_{option_id}.json"
-            file_names.append(file_path)
-            lock = FileLock(f'{file_path}.lock')
-            with lock:
-                if not os.path.exists(file_path):
-                    with open(file_path, "w") as f:
-                        json.dump({}, f)
+async def start_options_stream(streamer, ticker, price, day, month, year, type):
+    strike_int = int(float(price) * 1000)
+    strike_str = str(strike_int).zfill(8)
+    month_filled = month.zfill(2)
+    option_id = f'{year}{month_filled}{day}{type.upper()}{strike_str}'
+    request = streamer.level_one_options(
+        f"{ticker}  {option_id}",
+        "1,2,3,4,5,28,29,30,31",
+        command='ADD'
+    )
 
-def start_stock_stream(streamer):
-    global ticker
+    await streamer.send_async(request)    
+    file_path = f"{ticker}_{option_id}.json"
+    # if not os.path.exists('options_list.txt'):
+    #     with open('options_list.txt', "w") as f:
+    #         f.write(f'{ticker}_{option_id}\n')
+    # else:
+    #     with open('options_list.txt', "a") as f:
+    #         f.write(f'{ticker}_{option_id}\n')
+    file_names.append(file_path)
+    lock = FileLock(f'{file_path}.lock')
+    with lock:
+        if not os.path.exists(file_path):
+            with open(file_path, "w") as f:
+                json.dump({}, f)
+
+def start_stock_stream(streamer, ticker):
     while True:
         ticker = input("Enter ticker or 'Done' if you are done: ")
         if ticker == 'Done':
@@ -67,7 +65,12 @@ def start_stock_stream(streamer):
         caps_ticker = ticker.upper()
         streamer.send(streamer.level_one_equities(f"{caps_ticker}", "1,2,3,4,5", command='ADD'))
         file_path = f"{caps_ticker}.json"
-        file_names.append(file_path)
+        # if not os.path.exists('stock_list.txt'):
+        #     with open('stock_list.txt', "w") as f:
+        #         f.write(f'{ticker}_{option_id}\n')
+        # else:
+        #     with open('stock_list.txt', "a") as f:
+        #         f.write(f'{ticker}_{option_id}\n')
         lock = FileLock(f'{file_path}.lock')
         with lock:
             if not os.path.exists(file_path):
@@ -99,4 +102,8 @@ def receive_data(response):
                         if key in stock_labels:
                             labeled_data[symbol][stock_labels[key]] = value
                 # Merge new data into stored state
+                file_path = f'{symbol}.json'
+                if file_path not in file_names:
+                    file_names.append(file_path)
+                    print(f'{symbol}.json')
                 new_data[symbol].update(labeled_data[symbol]) 
