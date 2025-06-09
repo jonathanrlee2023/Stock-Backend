@@ -12,7 +12,7 @@ import asyncio
 import websockets
 import traceback
 
-
+url = 'http://localhost:8080/dataReady'
 stream_started = False
 stream_lock = asyncio.Lock()
 
@@ -91,6 +91,11 @@ async def main():
                             existing_data[timestamp] = stream_func.new_data[names.replace('.json','')]
                             with open(names, "w") as f:
                                 json.dump(existing_data, f)
+                    data = {
+                        "filenames": stream_func.file_names
+                    }
+                    response = requests.post(url=url, json=data)
+                    print(response)
                 else:
                     continue
         except Exception as e:

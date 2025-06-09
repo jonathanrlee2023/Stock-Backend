@@ -13,6 +13,7 @@ import (
 
 type StreamRequest struct {
 	Symbol string `json:"symbol"`
+	Price  string `json:"price"`
 	Day    string `json:"day"`
 	Month  string `json:"month"`
 	Year   string `json:"year"`
@@ -63,6 +64,7 @@ func startApiServer() {
 	mux.HandleFunc("/impliedVolatility", utils.OptionVolatilityHandler)
 	mux.HandleFunc("/combinedOptions", utils.CombinedOptionsHandler)
 	mux.HandleFunc("/startOptionStream", StartOptionStream)
+	mux.HandleFunc("/dataReady", utils.PostHandler)
 
 	handler := CorsMiddleware(mux)
 
@@ -93,13 +95,14 @@ func startWebsocketConnection() {
 	}
 }
 
-func SendToWebSocket(symbol, day, month, year, optionType string) error {
+func SendToWebSocket(symbol, price, day, month, year, optionType string) error {
 	if wsConn == nil {
 		return fmt.Errorf("WebSocket connection not established")
 	}
 
 	request := StreamRequest{
 		Symbol: symbol,
+		Price:  price,
 		Day:    day,
 		Month:  month,
 		Year:   year,
@@ -121,12 +124,13 @@ func SendToWebSocket(symbol, day, month, year, optionType string) error {
 
 func StartOptionStream(w http.ResponseWriter, r *http.Request) {
 	symbol := r.URL.Query().Get("symbol")
+	price := r.URL.Query().Get("price")
 	day := r.URL.Query().Get("day")
 	month := r.URL.Query().Get("month")
 	year := r.URL.Query().Get("year")
 	optionType := r.URL.Query().Get("type")
 
-	err := SendToWebSocket(symbol, day, month, year, optionType)
+	err := SendToWebSocket(symbol, price, day, month, year, optionType)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
