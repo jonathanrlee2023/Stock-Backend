@@ -53,36 +53,35 @@ async def start_options_stream(streamer, ticker, price, day, month, year, type):
                     'Latest': ''
                 }, f)
 
-def start_stock_stream(streamer, ticker):
-    while True:
-        ticker = input("Enter ticker or 'Done' if you are done: ")
-        if ticker == 'Done':
-            break
-        caps_ticker = ticker.upper()
-        streamer.send(streamer.level_one_equities(f"{caps_ticker}", "1,2,3,4,5", command='ADD'))
-        file_path = f"{caps_ticker}.json"
-        # if not os.path.exists('stock_list.txt'):
-        #     with open('stock_list.txt', "w") as f:
-        #         f.write(f'{ticker}_{option_id}\n')
-        # else:
-        #     with open('stock_list.txt', "a") as f:
-        #         f.write(f'{ticker}_{option_id}\n')
-        lock = FileLock(f'{file_path}.lock')
-        with lock:
-            if not os.path.exists(file_path):
-                with open(file_path, "w") as f:
-                    json.dump({
-                        'Data': {},
-                        'Latest': ''
-                    }, f)
+async def start_stock_stream(streamer, ticker):
+    caps_ticker = ticker.upper()
+    print(caps_ticker)
+    request = streamer.level_one_equities(
+        caps_ticker,
+        "0,1,2,3,4,5",
+        command="ADD"
+    )
+    print(request)
+
+    await streamer.send_async(
+        request
+    )  
+    file_path = f"{caps_ticker}.json"
+    lock = FileLock(f'{file_path}.lock')
+    with lock:
+        if not os.path.exists(file_path):
+            with open(file_path, "w") as f:
+                json.dump({
+                    'Data': {},
+                    'Latest': ''
+                }, f)
 
 def receive_data(response):
     parsed = json.loads(response)
-    
+    print(parsed)
     if 'data' in parsed:
         for item in parsed['data']:
             content = item.get("content", [])
-            
 
             for quote in content:
                 symbol = quote.get("key")

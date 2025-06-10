@@ -11,13 +11,17 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-type StreamRequest struct {
+type OptionStreamRequest struct {
 	Symbol string `json:"symbol"`
 	Price  string `json:"price"`
 	Day    string `json:"day"`
 	Month  string `json:"month"`
 	Year   string `json:"year"`
 	Type   string `json:"type"`
+}
+
+type StockStreamRequest struct {
+	Symbol string `json:"symbol"`
 }
 
 var wsConn *websocket.Conn
@@ -64,6 +68,7 @@ func startApiServer() {
 	mux.HandleFunc("/impliedVolatility", utils.OptionVolatilityHandler)
 	mux.HandleFunc("/combinedOptions", utils.CombinedOptionsHandler)
 	mux.HandleFunc("/startOptionStream", StartOptionStream)
+	mux.HandleFunc("/startStockStream", StartStockStream)
 	mux.HandleFunc("/dataReady", utils.PostHandler)
 
 	handler := CorsMiddleware(mux)
@@ -95,18 +100,40 @@ func startWebsocketConnection() {
 	}
 }
 
-func SendToWebSocket(symbol, price, day, month, year, optionType string) error {
+func SendToWebSocketOption(symbol, price, day, month, year, optionType string) error {
 	if wsConn == nil {
 		return fmt.Errorf("WebSocket connection not established")
 	}
 
-	request := StreamRequest{
+	request := OptionStreamRequest{
 		Symbol: symbol,
 		Price:  price,
 		Day:    day,
 		Month:  month,
 		Year:   year,
 		Type:   optionType,
+	}
+
+	msg, err := json.Marshal(request)
+	if err != nil {
+		return err
+	}
+
+	err = wsConn.WriteMessage(websocket.TextMessage, msg)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func SendToWebSocketStock(symbol string) error {
+	if wsConn == nil {
+		return fmt.Errorf("WebSocket connection not established")
+	}
+
+	request := StockStreamRequest{
+		Symbol: symbol,
 	}
 
 	msg, err := json.Marshal(request)
@@ -130,7 +157,19 @@ func StartOptionStream(w http.ResponseWriter, r *http.Request) {
 	year := r.URL.Query().Get("year")
 	optionType := r.URL.Query().Get("type")
 
-	err := SendToWebSocket(symbol, price, day, month, year, optionType)
+	err := SendToWebSocketOption(symbol, price, day, month, year, optionType)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	fmt.Fprintf(w, "Sent to WebSocket!")
+}
+
+func StartStockStream(w http.ResponseWriter, r *http.Request) {
+	symbol := r.URL.Query().Get("symbol")
+
+	err := SendToWebSocketStock(symbol)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

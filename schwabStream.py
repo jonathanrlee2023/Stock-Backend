@@ -22,13 +22,14 @@ def make_handler(streamer):
 
         async for message in websocket:
             data = json.loads(message)
+            print(message)
             symbol = data["symbol"]
-            price = data["price"]
-            day = data["day"]
-            month = data["month"]
-            year = data["year"]
-            option_type = data["type"]
-
+            if len(data) > 1:
+                price = data["price"]
+                day = data["day"]
+                month = data["month"]
+                year = data["year"]
+                option_type = data["type"]
             print(f"Received: {data}")
             async with stream_lock:
                 if not stream_started:
@@ -38,18 +39,26 @@ def make_handler(streamer):
 
             await websocket.send(f"Streaming started for {symbol}")
             try:
-                # Inside the handler
-                asyncio.create_task(
-                    stream_func.start_options_stream(
-                        streamer=streamer,
-                        ticker=symbol,
-                        price=price,
-                        day=day,
-                        month=month,
-                        year=year,
-                        type=option_type
+                if len(data) > 1:
+                    asyncio.create_task(
+                        stream_func.start_options_stream(
+                            streamer=streamer,
+                            ticker=symbol,
+                            price=price,
+                            day=day,
+                            month=month,
+                            year=year,
+                            type=option_type
+                        )
                     )
-                )
+                if len(data) == 1:
+                    print('called')
+                    asyncio.create_task(
+                        stream_func.start_stock_stream(
+                            streamer=streamer,
+                            ticker=symbol,
+                        )
+                    )
             except requests.exceptions.ReadTimeout:
                 print("Timeout while connecting to Schwab API. Retrying...")
                 # Optionally: retry here
