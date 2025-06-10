@@ -74,7 +74,7 @@ async def main():
         print("WebSocket server running...")
         try:
             while True:
-                await asyncio.sleep(60 - time.time() % 60)
+                await asyncio.sleep(30 - time.time() % 30)
                 timestamp = int(time.time())        
                 
                 if len(stream_func.file_names) != 0:

@@ -13,17 +13,17 @@ type PostData struct {
 }
 
 type OptionData struct {
-	Symbol      string  `json:"Symbol"`
-	Description string  `json:"Description"`
-	BidPrice    float64 `json:"Bid Price"`
-	AskPrice    float64 `json:"Ask Price"`
-	LastPrice   float64 `json:"Last Price"`
-	HighPrice   float64 `json:"High Price"`
-	Delta       float64 `json:"Delta"`
-	Gamma       float64 `json:"Gamma"`
-	Theta       float64 `json:"Theta"`
-	Vega        float64 `json:"Vega"`
+	BidPrice  float64 `json:"Bid Price"`
+	AskPrice  float64 `json:"Ask Price"`
+	LastPrice float64 `json:"Last Price"`
+	HighPrice float64 `json:"High Price"`
+	Delta     float64 `json:"Delta"`
+	Gamma     float64 `json:"Gamma"`
+	Theta     float64 `json:"Theta"`
+	Vega      float64 `json:"Vega"`
 }
+
+type OptionsMap map[string]OptionData
 
 func PostHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -49,13 +49,14 @@ func PostHandler(w http.ResponseWriter, r *http.Request) {
 	for _, fileName := range fileNameData.FileNames {
 		file, _ := os.ReadFile(fileName)
 
-		var optionData OptionData
-		if err := json.Unmarshal(file, &optionData); err != nil {
+		var options OptionsMap
+		if err := json.Unmarshal(file, &options); err != nil {
 			fmt.Println("Error:", err)
 			return
 		}
-
-		fmt.Print(optionData)
+		for _, values := range options {
+			fmt.Println(values.LastPrice)
+		}
 	}
 
 	fmt.Fprintf(w, "Data has been read")

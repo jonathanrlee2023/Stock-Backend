@@ -50,7 +50,6 @@ async def start_options_stream(streamer, ticker, price, day, month, year, type):
     # else:
     #     with open('options_list.txt', "a") as f:
     #         f.write(f'{ticker}_{option_id}\n')
-    file_names.append(file_path)
     lock = FileLock(f'{file_path}.lock')
     with lock:
         if not os.path.exists(file_path):
