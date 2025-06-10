@@ -23,7 +23,10 @@ type OptionData struct {
 	Vega      float64 `json:"Vega"`
 }
 
-type OptionsMap map[string]OptionData
+type OptionsMap struct {
+	Data   map[string]OptionData `json:"Data"`
+	Latest string                `json:"Latest"`
+}
 
 func PostHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -54,9 +57,7 @@ func PostHandler(w http.ResponseWriter, r *http.Request) {
 			fmt.Println("Error:", err)
 			return
 		}
-		for _, values := range options {
-			fmt.Println(values.LastPrice)
-		}
+		fmt.Println(options.Data[options.Latest].LastPrice)
 	}
 
 	fmt.Fprintf(w, "Data has been read")

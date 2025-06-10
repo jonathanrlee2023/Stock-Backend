@@ -37,24 +37,21 @@ async def start_options_stream(streamer, ticker, price, day, month, year, type):
     month_filled = month.zfill(2)
     option_id = f'{year}{month_filled}{day}{type.upper()}{strike_str}'
     request = streamer.level_one_options(
-        f"{ticker}  {option_id}",
+        f"{ticker.ljust(6)}{option_id}",
         "1,2,3,4,5,28,29,30,31",
         command='ADD'
     )
 
     await streamer.send_async(request)    
     file_path = f"{ticker}_{option_id}.json"
-    # if not os.path.exists('options_list.txt'):
-    #     with open('options_list.txt', "w") as f:
-    #         f.write(f'{ticker}_{option_id}\n')
-    # else:
-    #     with open('options_list.txt', "a") as f:
-    #         f.write(f'{ticker}_{option_id}\n')
     lock = FileLock(f'{file_path}.lock')
     with lock:
         if not os.path.exists(file_path):
             with open(file_path, "w") as f:
-                json.dump({}, f)
+                json.dump({
+                    'Data': {},
+                    'Latest': ''
+                }, f)
 
 def start_stock_stream(streamer, ticker):
     while True:
@@ -74,7 +71,10 @@ def start_stock_stream(streamer, ticker):
         with lock:
             if not os.path.exists(file_path):
                 with open(file_path, "w") as f:
-                    json.dump({}, f)
+                    json.dump({
+                        'Data': {},
+                        'Latest': ''
+                    }, f)
 
 def receive_data(response):
     parsed = json.loads(response)

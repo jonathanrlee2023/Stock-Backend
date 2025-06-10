@@ -85,10 +85,14 @@ async def main():
                         with lock:
                             if not os.path.exists(names):
                                 with open(names, "w") as f:
-                                    json.dump({}, f)
+                                    json.dump({
+                                        'Data': {},
+                                        'Latest': ''
+                                    }, f)
                             with open(names, "r") as f:
                                 existing_data = json.load(f)
-                            existing_data[timestamp] = stream_func.new_data[names.replace('.json','')]
+                            existing_data['Data'][timestamp] = stream_func.new_data[names.replace('.json','')]
+                            existing_data['Latest'] = str(timestamp)
                             with open(names, "w") as f:
                                 json.dump(existing_data, f)
                     data = {
