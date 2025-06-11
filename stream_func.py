@@ -3,7 +3,6 @@ import os
 from filelock import FileLock
 
 option_labels = {
-    '0': 'Symbol',
     '1': 'Description',
     '2': 'Bid Price',
     '3': 'Ask Price',
@@ -16,7 +15,6 @@ option_labels = {
 }
 
 stock_labels = {
-    '0': 'Symbol',
     '1': 'Bid Price',
     '2': 'Ask Price',
     '3': 'Last Price',
@@ -43,19 +41,9 @@ async def start_options_stream(streamer, ticker, price, day, month, year, type):
     )
 
     await streamer.send_async(request)    
-    file_path = f"{ticker}_{option_id}.json"
-    lock = FileLock(f'{file_path}.lock')
-    with lock:
-        if not os.path.exists(file_path):
-            with open(file_path, "w") as f:
-                json.dump({
-                    'Data': {},
-                    'Latest': ''
-                }, f)
 
 async def start_stock_stream(streamer, ticker):
     caps_ticker = ticker.upper()
-    print(caps_ticker)
     request = streamer.level_one_equities(
         caps_ticker,
         "0,1,2,3,4,5",
@@ -66,15 +54,6 @@ async def start_stock_stream(streamer, ticker):
     await streamer.send_async(
         request
     )  
-    file_path = f"{caps_ticker}.json"
-    lock = FileLock(f'{file_path}.lock')
-    with lock:
-        if not os.path.exists(file_path):
-            with open(file_path, "w") as f:
-                json.dump({
-                    'Data': {},
-                    'Latest': ''
-                }, f)
 
 def receive_data(response):
     parsed = json.loads(response)
@@ -100,8 +79,7 @@ def receive_data(response):
                         if key in stock_labels:
                             labeled_data[symbol][stock_labels[key]] = value
                 # Merge new data into stored state
-                file_path = f'{symbol}.json'
-                if file_path not in file_names:
-                    file_names.append(file_path)
-                    print(f'{symbol}.json')
+                if symbol not in file_names:
+                    file_names.append(symbol)
+                    print(f'{symbol}.db')
                 new_data[symbol].update(labeled_data[symbol]) 

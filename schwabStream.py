@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import requests
 import schwabdev
 from dotenv import load_dotenv
@@ -52,7 +53,6 @@ def make_handler(streamer):
                         )
                     )
                 if len(data) == 1:
-                    print('called')
                     asyncio.create_task(
                         stream_func.start_stock_stream(
                             streamer=streamer,
@@ -87,23 +87,66 @@ async def main():
                 timestamp = int(time.time())        
                 
                 if len(stream_func.file_names) != 0:
-                    for names in stream_func.file_names:
-                        existing_data = None
+                    for name in stream_func.file_names:
+                        conn = sqlite3.connect(f'{name}.db')
+                        cursor = conn.cursor()
                         timestamp = int(time.time())
-                        lock = FileLock(f'{names}.lock')
-                        with lock:
-                            if not os.path.exists(names):
-                                with open(names, "w") as f:
-                                    json.dump({
-                                        'Data': {},
-                                        'Latest': ''
-                                    }, f)
-                            with open(names, "r") as f:
-                                existing_data = json.load(f)
-                            existing_data['Data'][timestamp] = stream_func.new_data[names.replace('.json','')]
-                            existing_data['Latest'] = str(timestamp)
-                            with open(names, "w") as f:
-                                json.dump(existing_data, f)
+                        data = stream_func.new_data[name]
+                        print(name)
+                        if len(name) > 8:
+                            cursor.execute("""
+                                CREATE TABLE IF NOT EXISTS prices (
+                                    timestamp INTEGER PRIMARY KEY,
+                                    bid_price FLOAT NOT NULL,
+                                    ask_price FLOAT NOT NULL,
+                                    last_price FLOAT NOT NULL,
+                                    high_price FLOAT NOT NULL,
+                                    delta FLOAT NOT NULL,
+                                    gamma FLOAT NOT NULL,
+                                    theta FLOAT NOT NULL,
+                                    vega FLOAT NOT NULL
+                            )
+                            """)
+                            cursor.execute("""
+                                INSERT INTO prices (
+                                    timestamp, bid_price, ask_price, last_price, high_price, delta, gamma, theta, vega
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (
+                                timestamp,
+                                data["Bid Price"],
+                                data["Ask Price"],
+                                data["Last Price"],
+                                data["High Price"],
+                                data["Delta"],
+                                data["Gamma"],
+                                data["Theta"],
+                                data["Vega"]
+                            ))
+                        else:
+                            cursor.execute("""
+                                CREATE TABLE IF NOT EXISTS prices (
+                                    timestamp INTEGER PRIMARY KEY AUTOINCREMENT,
+                                    bid_price FLOAT NOT NULL,
+                                    ask_price FLOAT NOT NULL,
+                                    last_price FLOAT NOT NULL,
+                                    bid_size INTEGER NOT NULL,
+                                    ask_size INTEGER NOT NULL
+                            )
+                            """)
+                            cursor.execute("""
+                                INSERT INTO prices (
+                                    timestamp, bid_price, ask_price, last_price, bid_size, ask_size
+                                ) VALUES (?, ?, ?, ?, ?, ?)
+                            """, (
+                                timestamp,
+                                data["Bid Price"],
+                                data["Ask Price"],
+                                data["Last Price"],
+                                data["Bid Size"],
+                                data["Ask Size"]
+                            ))
+                        conn.commit()
+                        conn.close()
                     data = {
                         "filenames": stream_func.file_names
                     }

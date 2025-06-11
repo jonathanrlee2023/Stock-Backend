@@ -1,45 +1,18 @@
 package utils
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
-	"os"
+
+	_ "modernc.org/sqlite"
 )
 
 type PostData struct {
 	FileNames []string `json:"filenames"`
-}
-
-type StockData struct {
-	Symbol    float64 `json:"Symbol"`
-	BidPrice  float64 `json:"Bid Price"`
-	AskPrice  float64 `json:"Ask Price"`
-	LastPrice float64 `json:"Last Price"`
-	BidSize   float64 `json:"Bid Size"`
-	AskSize   float64 `json:"Ask Size"`
-}
-
-type StockMap struct {
-	Data   map[string]OptionData `json:"Data"`
-	Latest string                `json:"Latest"`
-}
-
-type OptionData struct {
-	BidPrice  float64 `json:"Bid Price"`
-	AskPrice  float64 `json:"Ask Price"`
-	LastPrice float64 `json:"Last Price"`
-	HighPrice float64 `json:"High Price"`
-	Delta     float64 `json:"Delta"`
-	Gamma     float64 `json:"Gamma"`
-	Theta     float64 `json:"Theta"`
-	Vega      float64 `json:"Vega"`
-}
-
-type OptionsMap struct {
-	Data   map[string]OptionData `json:"Data"`
-	Latest string                `json:"Latest"`
 }
 
 func PostHandler(w http.ResponseWriter, r *http.Request) {
@@ -64,21 +37,40 @@ func PostHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, fileName := range fileNameData.FileNames {
-		file, _ := os.ReadFile(fileName)
+		db, err := sql.Open("sqlite", fmt.Sprintf("%s.db", fileName))
+		if err != nil {
+			log.Printf("Query failed: %v", err)
+		}
+		defer db.Close()
 		if len(fileName) > 5 {
-			var options OptionsMap
-			if err := json.Unmarshal(file, &options); err != nil {
-				fmt.Println("Error:", err)
+			row := db.QueryRow("SELECT * FROM prices ORDER BY timestamp DESC LIMIT 1")
+
+			var timestamp int64
+			var bid, ask, last, high, delta, gamma, theta, vega float64
+
+			err := row.Scan(&timestamp, &bid, &ask, &last, &high, &delta, &gamma, &theta, &vega)
+			if err != nil {
+				log.Printf("Query failed: %v", err)
+				http.Error(w, "Database query failed", http.StatusInternalServerError)
 				return
 			}
-			fmt.Println(options.Data[options.Latest].LastPrice)
+			fmt.Printf("Timestamp: %d | Bid: %.2f | Ask: %.2f | Last: %.2f | High: %.2f | Delta: %.4f | Gamma: %.4f | Theta: %.4f | Vega: %.4f\n",
+				timestamp, bid, ask, last, high, delta, gamma, theta, vega)
 		} else {
-			var stock StockMap
-			if err := json.Unmarshal(file, &stock); err != nil {
-				fmt.Println("Error:", err)
+			row := db.QueryRow("SELECT * FROM prices ORDER BY timestamp DESC LIMIT 1")
+
+			var timestamp int64
+			var bid, ask, last float64
+			var askSize, bidSize int64
+
+			err := row.Scan(&timestamp, &bid, &ask, &last, &askSize, &bidSize)
+			if err != nil {
+				log.Printf("Query failed: %v", err)
+				http.Error(w, "Database query failed", http.StatusInternalServerError)
 				return
 			}
-			fmt.Println(stock.Data[stock.Latest].LastPrice)
+			fmt.Printf("Timestamp: %d | Bid: %.2f | Ask: %.2f | Last: %.2f | Ask Size: %d | Bid Size: %d|\n",
+				timestamp, bid, ask, last, askSize, bidSize)
 		}
 	}
 
