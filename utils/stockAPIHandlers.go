@@ -200,3 +200,7 @@ func TodayStockHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write(responseData)
 }
+
+// func StreamStock(w http.ResponseWriter, r *http.Request) {
+
+// }
