@@ -2,6 +2,40 @@ package utils
 
 import "time"
 
+type OptionStreamRequest struct {
+	Symbol string `json:"symbol"`
+	Price  string `json:"price"`
+	Day    string `json:"day"`
+	Month  string `json:"month"`
+	Year   string `json:"year"`
+	Type   string `json:"type"`
+}
+
+type StockStreamRequest struct {
+	Symbol string `json:"symbol"`
+}
+
+type OptionPriceData struct {
+	Timestamp int64   `json:"timestamp"`
+	Bid       float64 `json:"bid"`
+	Ask       float64 `json:"ask"`
+	Last      float64 `json:"last"`
+	High      float64 `json:"high"`
+	Delta     float64 `json:"delta"`
+	Gamma     float64 `json:"gamma"`
+	Theta     float64 `json:"theta"`
+	Vega      float64 `json:"vega"`
+}
+
+type StockPriceData struct {
+	Timestamp int64   `json:"timestamp"`
+	Bid       float64 `json:"bid"`
+	Ask       float64 `json:"ask"`
+	Last      float64 `json:"last"`
+	AskSize   int64   `json:"askSize"`
+	BidSize   int64   `json:"bidSize"`
+}
+
 type AlpacaResponse struct {
 	Bars map[string][]struct {
 		C  float64   `json:"c"`

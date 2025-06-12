@@ -2,6 +2,7 @@ package main
 
 import (
 	"Go-API/utils"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -10,19 +11,6 @@ import (
 
 	"github.com/gorilla/websocket"
 )
-
-type OptionStreamRequest struct {
-	Symbol string `json:"symbol"`
-	Price  string `json:"price"`
-	Day    string `json:"day"`
-	Month  string `json:"month"`
-	Year   string `json:"year"`
-	Type   string `json:"type"`
-}
-
-type StockStreamRequest struct {
-	Symbol string `json:"symbol"`
-}
 
 type Client struct {
 	Conn *websocket.Conn
@@ -51,6 +39,7 @@ func main() {
 			fmt.Println("Error:", err)
 		}
 	}
+
 	// start api
 	startApiServer() // blocks forever
 }
@@ -135,24 +124,106 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 	clientsMu.Unlock()
 	log.Printf("Client connected: %s", clientID)
 
+	defer func() {
+		clientsMu.Lock()
+		delete(clients, clientID)
+		clientsMu.Unlock()
+		ws.Close()
+		log.Printf("Client disconnected: %s", clientID)
+	}()
+
 	for {
-		_, msg, err := ws.ReadMessage()
+		msg, err := receiveFromClient(clientID)
 		if err != nil {
-			log.Println("Read error:", err)
-			delete(clients, clientID)
+			log.Println("Receive error:", err)
 			break
 		}
-		log.Printf("Received message: %s", msg)
+
+		var incoming struct {
+			Type      string   `json:"type"`
+			Filenames []string `json:"filenames"`
+		}
+		if err := json.Unmarshal(msg, &incoming); err != nil {
+			log.Println("Invalid message:", err)
+			continue
+		}
+
+		if incoming.Type == "dataReady" {
+			for _, fileName := range incoming.Filenames {
+				db, err := sql.Open("sqlite", fmt.Sprintf("%s.db", fileName))
+				if err != nil {
+					log.Printf("Query failed: %v", err)
+				}
+				defer db.Close()
+				if len(fileName) > 5 {
+					row := db.QueryRow("SELECT * FROM prices ORDER BY timestamp DESC LIMIT 1")
+
+					var timestamp int64
+					var bid, ask, last, high, delta, gamma, theta, vega float64
+
+					err := row.Scan(&timestamp, &bid, &ask, &last, &high, &delta, &gamma, &theta, &vega)
+					if err != nil {
+						log.Printf("Query failed: %v", err)
+						http.Error(w, "Database query failed", http.StatusInternalServerError)
+						return
+					}
+					data := utils.OptionPriceData{
+						Timestamp: timestamp,
+						Bid:       bid,
+						Ask:       ask,
+						Last:      last,
+						High:      high,
+						Delta:     delta,
+						Gamma:     gamma,
+						Theta:     theta,
+						Vega:      vega,
+					}
+					msg, err := json.Marshal(data)
+					if err != nil {
+						return
+					}
+					err = sendToClient("TSX_CLIENT", msg)
+					if err != nil {
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
+				} else {
+					row := db.QueryRow("SELECT * FROM prices ORDER BY timestamp DESC LIMIT 1")
+
+					var timestamp int64
+					var bid, ask, last float64
+					var askSize, bidSize int64
+
+					err := row.Scan(&timestamp, &bid, &ask, &last, &askSize, &bidSize)
+					if err != nil {
+						log.Printf("Query failed: %v", err)
+						http.Error(w, "Database query failed", http.StatusInternalServerError)
+						return
+					}
+					data := utils.StockPriceData{
+						Timestamp: timestamp,
+						Bid:       bid,
+						Ask:       ask,
+						Last:      last,
+						AskSize:   askSize,
+						BidSize:   bidSize,
+					}
+					msg, err := json.Marshal(data)
+					if err != nil {
+						return
+					}
+					err = sendToClient("TSX_CLIENT", msg)
+					if err != nil {
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
+				}
+			}
+		}
 	}
 }
 
 func StartOptionStream(w http.ResponseWriter, r *http.Request) {
-	clientID := r.URL.Query().Get("id")
-	if clientID == "" {
-		http.Error(w, "missing client id", http.StatusBadRequest)
-		return
-	}
-
 	symbol := r.URL.Query().Get("symbol")
 	price := r.URL.Query().Get("price")
 	day := r.URL.Query().Get("day")
@@ -160,7 +231,7 @@ func StartOptionStream(w http.ResponseWriter, r *http.Request) {
 	year := r.URL.Query().Get("year")
 	optionType := r.URL.Query().Get("type")
 
-	request := OptionStreamRequest{
+	request := utils.OptionStreamRequest{
 		Symbol: symbol,
 		Price:  price,
 		Day:    day,
@@ -175,24 +246,17 @@ func StartOptionStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = sendToClient(clientID, msg)
+	err = sendToClient("PYTHON_CLIENT", msg)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	fmt.Fprintf(w, "Sent to client %s", clientID)
 }
 
 func StartStockStream(w http.ResponseWriter, r *http.Request) {
-	clientID := r.URL.Query().Get("id")
-	if clientID == "" {
-		http.Error(w, "missing client id", http.StatusBadRequest)
-		return
-	}
 	symbol := r.URL.Query().Get("symbol")
 
-	request := StockStreamRequest{
+	request := utils.StockStreamRequest{
 		Symbol: symbol,
 	}
 
@@ -201,7 +265,7 @@ func StartStockStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = sendToClient(clientID, msg)
+	err = sendToClient("PYTHON_CLIENT", msg)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -222,4 +286,16 @@ func sendToClient(clientID string, msg []byte) error {
 	}
 	fmt.Println("sent to client")
 	return nil
+}
+func receiveFromClient(clientID string) ([]byte, error) {
+	client, ok := clients[clientID]
+	if !ok {
+		return nil, fmt.Errorf("client %s not connected", clientID)
+	}
+
+	_, msg, err := client.Conn.ReadMessage()
+	if err != nil {
+		return nil, err
+	}
+	return msg, nil
 }

@@ -13,7 +13,6 @@ import asyncio
 import websockets
 import traceback
 
-url = 'http://localhost:8080/dataReady'
 stream_started = False
 stream_lock = asyncio.Lock()
 
@@ -66,7 +65,7 @@ async def listen_for_messages(websocket, streamer):
         except Exception as e:
             print("Stream handling error:", e)
 
-async def write_to_db():
+async def write_to_db(websocket):
     while True:
         await asyncio.sleep(30 - time.time() % 30)
         timestamp = int(time.time())        
@@ -132,11 +131,11 @@ async def write_to_db():
                     ))
                 conn.commit()
                 conn.close()
-            data = {
+            await websocket.send(json.dumps({
+                "type": "dataReady",
                 "filenames": stream_func.file_names
-            }
-            response = requests.post(url=url, json=data)
-            print(response)
+            }))
+
         else:
             continue
 
@@ -156,7 +155,7 @@ async def main():
         print("Connected to Websocket")
         await asyncio.gather(
             listen_for_messages(websocket, streamer),
-            write_to_db()
+            write_to_db(websocket)
         )
         await asyncio.Future()
 
