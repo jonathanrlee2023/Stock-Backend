@@ -21,6 +21,7 @@ async def listen_for_messages(websocket, streamer):
 
     async for message in websocket:
         print("Received message")
+        print(message)
         data = json.loads(message)
         symbol = data["symbol"]
 
@@ -92,7 +93,7 @@ async def write_to_db(websocket):
                     )
                     """)
                     cursor.execute("""
-                        INSERT INTO prices (
+                        INSERT OR REPLACE INTO prices (
                             timestamp, bid_price, ask_price, last_price, high_price, delta, gamma, theta, vega
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
@@ -118,7 +119,7 @@ async def write_to_db(websocket):
                     )
                     """)
                     cursor.execute("""
-                        INSERT INTO prices (
+                        INSERT OR REPLACE INTO prices (
                             timestamp, bid_price, ask_price, last_price, bid_size, ask_size
                         ) VALUES (?, ?, ?, ?, ?, ?)
                     """, (

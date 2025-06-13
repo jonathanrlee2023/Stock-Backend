@@ -29,11 +29,7 @@ type OptionPriceData struct {
 
 type StockPriceData struct {
 	Timestamp int64   `json:"timestamp"`
-	Bid       float64 `json:"bid"`
-	Ask       float64 `json:"ask"`
-	Last      float64 `json:"last"`
-	AskSize   int64   `json:"askSize"`
-	BidSize   int64   `json:"bidSize"`
+	Mark      float64 `json:"mark"`
 }
 
 type AlpacaResponse struct {

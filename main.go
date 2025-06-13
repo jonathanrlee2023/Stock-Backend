@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"sync"
 
@@ -21,8 +22,6 @@ var (
 	clients   = make(map[string]*Client)
 	clientsMu sync.RWMutex
 )
-
-// var wsConn *websocket.Conn
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
@@ -117,7 +116,7 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 	clientsMu.Lock()
 	if _, exists := clients[clientID]; exists {
 		clientsMu.Unlock()
-		http.Error(w, "client ID already connected", http.StatusConflict)
+		_ = ws.WriteMessage(websocket.TextMessage, []byte(`{"error":"client ID already connected"}`))
 		return
 	}
 	clients[clientID] = &Client{Conn: ws, ID: clientID}
@@ -138,7 +137,6 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 			log.Println("Receive error:", err)
 			break
 		}
-
 		var incoming struct {
 			Type      string   `json:"type"`
 			Filenames []string `json:"filenames"`
@@ -147,7 +145,7 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 			log.Println("Invalid message:", err)
 			continue
 		}
-
+		fmt.Println(incoming)
 		if incoming.Type == "dataReady" {
 			for _, fileName := range incoming.Filenames {
 				db, err := sql.Open("sqlite", fmt.Sprintf("%s.db", fileName))
@@ -164,7 +162,6 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 					err := row.Scan(&timestamp, &bid, &ask, &last, &high, &delta, &gamma, &theta, &vega)
 					if err != nil {
 						log.Printf("Query failed: %v", err)
-						http.Error(w, "Database query failed", http.StatusInternalServerError)
 						return
 					}
 					data := utils.OptionPriceData{
@@ -184,7 +181,9 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 					}
 					err = sendToClient("TSX_CLIENT", msg)
 					if err != nil {
-						http.Error(w, err.Error(), http.StatusInternalServerError)
+						errMsg := map[string]string{"error": err.Error()}
+						msg, _ := json.Marshal(errMsg)
+						_ = ws.WriteMessage(websocket.TextMessage, msg)
 						return
 					}
 				} else {
@@ -197,16 +196,11 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 					err := row.Scan(&timestamp, &bid, &ask, &last, &askSize, &bidSize)
 					if err != nil {
 						log.Printf("Query failed: %v", err)
-						http.Error(w, "Database query failed", http.StatusInternalServerError)
 						return
 					}
 					data := utils.StockPriceData{
 						Timestamp: timestamp,
-						Bid:       bid,
-						Ask:       ask,
-						Last:      last,
-						AskSize:   askSize,
-						BidSize:   bidSize,
+						Mark:      math.Round(((ask+bid)/2)*100) / 100,
 					}
 					msg, err := json.Marshal(data)
 					if err != nil {
@@ -214,7 +208,9 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 					}
 					err = sendToClient("TSX_CLIENT", msg)
 					if err != nil {
-						http.Error(w, err.Error(), http.StatusInternalServerError)
+						errMsg := map[string]string{"error": err.Error()}
+						msg, _ := json.Marshal(errMsg)
+						_ = ws.WriteMessage(websocket.TextMessage, msg)
 						return
 					}
 				}
@@ -264,7 +260,6 @@ func StartStockStream(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-
 	err = sendToClient("PYTHON_CLIENT", msg)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -284,7 +279,7 @@ func sendToClient(clientID string, msg []byte) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println("sent to client")
+	fmt.Println("sent to client" + string(msg))
 	return nil
 }
 func receiveFromClient(clientID string) ([]byte, error) {
