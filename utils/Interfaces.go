@@ -16,9 +16,11 @@ type StockStreamRequest struct {
 }
 
 type OptionPriceData struct {
+	Symbol    string  `json:"symbol"`
 	Timestamp int64   `json:"timestamp"`
 	Bid       float64 `json:"bid"`
 	Ask       float64 `json:"ask"`
+	Mark      float64 `json:"mark"`
 	Last      float64 `json:"last"`
 	High      float64 `json:"high"`
 	Delta     float64 `json:"delta"`
@@ -28,6 +30,7 @@ type OptionPriceData struct {
 }
 
 type StockPriceData struct {
+	Symbol    string  `json:"symbol"`
 	Timestamp int64   `json:"timestamp"`
 	Mark      float64 `json:"mark"`
 }

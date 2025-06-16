@@ -22,6 +22,7 @@ async def listen_for_messages(websocket, streamer):
     async for message in websocket:
         print("Received message")
         print(message)
+        print(streamer.subscriptions)
         data = json.loads(message)
         symbol = data["symbol"]
 
@@ -55,12 +56,13 @@ async def listen_for_messages(websocket, streamer):
                     )
                 )
             elif len(data) == 1:
-                asyncio.create_task(
-                    stream_func.start_stock_stream(
-                        streamer=streamer,
-                        ticker=symbol,
+                if symbol in streamer.subscriptions.get('LEVELONE_EQUITIES', {}):
+                    asyncio.create_task(
+                        stream_func.start_stock_stream(
+                            streamer=streamer,
+                            ticker=symbol,
+                        )
                     )
-                )
         except requests.exceptions.ReadTimeout:
             print("Timeout while connecting to Schwab API.")
         except Exception as e:

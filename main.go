@@ -165,9 +165,11 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 					data := utils.OptionPriceData{
+						Symbol:    fileName,
 						Timestamp: timestamp,
 						Bid:       bid,
 						Ask:       ask,
+						Mark:      math.Round(((ask+bid)/2)*100) / 100,
 						Last:      last,
 						High:      high,
 						Delta:     delta,
@@ -199,6 +201,7 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 					data := utils.StockPriceData{
+						Symbol:    fileName,
 						Timestamp: timestamp,
 						Mark:      math.Round(((ask+bid)/2)*100) / 100,
 					}
