@@ -157,9 +157,9 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 					row := db.QueryRow("SELECT * FROM prices ORDER BY timestamp DESC LIMIT 1")
 
 					var timestamp int64
-					var bid, ask, last, high, delta, gamma, theta, vega float64
+					var bid, ask, last, high, iv, delta, gamma, theta, vega float64
 
-					err := row.Scan(&timestamp, &bid, &ask, &last, &high, &delta, &gamma, &theta, &vega)
+					err := row.Scan(&timestamp, &bid, &ask, &last, &high, &iv, &delta, &gamma, &theta, &vega)
 					if err != nil {
 						log.Printf("Query failed: %v", err)
 						return
@@ -172,6 +172,7 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 						Mark:      math.Round(((ask+bid)/2)*100) / 100,
 						Last:      last,
 						High:      high,
+						IV:        iv,
 						Delta:     delta,
 						Gamma:     gamma,
 						Theta:     theta,
@@ -181,7 +182,7 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 					if err != nil {
 						return
 					}
-					err = sendToClient("TSX_CLIENT", msg)
+					err = sendToClient("OPTIONS_CLIENT", msg)
 					if err != nil {
 						errMsg := map[string]string{"error": err.Error()}
 						msg, _ := json.Marshal(errMsg)
@@ -209,7 +210,7 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 					if err != nil {
 						return
 					}
-					err = sendToClient("TSX_CLIENT", msg)
+					err = sendToClient("STOCK_CLIENT", msg)
 					if err != nil {
 						errMsg := map[string]string{"error": err.Error()}
 						msg, _ := json.Marshal(errMsg)

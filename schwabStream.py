@@ -43,20 +43,22 @@ async def listen_for_messages(websocket, streamer):
 
         await websocket.send(f"Streaming started for {symbol}")
         try:
+            print(len(data))
             if len(data) > 1:
-                asyncio.create_task(
-                    stream_func.start_options_stream(
-                        streamer=streamer,
-                        ticker=symbol,
-                        price=price,
-                        day=day,
-                        month=month,
-                        year=year,
-                        type=option_type
+                if symbol not in streamer.subscriptions.get('LEVELONE_OPTIONS', {}):
+                    asyncio.create_task(
+                        stream_func.start_options_stream(
+                            streamer=streamer,
+                            ticker=symbol,
+                            price=price,
+                            day=day,
+                            month=month,
+                            year=year,
+                            type=option_type
+                        )
                     )
-                )
-            elif len(data) == 1:
-                if symbol in streamer.subscriptions.get('LEVELONE_EQUITIES', {}):
+            if len(data) == 1:
+                if symbol not in streamer.subscriptions.get('LEVELONE_EQUITIES', {}):
                     asyncio.create_task(
                         stream_func.start_stock_stream(
                             streamer=streamer,
@@ -88,6 +90,7 @@ async def write_to_db(websocket):
                             ask_price FLOAT NOT NULL,
                             last_price FLOAT NOT NULL,
                             high_price FLOAT NOT NULL,
+                            iv FLOAT NOT NULL,
                             delta FLOAT NOT NULL,
                             gamma FLOAT NOT NULL,
                             theta FLOAT NOT NULL,
@@ -96,14 +99,15 @@ async def write_to_db(websocket):
                     """)
                     cursor.execute("""
                         INSERT OR REPLACE INTO prices (
-                            timestamp, bid_price, ask_price, last_price, high_price, delta, gamma, theta, vega
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            timestamp, bid_price, ask_price, last_price, high_price, iv, delta, gamma, theta, vega
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         timestamp,
                         data["Bid Price"],
                         data["Ask Price"],
                         data["Last Price"],
                         data["High Price"],
+                        data["IV"],
                         data["Delta"],
                         data["Gamma"],
                         data["Theta"],

@@ -23,6 +23,7 @@ type OptionPriceData struct {
 	Mark      float64 `json:"mark"`
 	Last      float64 `json:"last"`
 	High      float64 `json:"high"`
+	IV        float64 `json:"iv"`
 	Delta     float64 `json:"delta"`
 	Gamma     float64 `json:"gamma"`
 	Theta     float64 `json:"theta"`

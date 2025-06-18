@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from filelock import FileLock
 
 option_labels = {
@@ -8,6 +9,7 @@ option_labels = {
     '3': 'Ask Price',
     '4': 'Last Price',
     '5': 'High Price',
+    '10': 'IV',
     '28': 'Delta',
     '29': 'Gamma',
     '30': 'Theta',
@@ -36,7 +38,7 @@ async def start_options_stream(streamer, ticker, price, day, month, year, type):
     option_id = f'{year}{month_filled}{day}{type.upper()}{strike_str}'
     request = streamer.level_one_options(
         f"{ticker.ljust(6)}{option_id}",
-        "1,2,3,4,5,28,29,30,31",
+        "1,2,3,4,5,10,28,29,30,31",
         command='ADD'
     )
 
@@ -57,15 +59,15 @@ async def start_stock_stream(streamer, ticker):
 
 def receive_data(response):
     parsed = json.loads(response)
-    print(parsed)
     if 'data' in parsed:
         for item in parsed['data']:
             content = item.get("content", [])
 
             for quote in content:
                 symbol = quote.get("key")
+                print(symbol)
                 if '  ' in symbol:
-                    symbol = symbol.replace('  ', '_')
+                    symbol = re.sub(r'\s+', '_', symbol)
                 if symbol not in new_data:
                     new_data[symbol] = {}         
                 if symbol not in labeled_data:
