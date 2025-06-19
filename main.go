@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -74,6 +75,7 @@ func startApiServer() {
 	mux.HandleFunc("/startStockStream", StartStockStream)
 	mux.HandleFunc("/dataReady", utils.DataReadyHandler)
 	mux.HandleFunc("/newTracker", utils.NewTrackerHandler)
+	mux.HandleFunc("/newPosition", utils.OpenPositionHandler)
 
 	handler := CorsMiddleware(mux)
 
@@ -132,96 +134,14 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Client disconnected: %s", clientID)
 	}()
 
-	for {
-		msg, err := receiveFromClient(clientID)
-		if err != nil {
-			log.Println("Receive error:", err)
-			break
-		}
-		var incoming struct {
-			Type      string   `json:"type"`
-			Filenames []string `json:"filenames"`
-		}
-		if err := json.Unmarshal(msg, &incoming); err != nil {
-			log.Println("Invalid message:", err)
-			continue
-		}
-		fmt.Println(incoming)
-		if incoming.Type == "dataReady" {
-			for _, fileName := range incoming.Filenames {
-				db, err := sql.Open("sqlite", fmt.Sprintf("%s.db", fileName))
-				if err != nil {
-					log.Printf("Query failed: %v", err)
-				}
-				defer db.Close()
-				if len(fileName) > 5 {
-					row := db.QueryRow("SELECT * FROM prices ORDER BY timestamp DESC LIMIT 1")
+	// Start reader and writer goroutines
+	done := make(chan struct{})
 
-					var timestamp int64
-					var bid, ask, last, high, iv, delta, gamma, theta, vega float64
+	go handleClientRead(ws, clientID, done)
+	go handleClientWrite(ws, done)
 
-					err := row.Scan(&timestamp, &bid, &ask, &last, &high, &iv, &delta, &gamma, &theta, &vega)
-					if err != nil {
-						log.Printf("Query failed: %v", err)
-						return
-					}
-					data := utils.OptionPriceData{
-						Symbol:    fileName,
-						Timestamp: timestamp,
-						Bid:       bid,
-						Ask:       ask,
-						Mark:      math.Round(((ask+bid)/2)*100) / 100,
-						Last:      last,
-						High:      high,
-						IV:        iv,
-						Delta:     delta,
-						Gamma:     gamma,
-						Theta:     theta,
-						Vega:      vega,
-					}
-					msg, err := json.Marshal(data)
-					if err != nil {
-						return
-					}
-					err = sendToClient("OPTIONS_CLIENT", msg)
-					if err != nil {
-						errMsg := map[string]string{"error": err.Error()}
-						msg, _ := json.Marshal(errMsg)
-						_ = ws.WriteMessage(websocket.TextMessage, msg)
-						return
-					}
-				} else {
-					row := db.QueryRow("SELECT * FROM prices ORDER BY timestamp DESC LIMIT 1")
-
-					var timestamp int64
-					var bid, ask, last float64
-					var askSize, bidSize int64
-
-					err := row.Scan(&timestamp, &bid, &ask, &last, &askSize, &bidSize)
-					if err != nil {
-						log.Printf("Query failed: %v", err)
-						return
-					}
-					data := utils.StockPriceData{
-						Symbol:    fileName,
-						Timestamp: timestamp,
-						Mark:      math.Round(((ask+bid)/2)*100) / 100,
-					}
-					msg, err := json.Marshal(data)
-					if err != nil {
-						return
-					}
-					err = sendToClient("STOCK_CLIENT", msg)
-					if err != nil {
-						errMsg := map[string]string{"error": err.Error()}
-						msg, _ := json.Marshal(errMsg)
-						_ = ws.WriteMessage(websocket.TextMessage, msg)
-						return
-					}
-				}
-			}
-		}
-	}
+	// Wait for either read or write to signal done
+	<-done
 }
 
 func StartOptionStream(w http.ResponseWriter, r *http.Request) {
@@ -298,4 +218,201 @@ func receiveFromClient(clientID string) ([]byte, error) {
 		return nil, err
 	}
 	return msg, nil
+}
+
+func handleClientRead(ws *websocket.Conn, clientID string, done chan struct{}) {
+	defer close(done)
+	for {
+		msg, err := receiveFromClient(clientID)
+		if err != nil {
+			log.Println("Receive error:", err)
+			break
+		}
+		var incoming struct {
+			Type      string   `json:"type"`
+			Filenames []string `json:"filenames"`
+		}
+		if err := json.Unmarshal(msg, &incoming); err != nil {
+			log.Println("Invalid message:", err)
+			continue
+		}
+		fmt.Println(incoming)
+		if incoming.Type == "dataReady" {
+			getRecentPrices(incoming.Filenames, ws)
+		}
+	}
+}
+
+func handleClientWrite(ws *websocket.Conn, done chan struct{}) {
+	// Example: Send incremental updates every 30 seconds
+	ticker := time.NewTicker(30 * time.Second)
+
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-done:
+			return
+		case t := <-ticker.C:
+			var fileNames []string
+			var realBalance float64
+			balanceDB, err := sql.Open("sqlite", "Balance.db")
+			if err != nil {
+				log.Printf("Query failed: %v", err)
+				return
+			}
+			defer balanceDB.Close()
+			row := balanceDB.QueryRow("SELECT * FROM Balance ORDER BY timestamp DESC LIMIT 1")
+
+			var timestamp int64
+
+			err = row.Scan(&timestamp, &realBalance)
+			if err != nil {
+				log.Printf("Query failed: %v", err)
+				return
+			}
+			openDB, err := sql.Open("sqlite", "Open.db")
+			if err != nil {
+				log.Printf("Query failed: %v", err)
+				return
+			}
+			defer openDB.Close()
+			rows, err := openDB.Query("SELECT * FROM OpenPositions")
+			if err == sql.ErrNoRows {
+				continue
+			} else if err != nil {
+				log.Fatal("Query failed:", err)
+			}
+			defer rows.Close()
+
+			for rows.Next() {
+				var id string
+
+				err := rows.Scan(&id)
+				if err != nil {
+					log.Println("Scan failed:", err)
+					continue
+				}
+
+				fileNames = append(fileNames, id)
+			}
+
+			for _, names := range fileNames {
+				db, err := sql.Open("sqlite", fmt.Sprintf("%s.db", names))
+				if err != nil {
+					log.Printf("Query failed: %v", err)
+					return
+				}
+				defer db.Close()
+				row := db.QueryRow("SELECT * FROM prices ORDER BY timestamp DESC LIMIT 1")
+
+				var timestamp int64
+				var bid, ask, last float64
+				var askSize, bidSize int64
+
+				err = row.Scan(&timestamp, &bid, &ask, &last, &askSize, &bidSize)
+				if err != nil {
+					log.Printf("Query failed: %v", err)
+					return
+				}
+				mark := math.Round(((ask+bid)/2)*100) / 100
+				realBalance += mark
+			}
+			if err := rows.Err(); err != nil {
+				log.Println("Rows iteration error:", err)
+			}
+			message := utils.StockPriceData{
+				Symbol:    "balance",
+				Timestamp: t.Unix(),
+				Mark:      realBalance,
+			}
+
+			msg, err := json.Marshal(message)
+			if err != nil {
+				return
+			}
+			err = sendToClient("STOCK_CLIENT", msg)
+			if err != nil {
+				errMsg := map[string]string{"error": err.Error()}
+				msg, _ := json.Marshal(errMsg)
+				_ = ws.WriteMessage(websocket.TextMessage, msg)
+				return
+			}
+		}
+	}
+}
+
+func getRecentPrices(FileNames []string, ws *websocket.Conn) {
+	for _, fileName := range FileNames {
+		db, err := sql.Open("sqlite", fmt.Sprintf("%s.db", fileName))
+		if err != nil {
+			log.Printf("Query failed: %v", err)
+		}
+		defer db.Close()
+		if len(fileName) > 5 {
+			row := db.QueryRow("SELECT * FROM prices ORDER BY timestamp DESC LIMIT 1")
+
+			var timestamp int64
+			var bid, ask, last, high, iv, delta, gamma, theta, vega float64
+
+			err := row.Scan(&timestamp, &bid, &ask, &last, &high, &iv, &delta, &gamma, &theta, &vega)
+			if err != nil {
+				log.Printf("Query failed: %v", err)
+				return
+			}
+			data := utils.OptionPriceData{
+				Symbol:    fileName,
+				Timestamp: timestamp,
+				Bid:       bid,
+				Ask:       ask,
+				Mark:      math.Round(((ask+bid)/2)*100) / 100,
+				Last:      last,
+				High:      high,
+				IV:        iv,
+				Delta:     delta,
+				Gamma:     gamma,
+				Theta:     theta,
+				Vega:      vega,
+			}
+			msg, err := json.Marshal(data)
+			if err != nil {
+				return
+			}
+			err = sendToClient("OPTIONS_CLIENT", msg)
+			if err != nil {
+				errMsg := map[string]string{"error": err.Error()}
+				msg, _ := json.Marshal(errMsg)
+				_ = ws.WriteMessage(websocket.TextMessage, msg)
+				return
+			}
+		} else {
+			row := db.QueryRow("SELECT * FROM prices ORDER BY timestamp DESC LIMIT 1")
+
+			var timestamp int64
+			var bid, ask, last float64
+			var askSize, bidSize int64
+
+			err := row.Scan(&timestamp, &bid, &ask, &last, &askSize, &bidSize)
+			if err != nil {
+				log.Printf("Query failed: %v", err)
+				return
+			}
+			data := utils.StockPriceData{
+				Symbol:    fileName,
+				Timestamp: timestamp,
+				Mark:      math.Round(((ask+bid)/2)*100) / 100,
+			}
+			msg, err := json.Marshal(data)
+			if err != nil {
+				return
+			}
+			err = sendToClient("STOCK_CLIENT", msg)
+			if err != nil {
+				errMsg := map[string]string{"error": err.Error()}
+				msg, _ := json.Marshal(errMsg)
+				_ = ws.WriteMessage(websocket.TextMessage, msg)
+				return
+			}
+		}
+	}
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -17,6 +18,11 @@ type PostData struct {
 
 type NewTracker struct {
 	ID string `json:"id"`
+}
+type Position struct {
+	ID     string  `json:"id"`
+	Price  float64 `json:"price"`
+	Amount int64   `json:"amount"`
 }
 
 func DataReadyHandler(w http.ResponseWriter, r *http.Request) {
@@ -122,5 +128,84 @@ func NewTrackerHandler(w http.ResponseWriter, r *http.Request) {
 		log.Fatalf("Failed to write to table: %v", err)
 	}
 
+	fmt.Fprintf(w, "Data has been read")
+}
+
+func OpenPositionHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var newPosition Position
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	err = json.Unmarshal(body, &newPosition)
+	if err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	openDb, err := sql.Open("sqlite", "./Open.db")
+	if err != nil {
+		http.Error(w, "Failed to open Open.db", http.StatusInternalServerError)
+		return
+	}
+	defer openDb.Close()
+	createTableSQL := `
+		CREATE TABLE IF NOT EXISTS OpenPositions (
+			id STRING PRIMARY KEY,
+			price FLOAT NOT NULL,
+			amount INTEGER NOT NULL
+		);`
+	_, err = openDb.Exec(createTableSQL)
+	if err != nil {
+		log.Printf("Failed to create table: %v", err)
+	}
+
+	insertData := `INSERT OR REPLACE INTO OpenPositions (id, price, amount) VALUES (?, ?, ?)`
+	_, err = openDb.Exec(insertData, newPosition.ID, newPosition.Price, newPosition.Amount)
+	if err != nil {
+		log.Printf("Failed to write to table: %v", err)
+	}
+	balanceDb, err := sql.Open("sqlite", "Balance.db")
+	defer balanceDb.Close()
+
+	createTableSQL = `
+		CREATE TABLE IF NOT EXISTS Balance (
+			timestamp INTEGER PRIMARY KEY,
+			balance FLOAT NOT NULL
+		);`
+	_, err = balanceDb.Exec(createTableSQL)
+	if err != nil {
+		http.Error(w, "Failed to create Balance table", http.StatusInternalServerError)
+		return
+	}
+
+	row := balanceDb.QueryRow("SELECT * FROM Balance ORDER BY timestamp DESC LIMIT 1")
+
+	var timestamp int64
+	var balance float64
+
+	err = row.Scan(&timestamp, &balance)
+	if err == sql.ErrNoRows {
+		balance = 10000
+	} else if err != nil {
+		http.Error(w, "Failed to query Balance", http.StatusInternalServerError)
+		return
+	}
+	balance = balance - (newPosition.Price * float64(newPosition.Amount))
+
+	insertData = `INSERT OR REPLACE INTO Balance (timestamp, balance) VALUES (?, ?)`
+	_, err = balanceDb.Exec(insertData, time.Now().Unix(), balance)
+	if err != nil {
+		http.Error(w, "Failed to write balance", http.StatusInternalServerError)
+	}
 	fmt.Fprintf(w, "Data has been read")
 }
