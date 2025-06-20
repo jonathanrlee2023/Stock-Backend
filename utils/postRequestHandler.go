@@ -200,7 +200,7 @@ func OpenPositionHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to query Balance", http.StatusInternalServerError)
 		return
 	}
-	balance = balance - (newPosition.Price * float64(newPosition.Amount))
+	balance = balance - (100 * (newPosition.Price * float64(newPosition.Amount)))
 
 	insertData = `INSERT OR REPLACE INTO Balance (timestamp, balance) VALUES (?, ?)`
 	_, err = balanceDb.Exec(insertData, time.Now().Unix(), balance)

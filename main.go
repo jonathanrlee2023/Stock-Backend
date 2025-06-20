@@ -17,6 +17,13 @@ import (
 type Client struct {
 	Conn *websocket.Conn
 	ID   string // unique identifier for this client (e.g., user ID, session ID)
+	Mu   sync.Mutex
+}
+
+func (c *Client) SafeWrite(messageType int, data []byte) error {
+	c.Mu.Lock()
+	defer c.Mu.Unlock()
+	return c.Conn.WriteMessage(messageType, data)
 }
 
 var (
@@ -138,7 +145,9 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 	done := make(chan struct{})
 
 	go handleClientRead(ws, clientID, done)
-	go handleClientWrite(ws, done)
+	if clientID == "STOCK_CLIENT" {
+		go handleClientWrite(ws, done)
+	}
 
 	// Wait for either read or write to signal done
 	<-done
@@ -200,11 +209,11 @@ func sendToClient(clientID string, msg []byte) error {
 		return fmt.Errorf("client %s not connected", clientID)
 	}
 
-	err := client.Conn.WriteMessage(websocket.TextMessage, msg)
+	err := client.SafeWrite(websocket.TextMessage, msg)
 	if err != nil {
 		return err
 	}
-	fmt.Println("sent to client" + string(msg))
+	log.Printf("sent to %s: %s", clientID, string(msg))
 	return nil
 }
 func receiveFromClient(clientID string) ([]byte, error) {
@@ -245,8 +254,18 @@ func handleClientRead(ws *websocket.Conn, clientID string, done chan struct{}) {
 
 func handleClientWrite(ws *websocket.Conn, done chan struct{}) {
 	// Example: Send incremental updates every 30 seconds
-	ticker := time.NewTicker(30 * time.Second)
+	now := time.Now()
+	wait := 30*time.Second - (time.Duration(now.Second()%30)*time.Second + time.Duration(now.Nanosecond()))
+	timer := time.NewTimer(wait)
 
+	select {
+	case <-done:
+		timer.Stop()
+		return
+	case t := <-timer.C:
+		processWrite(t, ws, done)
+	}
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -254,90 +273,7 @@ func handleClientWrite(ws *websocket.Conn, done chan struct{}) {
 		case <-done:
 			return
 		case t := <-ticker.C:
-			var fileNames []string
-			var realBalance float64
-			balanceDB, err := sql.Open("sqlite", "Balance.db")
-			if err != nil {
-				log.Printf("Query failed: %v", err)
-				return
-			}
-			defer balanceDB.Close()
-			row := balanceDB.QueryRow("SELECT * FROM Balance ORDER BY timestamp DESC LIMIT 1")
-
-			var timestamp int64
-
-			err = row.Scan(&timestamp, &realBalance)
-			if err != nil {
-				log.Printf("Query failed: %v", err)
-				return
-			}
-			openDB, err := sql.Open("sqlite", "Open.db")
-			if err != nil {
-				log.Printf("Query failed: %v", err)
-				return
-			}
-			defer openDB.Close()
-			rows, err := openDB.Query("SELECT * FROM OpenPositions")
-			if err == sql.ErrNoRows {
-				continue
-			} else if err != nil {
-				log.Fatal("Query failed:", err)
-			}
-			defer rows.Close()
-
-			for rows.Next() {
-				var id string
-
-				err := rows.Scan(&id)
-				if err != nil {
-					log.Println("Scan failed:", err)
-					continue
-				}
-
-				fileNames = append(fileNames, id)
-			}
-
-			for _, names := range fileNames {
-				db, err := sql.Open("sqlite", fmt.Sprintf("%s.db", names))
-				if err != nil {
-					log.Printf("Query failed: %v", err)
-					return
-				}
-				defer db.Close()
-				row := db.QueryRow("SELECT * FROM prices ORDER BY timestamp DESC LIMIT 1")
-
-				var timestamp int64
-				var bid, ask, last float64
-				var askSize, bidSize int64
-
-				err = row.Scan(&timestamp, &bid, &ask, &last, &askSize, &bidSize)
-				if err != nil {
-					log.Printf("Query failed: %v", err)
-					return
-				}
-				mark := math.Round(((ask+bid)/2)*100) / 100
-				realBalance += mark
-			}
-			if err := rows.Err(); err != nil {
-				log.Println("Rows iteration error:", err)
-			}
-			message := utils.StockPriceData{
-				Symbol:    "balance",
-				Timestamp: t.Unix(),
-				Mark:      realBalance,
-			}
-
-			msg, err := json.Marshal(message)
-			if err != nil {
-				return
-			}
-			err = sendToClient("STOCK_CLIENT", msg)
-			if err != nil {
-				errMsg := map[string]string{"error": err.Error()}
-				msg, _ := json.Marshal(errMsg)
-				_ = ws.WriteMessage(websocket.TextMessage, msg)
-				return
-			}
+			processWrite(t, ws, done)
 		}
 	}
 }
@@ -346,7 +282,7 @@ func getRecentPrices(FileNames []string, ws *websocket.Conn) {
 	for _, fileName := range FileNames {
 		db, err := sql.Open("sqlite", fmt.Sprintf("%s.db", fileName))
 		if err != nil {
-			log.Printf("Query failed: %v", err)
+			log.Printf("Query failed recent prices: %v", err)
 		}
 		defer db.Close()
 		if len(fileName) > 5 {
@@ -357,7 +293,7 @@ func getRecentPrices(FileNames []string, ws *websocket.Conn) {
 
 			err := row.Scan(&timestamp, &bid, &ask, &last, &high, &iv, &delta, &gamma, &theta, &vega)
 			if err != nil {
-				log.Printf("Query failed: %v", err)
+				log.Printf("Query failed recent prices: %v", err)
 				return
 			}
 			data := utils.OptionPriceData{
@@ -394,7 +330,7 @@ func getRecentPrices(FileNames []string, ws *websocket.Conn) {
 
 			err := row.Scan(&timestamp, &bid, &ask, &last, &askSize, &bidSize)
 			if err != nil {
-				log.Printf("Query failed: %v", err)
+				log.Printf("Query failed recent prices: %v", err)
 				return
 			}
 			data := utils.StockPriceData{
@@ -414,5 +350,119 @@ func getRecentPrices(FileNames []string, ws *websocket.Conn) {
 				return
 			}
 		}
+	}
+}
+
+func processWrite(t time.Time, ws *websocket.Conn, done chan struct{}) {
+	openPositions := make(map[string]int)
+	var realBalance float64
+
+	balanceDB, err := sql.Open("sqlite", "Balance.db")
+	if err != nil {
+		log.Printf("Query failed process write balanceDB: %v", err)
+		return
+	}
+	defer balanceDB.Close()
+	createTableSQL := `
+		CREATE TABLE IF NOT EXISTS Balance (
+			timestamp INTEGER PRIMARY KEY,
+			balance FLOAT NOT NULL
+		);`
+	_, err = balanceDB.Exec(createTableSQL)
+	if err != nil {
+		log.Printf("Query failed process write balanceDB: %v", err)
+		return
+	}
+	row := balanceDB.QueryRow("SELECT * FROM Balance ORDER BY timestamp DESC LIMIT 1")
+
+	var timestamp int64
+
+	err = row.Scan(&timestamp, &realBalance)
+	if err == sql.ErrNoRows {
+		realBalance = 10000
+	} else if err != nil {
+		log.Printf("Query failed process write balanceDB: %v", err)
+		return
+	}
+	insertData := `INSERT OR REPLACE INTO Balance (timestamp, balance) VALUES (?, ?)`
+	_, err = balanceDB.Exec(insertData, time.Now().Unix(), realBalance)
+	if err != nil {
+		log.Printf("Query failed process write balanceDB: %v", err)
+	}
+
+	openDB, err := sql.Open("sqlite", "Open.db")
+	if err != nil {
+		log.Printf("Query failed process write openDB: %v", err)
+		return
+	}
+	defer openDB.Close()
+	createTableSQL = `
+		CREATE TABLE IF NOT EXISTS OpenPositions (
+			id STRING PRIMARY KEY,
+			price FLOAT NOT NULL,
+			amount INTEGER NOT NULL
+		);`
+	_, err = openDB.Exec(createTableSQL)
+	rows, err := openDB.Query("SELECT * FROM OpenPositions")
+	if err == sql.ErrNoRows {
+		fmt.Println("No Open Positions Yet")
+	} else if err != nil {
+		log.Fatal("Query failed process write openDB:", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id string
+		var price float64
+		var amount int64
+
+		err := rows.Scan(&id, &price, &amount)
+		if err != nil {
+			log.Println("Scan failed:", err)
+			continue
+		}
+
+		openPositions[id] = int(amount)
+	}
+
+	for names, amount := range openPositions {
+		db, err := sql.Open("sqlite", fmt.Sprintf("%s.db", names))
+		if err != nil {
+			log.Printf("Query failed process write position file: %v", err)
+			return
+		}
+		defer db.Close()
+		row := db.QueryRow("SELECT * FROM prices ORDER BY timestamp DESC LIMIT 1")
+
+		var timestamp int64
+		var bid, ask, last, high, iv, delta, gamma, theta, vega float64
+
+		err = row.Scan(&timestamp, &bid, &ask, &last, &high, &iv, &delta, &gamma, &theta, &vega)
+		if err != nil {
+			log.Printf("Query failed process write position file: %v", err)
+			return
+		}
+		mark := math.Round(((ask+bid)/2)*100) / 100
+		realBalance += (mark * float64(amount)) * 100
+	}
+	if err := rows.Err(); err != nil {
+		log.Println("Rows iteration error:", err)
+	}
+	message := utils.StockPriceData{
+		Symbol:    "balance",
+		Timestamp: t.Unix(),
+		Mark:      realBalance,
+	}
+
+	msg, err := json.Marshal(message)
+	if err != nil {
+		return
+	}
+	err = sendToClient("STOCK_CLIENT", msg)
+	if err != nil {
+		errMsg := map[string]string{"error": err.Error()}
+		msg, _ := json.Marshal(errMsg)
+		_ = ws.WriteMessage(websocket.TextMessage, msg)
+		return
 	}
 }
