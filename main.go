@@ -69,49 +69,27 @@ func CorsMiddleware(next http.Handler) http.Handler {
 
 func startApiServer() {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/options", utils.OptionsHandler)
-	mux.HandleFunc("/earningsCalender", utils.EarningsCalenderHandler)
-	mux.HandleFunc("/stock", utils.StockHandler)
-	mux.HandleFunc("/earningsVolatility", utils.EarningsVolatilityHandler)
-	mux.HandleFunc("/todayStock", utils.TodayStockHandler)
-	mux.HandleFunc("/economicData", utils.EconomicDataHandler)
-	mux.HandleFunc("/impliedVolatility", utils.OptionVolatilityHandler)
-	mux.HandleFunc("/combinedOptions", utils.CombinedOptionsHandler)
+	// mux.HandleFunc("/options", utils.OptionsHandler)
+	// mux.HandleFunc("/earningsCalender", utils.EarningsCalenderHandler)
+	// mux.HandleFunc("/stock", utils.StockHandler)
+	// mux.HandleFunc("/earningsVolatility", utils.EarningsVolatilityHandler)
+	// mux.HandleFunc("/todayStock", utils.TodayStockHandler)
+	// mux.HandleFunc("/economicData", utils.EconomicDataHandler)
+	// mux.HandleFunc("/impliedVolatility", utils.OptionVolatilityHandler)
+	// mux.HandleFunc("/combinedOptions", utils.CombinedOptionsHandler)
 	mux.HandleFunc("/connect", websocketConnectHandler)
 	mux.HandleFunc("/startOptionStream", StartOptionStream)
 	mux.HandleFunc("/startStockStream", StartStockStream)
 	mux.HandleFunc("/dataReady", utils.DataReadyHandler)
 	mux.HandleFunc("/newTracker", utils.NewTrackerHandler)
-	mux.HandleFunc("/newPosition", utils.OpenPositionHandler)
+	mux.HandleFunc("/openPosition", utils.OpenPositionHandler)
+	mux.HandleFunc("/closePosition", utils.ClosePositionHandler)
 
 	handler := CorsMiddleware(mux)
 
 	fmt.Println("Server is running on port 8080...")
 	log.Fatal(http.ListenAndServe(":8080", handler))
 }
-
-// func startWebsocketConnection() {
-// 	u := url.URL{Scheme: "ws", Host: "localhost:8765", Path: "/"}
-
-// 	log.Printf("Connecting to %s...", u.String())
-
-// 	c, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
-// 	if err != nil {
-// 		log.Fatal("Dial error:", err)
-// 	}
-
-// 	wsConn = c
-// 	log.Println("WebSocket connected and ready.")
-
-// 	for {
-// 		_, message, err := wsConn.ReadMessage()
-// 		if err != nil {
-// 			log.Println("Read error:", err)
-// 			return
-// 		}
-// 		log.Printf("Received: %s", message)
-// 	}
-// }
 
 func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 	ws, err := upgrader.Upgrade(w, r, nil)
