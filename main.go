@@ -363,6 +363,10 @@ func processWrite(t time.Time, ws *websocket.Conn, done chan struct{}) {
 		return
 	}
 	defer balanceDB.Close()
+	_, err = balanceDB.Exec("PRAGMA journal_mode=WAL;")
+	if err != nil {
+		log.Fatal("Failed to enable WAL mode:", err)
+	}
 	createTableSQL := `
 		CREATE TABLE IF NOT EXISTS Balance (
 			timestamp INTEGER PRIMARY KEY,
@@ -396,6 +400,10 @@ func processWrite(t time.Time, ws *websocket.Conn, done chan struct{}) {
 		return
 	}
 	defer openDB.Close()
+	_, err = openDB.Exec("PRAGMA journal_mode=WAL;")
+	if err != nil {
+		log.Fatal("Failed to enable WAL mode:", err)
+	}
 	createTableSQL = `
 		CREATE TABLE IF NOT EXISTS OpenPositions (
 			id STRING PRIMARY KEY,
@@ -432,6 +440,10 @@ func processWrite(t time.Time, ws *websocket.Conn, done chan struct{}) {
 			return
 		}
 		defer db.Close()
+		_, err = db.Exec("PRAGMA journal_mode=WAL;")
+		if err != nil {
+			log.Fatal("Failed to enable WAL mode:", err)
+		}
 		row := db.QueryRow("SELECT * FROM prices ORDER BY timestamp DESC LIMIT 1")
 
 		var timestamp int64

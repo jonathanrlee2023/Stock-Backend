@@ -158,6 +158,10 @@ func OpenPositionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer openDb.Close()
+	_, err = openDb.Exec("PRAGMA journal_mode=WAL;")
+	if err != nil {
+		log.Fatal("Failed to enable WAL mode:", err)
+	}
 	createTableSQL := `
 		CREATE TABLE IF NOT EXISTS OpenPositions (
 			id STRING PRIMARY KEY,
@@ -175,6 +179,14 @@ func OpenPositionHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Failed to write to table: %v", err)
 	}
 	balanceDb, err := sql.Open("sqlite", "Balance.db")
+	if err != nil {
+		http.Error(w, "Failed to open Balance table", http.StatusInternalServerError)
+	}
+	_, err = balanceDb.Exec("PRAGMA journal_mode=WAL;")
+	if err != nil {
+		log.Fatal("Failed to enable WAL mode:", err)
+	}
+
 	defer balanceDb.Close()
 
 	createTableSQL = `
