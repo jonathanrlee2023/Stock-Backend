@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -121,6 +122,25 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Start reader and writer goroutines
 	done := make(chan struct{})
+	if clientID == "PYTHON_CLIENT" {
+		var symbols []string
+		symbols = sendTrackerSymbols()
+		for _, symbol := range symbols {
+			request, err := ParseOptionString(symbol)
+			if err != nil {
+				log.Printf("Could not parse string")
+			}
+			msg, err := json.Marshal(request)
+			if err != nil {
+				return
+			}
+			err = sendToClient("PYTHON_CLIENT", msg)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+	}
 
 	go handleClientRead(ws, clientID, done)
 	if clientID == "STOCK_CLIENT" {
@@ -292,7 +312,7 @@ func getRecentPrices(FileNames []string, ws *websocket.Conn) {
 			if err != nil {
 				return
 			}
-			err = sendToClient("OPTIONS_CLIENT", msg)
+			err = sendToClient("STOCK_CLIENT", msg)
 			if err != nil {
 				errMsg := map[string]string{"error": err.Error()}
 				msg, _ := json.Marshal(errMsg)
@@ -341,9 +361,15 @@ func processWrite(t time.Time, ws *websocket.Conn, done chan struct{}) {
 		return
 	}
 	defer balanceDB.Close()
-	_, err = balanceDB.Exec("PRAGMA journal_mode=WAL;")
+	for i := 0; i < 3; i++ {
+		_, err = balanceDB.Exec("PRAGMA journal_mode=WAL;")
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if err != nil {
-		log.Fatal("Failed to enable WAL mode:", err)
+		log.Fatal("Failed to enable WAL after retries:", err)
 	}
 	createTableSQL := `
 		CREATE TABLE IF NOT EXISTS Balance (
@@ -378,9 +404,15 @@ func processWrite(t time.Time, ws *websocket.Conn, done chan struct{}) {
 		return
 	}
 	defer openDB.Close()
-	_, err = openDB.Exec("PRAGMA journal_mode=WAL;")
+	for i := 0; i < 3; i++ {
+		_, err = openDB.Exec("PRAGMA journal_mode=WAL;")
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if err != nil {
-		log.Fatal("Failed to enable WAL mode:", err)
+		log.Fatal("Failed to enable WAL after retries:", err)
 	}
 	createTableSQL = `
 		CREATE TABLE IF NOT EXISTS OpenPositions (
@@ -418,9 +450,15 @@ func processWrite(t time.Time, ws *websocket.Conn, done chan struct{}) {
 			return
 		}
 		defer db.Close()
-		_, err = db.Exec("PRAGMA journal_mode=WAL;")
+		for i := 0; i < 3; i++ {
+			_, err = db.Exec("PRAGMA journal_mode=WAL;")
+			if err == nil {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
 		if err != nil {
-			log.Fatal("Failed to enable WAL mode:", err)
+			log.Fatal("Failed to enable WAL after retries:", err)
 		}
 		row := db.QueryRow("SELECT * FROM prices ORDER BY timestamp DESC LIMIT 1")
 
@@ -455,4 +493,70 @@ func processWrite(t time.Time, ws *websocket.Conn, done chan struct{}) {
 		_ = ws.WriteMessage(websocket.TextMessage, msg)
 		return
 	}
+}
+
+func sendTrackerSymbols() []string {
+	var symbols []string
+	db, err := sql.Open("sqlite", "Tracker.db")
+	if err != nil {
+		panic(err)
+	}
+	defer db.Close()
+
+	rows, err := db.Query("SELECT id FROM Tracker")
+	if err != nil {
+		panic(err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id string
+
+		err := rows.Scan(&id)
+		if err != nil {
+			panic(err)
+		}
+
+		symbols = append(symbols, id)
+	}
+	return symbols
+}
+
+func ParseOptionString(s string) (utils.OptionStreamRequest, error) {
+	var req utils.OptionStreamRequest
+
+	// Split at underscore
+	parts := []rune(s)
+	underscoreIndex := -1
+	for i, c := range parts {
+		if c == '_' {
+			underscoreIndex = i
+			break
+		}
+	}
+
+	if underscoreIndex == -1 || len(parts) < underscoreIndex+13 {
+		return req, fmt.Errorf("invalid string format")
+	}
+
+	req.Symbol = string(parts[:underscoreIndex])
+
+	req.Year = string(parts[underscoreIndex+1 : underscoreIndex+3])
+	req.Month = string(parts[underscoreIndex+3 : underscoreIndex+5])
+	req.Day = string(parts[underscoreIndex+5 : underscoreIndex+7])
+	req.Type = string(parts[underscoreIndex+7])
+
+	// Extract strike price
+	priceStr := string(parts[underscoreIndex+8:])
+	if len(priceStr) < 8 {
+		return req, fmt.Errorf("invalid strike price length")
+	}
+	// convert to decimal
+	priceInt, err := strconv.Atoi(priceStr)
+	if err != nil {
+		return req, fmt.Errorf("invalid price number: %v", err)
+	}
+	req.Price = fmt.Sprintf("%.2f", float64(priceInt)/1000.0)
+
+	return req, nil
 }

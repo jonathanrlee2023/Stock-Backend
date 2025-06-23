@@ -159,30 +159,7 @@ async def main():
     uri = "ws://localhost:8080/connect?id=PYTHON_CLIENT"
 
     async with websockets.connect(uri) as websocket:
-        print("Connected to Websocket")
-        conn = sqlite3.connect('Tracker.db')
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT * FROM Tracker")
-        rows = cursor.fetchall()
-        for row in rows:
-            raw_id = row[0]
-            parts = raw_id.split('_', 1)  # Split at first underscore
-            symbol = parts[0]
-            rest = parts[1] if len(parts) > 1 else ""
-
-            padded_symbol = symbol.ljust(6)
-
-            option_id = f'{padded_symbol}{rest}'
-            request = streamer.level_one_options(
-            option_id,
-            "1,2,3,4,5,10,28,29,30,31",
-            command='ADD'
-            )
-
-            await streamer.send_async(request)
-        conn.close()
-
+        print("Connected to Websocket")    
         await asyncio.gather(
             listen_for_messages(websocket, streamer),
             write_to_db(websocket)

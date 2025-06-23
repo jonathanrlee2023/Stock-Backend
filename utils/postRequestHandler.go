@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"time"
 
@@ -158,9 +159,15 @@ func OpenPositionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer openDb.Close()
-	_, err = openDb.Exec("PRAGMA journal_mode=WAL;")
+	for i := 0; i < 3; i++ {
+		_, err = openDb.Exec("PRAGMA journal_mode=WAL;")
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if err != nil {
-		log.Fatal("Failed to enable WAL mode:", err)
+		log.Fatal("Failed to enable WAL after retries:", err)
 	}
 	createTableSQL := `
 		CREATE TABLE IF NOT EXISTS OpenPositions (
@@ -172,6 +179,30 @@ func OpenPositionHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("Failed to create table: %v", err)
 	}
+	rows, err := openDb.Query("SELECT * FROM OpenPositions")
+	if err == sql.ErrNoRows {
+		fmt.Println("No Open Positions Yet")
+	} else if err != nil {
+		log.Fatal("Query failed process write openDB:", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id string
+		var price float64
+		var amount int64
+
+		err := rows.Scan(&id, &price, &amount)
+		if err != nil {
+			log.Println("Scan failed:", err)
+			continue
+		}
+		if newPosition.ID == id {
+			avg := ((float64(newPosition.Amount) * newPosition.Price) + (price * float64(amount))) / float64(amount+newPosition.Amount)
+			newPosition.Amount += amount
+			newPosition.Price = math.Round((avg * 100) / 100)
+		}
+	}
 
 	insertData := `INSERT OR REPLACE INTO OpenPositions (id, price, amount) VALUES (?, ?, ?)`
 	_, err = openDb.Exec(insertData, newPosition.ID, newPosition.Price, newPosition.Amount)
@@ -182,9 +213,15 @@ func OpenPositionHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "Failed to open Balance table", http.StatusInternalServerError)
 	}
-	_, err = balanceDb.Exec("PRAGMA journal_mode=WAL;")
+	for i := 0; i < 3; i++ {
+		_, err = balanceDb.Exec("PRAGMA journal_mode=WAL;")
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if err != nil {
-		log.Fatal("Failed to enable WAL mode:", err)
+		log.Fatal("Failed to enable WAL after retries:", err)
 	}
 
 	defer balanceDb.Close()
@@ -249,16 +286,22 @@ func ClosePositionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer closeDB.Close()
-	_, err = closeDB.Exec("PRAGMA journal_mode=WAL;")
+	for i := 0; i < 3; i++ {
+		_, err = closeDB.Exec("PRAGMA journal_mode=WAL;")
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if err != nil {
-		log.Fatal("Failed to enable WAL mode:", err)
+		log.Fatal("Failed to enable WAL after retries:", err)
 	}
 	createTableSQL := `
 		CREATE TABLE IF NOT EXISTS ClosePositions (
 			id STRING PRIMARY KEY,
 			price FLOAT NOT NULL,
 			amount INTEGER NOT NULL,
-			p/l FLOAT NOT NULL
+			pl FLOAT NOT NULL
 		);`
 	_, err = closeDB.Exec(createTableSQL)
 	if err != nil {
@@ -271,9 +314,15 @@ func ClosePositionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer openDB.Close()
-	_, err = openDB.Exec("PRAGMA journal_mode=WAL;")
+	for i := 0; i < 3; i++ {
+		_, err = openDB.Exec("PRAGMA journal_mode=WAL;")
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if err != nil {
-		log.Fatal("Failed to enable WAL mode:", err)
+		log.Fatal("Failed to enable WAL after retries:", err)
 	}
 	var openPrice float64
 	var openAmount int
@@ -288,14 +337,14 @@ func ClosePositionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pl := (closePosition.Price - openPrice) * float64(closePosition.Amount)
+	pl := ((closePosition.Price - openPrice) * float64(closePosition.Amount)) * 100
 
 	_, err = openDB.Exec("DELETE FROM OpenPositions WHERE id = ?", closePosition.ID)
 	if err != nil {
 		log.Printf("Failed to delete open position: %v", err)
 	}
 
-	insertData := `INSERT OR REPLACE INTO ClosePositions (id, price, amount, p/l) VALUES (?, ?, ?, ?)`
+	insertData := `INSERT OR REPLACE INTO ClosePositions (id, price, amount, pl) VALUES (?, ?, ?, ?)`
 	_, err = closeDB.Exec(insertData, closePosition.ID, closePosition.Price, closePosition.Amount, pl)
 	if err != nil {
 		log.Printf("Failed to write to table: %v", err)
@@ -304,9 +353,15 @@ func ClosePositionHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "Failed to open Balance table", http.StatusInternalServerError)
 	}
-	_, err = balanceDb.Exec("PRAGMA journal_mode=WAL;")
+	for i := 0; i < 3; i++ {
+		_, err = balanceDb.Exec("PRAGMA journal_mode=WAL;")
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if err != nil {
-		log.Fatal("Failed to enable WAL mode:", err)
+		log.Fatal("Failed to enable WAL after retries:", err)
 	}
 
 	defer balanceDb.Close()
