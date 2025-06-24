@@ -86,6 +86,7 @@ func startApiServer() {
 	log.Fatal(http.ListenAndServe(":8080", handler))
 }
 
+// Handles all websocket connections
 func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -149,20 +150,36 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 		var symbols []string
 		symbols = sendTrackerSymbols()
 		for _, symbol := range symbols {
-			request, err := ParseOptionString(symbol)
-			if err != nil {
-				log.Printf("Could not parse string")
-				return
+			if len(symbol) > 6 {
+				request, err := ParseOptionString(symbol)
+				if err != nil {
+					log.Printf("Could not parse string")
+					return
+				}
+				msg, err := json.Marshal(request)
+				if err != nil {
+					break
+				}
+				err = sendToClient(clients[clientID], msg)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+			} else {
+				request := utils.StockStreamRequest{
+					Symbol: symbol,
+				}
+				msg, err := json.Marshal(request)
+				if err != nil {
+					break
+				}
+				err = sendToClient(clients[clientID], msg)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
 			}
-			msg, err := json.Marshal(request)
-			if err != nil {
-				break
-			}
-			err = sendToClient("PYTHON_CLIENT", msg)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
+
 		}
 	}
 
@@ -174,6 +191,7 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 	<-newClient.Done
 }
 
+// Sends a message to the python streamer to start a subscription to a certain option ID
 func StartOptionStream(w http.ResponseWriter, r *http.Request) {
 	symbol := r.URL.Query().Get("symbol")
 	price := r.URL.Query().Get("price")
@@ -197,13 +215,14 @@ func StartOptionStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = sendToClient("PYTHON_CLIENT", msg)
+	err = sendToClient(clients["PYTHON_CLIENT"], msg)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 }
 
+// Sends a message to the python streamer to start a subscription to a certain stock
 func StartStockStream(w http.ResponseWriter, r *http.Request) {
 	symbol := r.URL.Query().Get("symbol")
 
@@ -215,7 +234,7 @@ func StartStockStream(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	err = sendToClient("PYTHON_CLIENT", msg)
+	err = sendToClient(clients["PYTHON_CLIENT"], msg)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -224,19 +243,17 @@ func StartStockStream(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Sent to WebSocket!")
 }
 
-func sendToClient(clientID string, msg []byte) error {
-	client, ok := clients[clientID]
-	if !ok {
-		return fmt.Errorf("client %s not connected", clientID)
-	}
-
+// Takes json and sends it to client
+func sendToClient(client *Client, msg []byte) error {
 	err := client.SafeWrite(websocket.TextMessage, msg)
 	if err != nil {
 		return err
 	}
-	log.Printf("sent to %s: %s", clientID, string(msg))
+	log.Printf("sent to %s: %s", client.ID, string(msg))
 	return nil
 }
+
+// Reads a message from the client and returns an error if there is one
 func receiveFromClient(client *Client) ([]byte, error) {
 	_, msg, err := client.Conn.ReadMessage()
 	if err != nil {
@@ -245,6 +262,7 @@ func receiveFromClient(client *Client) ([]byte, error) {
 	return msg, nil
 }
 
+// Receives and handles a websocket message
 func handleClientRead(client *Client) {
 	for {
 		msg, err := receiveFromClient(client)
@@ -283,8 +301,8 @@ func handleClientRead(client *Client) {
 	}
 }
 
+// Incremently writes balance to the Frontend
 func handleClientWrite(client *Client) {
-	// Example: Send incremental updates every 30 seconds
 	now := time.Now()
 	wait := 15*time.Second - (time.Duration(now.Second()%15)*time.Second + time.Duration(now.Nanosecond()))
 	timer := time.NewTimer(wait)
@@ -295,7 +313,7 @@ func handleClientWrite(client *Client) {
 		timer.Stop()
 		return
 	case t := <-timer.C:
-		processWrite(t, client)
+		processWriteBalance(t, client)
 	}
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
@@ -306,11 +324,12 @@ func handleClientWrite(client *Client) {
 			log.Printf("handleClientWrite exiting for client %s", client.ID)
 			return
 		case t := <-ticker.C:
-			processWrite(t, client)
+			processWriteBalance(t, client)
 		}
 	}
 }
 
+// Retrieve the most recent prices from an array of FileNames(tickers) and write to STOCK_CLIENT
 func getRecentPrices(FileNames []string, ws *websocket.Conn) {
 	for _, fileName := range FileNames {
 		db, err := sql.Open("sqlite", fmt.Sprintf("%s.db", fileName))
@@ -347,7 +366,7 @@ func getRecentPrices(FileNames []string, ws *websocket.Conn) {
 			if err != nil {
 				return
 			}
-			err = sendToClient("STOCK_CLIENT", msg)
+			err = sendToClient(clients["STOCK_CLIENT"], msg)
 			if err != nil {
 				errMsg := map[string]string{"error": err.Error()}
 				msg, _ := json.Marshal(errMsg)
@@ -375,7 +394,7 @@ func getRecentPrices(FileNames []string, ws *websocket.Conn) {
 			if err != nil {
 				return
 			}
-			err = sendToClient("STOCK_CLIENT", msg)
+			err = sendToClient(clients["STOCK_CLIENT"], msg)
 			if err != nil {
 				errMsg := map[string]string{"error": err.Error()}
 				msg, _ := json.Marshal(errMsg)
@@ -386,7 +405,8 @@ func getRecentPrices(FileNames []string, ws *websocket.Conn) {
 	}
 }
 
-func processWrite(t time.Time, client *Client) {
+// Write to a specific client the most recent balance
+func processWriteBalance(t time.Time, client *Client) {
 	openPositions := make(map[string]int)
 	var realBalance float64
 
@@ -521,7 +541,7 @@ func processWrite(t time.Time, client *Client) {
 	if err != nil {
 		return
 	}
-	err = sendToClient("STOCK_CLIENT", msg)
+	err = sendToClient(clients["STOCK_CLIENT"], msg)
 	if err != nil {
 		errMsg := map[string]string{"error": err.Error()}
 		msg, _ := json.Marshal(errMsg)
@@ -530,6 +550,7 @@ func processWrite(t time.Time, client *Client) {
 	}
 }
 
+// Reads the ids from the Tracker db and sends them to the python stream
 func sendTrackerSymbols() []string {
 	var symbols []string
 	db, err := sql.Open("sqlite", "Tracker.db")
@@ -557,6 +578,7 @@ func sendTrackerSymbols() []string {
 	return symbols
 }
 
+// Parses the full option id into each component
 func ParseOptionString(s string) (utils.OptionStreamRequest, error) {
 	var req utils.OptionStreamRequest
 
