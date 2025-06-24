@@ -19,6 +19,7 @@ type Client struct {
 	Conn *websocket.Conn
 	ID   string // unique identifier for this client (e.g., user ID, session ID)
 	Mu   sync.Mutex
+	Done chan struct{}
 }
 
 func (c *Client) SafeWrite(messageType int, data []byte) error {
@@ -70,14 +71,6 @@ func CorsMiddleware(next http.Handler) http.Handler {
 
 func startApiServer() {
 	mux := http.NewServeMux()
-	// mux.HandleFunc("/options", utils.OptionsHandler)
-	// mux.HandleFunc("/earningsCalender", utils.EarningsCalenderHandler)
-	// mux.HandleFunc("/stock", utils.StockHandler)
-	// mux.HandleFunc("/earningsVolatility", utils.EarningsVolatilityHandler)
-	// mux.HandleFunc("/todayStock", utils.TodayStockHandler)
-	// mux.HandleFunc("/economicData", utils.EconomicDataHandler)
-	// mux.HandleFunc("/impliedVolatility", utils.OptionVolatilityHandler)
-	// mux.HandleFunc("/combinedOptions", utils.CombinedOptionsHandler)
 	mux.HandleFunc("/connect", websocketConnectHandler)
 	mux.HandleFunc("/startOptionStream", StartOptionStream)
 	mux.HandleFunc("/startStockStream", StartStockStream)
@@ -85,6 +78,7 @@ func startApiServer() {
 	mux.HandleFunc("/newTracker", utils.NewTrackerHandler)
 	mux.HandleFunc("/openPosition", utils.OpenPositionHandler)
 	mux.HandleFunc("/closePosition", utils.ClosePositionHandler)
+	mux.HandleFunc("/closeTracker", utils.RemoveTrackerHandler)
 
 	handler := CorsMiddleware(mux)
 
@@ -98,30 +92,59 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 		log.Println("Upgrade error:", err)
 		return
 	}
-	defer ws.Close()
 
 	clientID := r.URL.Query().Get("id")
-
-	clientsMu.Lock()
-	if _, exists := clients[clientID]; exists {
-		clientsMu.Unlock()
-		_ = ws.WriteMessage(websocket.TextMessage, []byte(`{"error":"client ID already connected"}`))
+	if clientID == "" {
+		log.Println("Client ID missing")
+		ws.Close()
 		return
 	}
-	clients[clientID] = &Client{Conn: ws, ID: clientID}
+
+	clientsMu.Lock()
+
+	newClient := &Client{
+		Conn: ws,
+		ID:   clientID,
+		Done: make(chan struct{}),
+	}
+	if oldConn, exists := clients[clientID]; exists {
+		log.Printf("Client %s already connected — replacing connection", clientID)
+
+		oldConn.Conn.Close()
+
+		// Wait for old goroutines to finish by waiting for Done channel to close
+		<-oldConn.Done
+
+		// Now safe to delete old client
+		clientsMu.Lock()
+		delete(clients, clientID)
+		clientsMu.Unlock()
+	}
+	clients[clientID] = newClient
 	clientsMu.Unlock()
+
 	log.Printf("Client connected: %s", clientID)
 
 	defer func() {
 		clientsMu.Lock()
-		delete(clients, clientID)
+		client, exists := clients[clientID]
+		if exists {
+			delete(clients, clientID)
+			client.Conn.Close()
+			select {
+			case <-client.Done:
+				// already closed
+			default:
+				close(client.Done)
+			}
+			log.Printf("Client disconnected: %s", clientID)
+		} else {
+			log.Printf("Client %s was already removed", clientID)
+		}
 		clientsMu.Unlock()
-		ws.Close()
-		log.Printf("Client disconnected: %s", clientID)
 	}()
 
 	// Start reader and writer goroutines
-	done := make(chan struct{})
 	if clientID == "PYTHON_CLIENT" {
 		var symbols []string
 		symbols = sendTrackerSymbols()
@@ -129,10 +152,11 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 			request, err := ParseOptionString(symbol)
 			if err != nil {
 				log.Printf("Could not parse string")
+				return
 			}
 			msg, err := json.Marshal(request)
 			if err != nil {
-				return
+				break
 			}
 			err = sendToClient("PYTHON_CLIENT", msg)
 			if err != nil {
@@ -142,13 +166,12 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	go handleClientRead(ws, clientID, done)
+	go handleClientRead(newClient)
 	if clientID == "STOCK_CLIENT" {
-		go handleClientWrite(ws, done)
+		go handleClientWrite(newClient)
 	}
 
-	// Wait for either read or write to signal done
-	<-done
+	<-newClient.Done
 }
 
 func StartOptionStream(w http.ResponseWriter, r *http.Request) {
@@ -214,12 +237,7 @@ func sendToClient(clientID string, msg []byte) error {
 	log.Printf("sent to %s: %s", clientID, string(msg))
 	return nil
 }
-func receiveFromClient(clientID string) ([]byte, error) {
-	client, ok := clients[clientID]
-	if !ok {
-		return nil, fmt.Errorf("client %s not connected", clientID)
-	}
-
+func receiveFromClient(client *Client) ([]byte, error) {
 	_, msg, err := client.Conn.ReadMessage()
 	if err != nil {
 		return nil, err
@@ -227,51 +245,68 @@ func receiveFromClient(clientID string) ([]byte, error) {
 	return msg, nil
 }
 
-func handleClientRead(ws *websocket.Conn, clientID string, done chan struct{}) {
-	defer close(done)
+func handleClientRead(client *Client) {
 	for {
-		msg, err := receiveFromClient(clientID)
+		msg, err := receiveFromClient(client)
 		if err != nil {
-			log.Println("Receive error:", err)
-			break
+			log.Printf("Receive error for client %s: %v", client.ID, err)
+			select {
+			case <-client.Done:
+				// already closed
+			default:
+				close(client.Done)
+			}
+			return
 		}
+
+		select {
+		case <-client.Done:
+			log.Printf("handleClientRead exiting for client %s", client.ID)
+			return
+		default:
+		}
+
 		var incoming struct {
 			Type      string   `json:"type"`
 			Filenames []string `json:"filenames"`
 		}
 		if err := json.Unmarshal(msg, &incoming); err != nil {
-			log.Println("Invalid message:", err)
+			log.Printf("Invalid message from client %s: %v", client.ID, err)
 			continue
 		}
-		fmt.Println(incoming)
+
+		fmt.Printf("Received from %s: %+v\n", client.ID, incoming)
+
 		if incoming.Type == "dataReady" {
-			getRecentPrices(incoming.Filenames, ws)
+			getRecentPrices(incoming.Filenames, client.Conn)
 		}
 	}
 }
 
-func handleClientWrite(ws *websocket.Conn, done chan struct{}) {
+func handleClientWrite(client *Client) {
 	// Example: Send incremental updates every 30 seconds
 	now := time.Now()
-	wait := 30*time.Second - (time.Duration(now.Second()%30)*time.Second + time.Duration(now.Nanosecond()))
+	wait := 15*time.Second - (time.Duration(now.Second()%15)*time.Second + time.Duration(now.Nanosecond()))
 	timer := time.NewTimer(wait)
 
 	select {
-	case <-done:
+	case <-client.Done:
+		log.Printf("handleClientWrite exiting for client %s", client.ID)
 		timer.Stop()
 		return
 	case t := <-timer.C:
-		processWrite(t, ws, done)
+		processWrite(t, client)
 	}
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-done:
+		case <-client.Done:
+			log.Printf("handleClientWrite exiting for client %s", client.ID)
 			return
 		case t := <-ticker.C:
-			processWrite(t, ws, done)
+			processWrite(t, client)
 		}
 	}
 }
@@ -351,7 +386,7 @@ func getRecentPrices(FileNames []string, ws *websocket.Conn) {
 	}
 }
 
-func processWrite(t time.Time, ws *websocket.Conn, done chan struct{}) {
+func processWrite(t time.Time, client *Client) {
 	openPositions := make(map[string]int)
 	var realBalance float64
 
@@ -490,7 +525,7 @@ func processWrite(t time.Time, ws *websocket.Conn, done chan struct{}) {
 	if err != nil {
 		errMsg := map[string]string{"error": err.Error()}
 		msg, _ := json.Marshal(errMsg)
-		_ = ws.WriteMessage(websocket.TextMessage, msg)
+		_ = client.SafeWrite(websocket.TextMessage, msg)
 		return
 	}
 }

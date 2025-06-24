@@ -17,7 +17,7 @@ type PostData struct {
 	FileNames []string `json:"filenames"`
 }
 
-type NewTracker struct {
+type Tracker struct {
 	ID string `json:"id"`
 }
 type Position struct {
@@ -94,7 +94,7 @@ func NewTrackerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var newTracker NewTracker
+	var newTracker Tracker
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -130,6 +130,48 @@ func NewTrackerHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fmt.Fprintf(w, "Data has been read")
+}
+func RemoveTrackerHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var closeTracker Tracker
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	err = json.Unmarshal(body, &closeTracker)
+	if err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	db, err := sql.Open("sqlite", "./Tracker.db")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+	createTableSQL := `
+		CREATE TABLE IF NOT EXISTS Tracker (
+			id STRING PRIMARY KEY
+		);`
+	_, err = db.Exec(createTableSQL)
+	if err != nil {
+		log.Fatalf("Failed to create table: %v", err)
+	}
+
+	_, err = db.Exec("DELETE FROM Tracker WHERE id = ?", closeTracker.ID)
+	if err != nil {
+		log.Fatalf("Failed to delete from table: %v", err)
+	}
+
+	fmt.Fprintf(w, "Data has been deleted")
 }
 
 func OpenPositionHandler(w http.ResponseWriter, r *http.Request) {

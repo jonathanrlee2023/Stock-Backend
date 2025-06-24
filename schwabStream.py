@@ -72,7 +72,7 @@ async def listen_for_messages(websocket, streamer):
 
 async def write_to_db(websocket):
     while True:
-        await asyncio.sleep(30 - time.time() % 30)
+        await asyncio.sleep(15 - time.time() % 15)
         timestamp = int(time.time())        
         
         if len(stream_func.file_names) != 0:
