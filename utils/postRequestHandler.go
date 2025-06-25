@@ -242,14 +242,34 @@ func OpenPositionHandler(w http.ResponseWriter, r *http.Request) {
 		if newPosition.ID == id {
 			avg := ((float64(newPosition.Amount) * newPosition.Price) + (price * float64(amount))) / float64(amount+newPosition.Amount)
 			newPosition.Amount += amount
-			newPosition.Price = math.Round((avg * 100) / 100)
+			newPosition.Price = math.Round(avg*100) / 100
 		}
 	}
 
-	insertData := `INSERT OR REPLACE INTO OpenPositions (id, price, amount) VALUES (?, ?, ?)`
+	insertData := `INSERT INTO OpenPositions (id, price, amount) VALUES (?, ?, ?)`
 	_, err = openDb.Exec(insertData, newPosition.ID, newPosition.Price, newPosition.Amount)
 	if err != nil {
 		log.Printf("Failed to write to table: %v", err)
+	}
+	createTableSQL = fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s (
+			order_number INTEGER PRIMARY KEY AUTOINCREMENT,
+			price FLOAT NOT NULL
+		);
+	`, newPosition.ID)
+
+	_, err = openDb.Exec(createTableSQL)
+	if err != nil {
+		log.Printf("Failed to create table: %v", err)
+	}
+
+	// Insert into that dedicated table
+	for i := 1; i <= int(newPosition.Amount); i++ {
+		insertSQL := fmt.Sprintf(`INSERT INTO %s (price) VALUES (?)`, newPosition.ID)
+		_, err = openDb.Exec(insertSQL, newPosition.Price)
+		if err != nil {
+			log.Printf("Failed to insert into table: %v", err)
+		}
 	}
 	balanceDb, err := sql.Open("sqlite", "Balance.db")
 	if err != nil {
@@ -293,7 +313,7 @@ func OpenPositionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	balance = balance - (100 * (newPosition.Price * float64(newPosition.Amount)))
 
-	insertData = `INSERT OR REPLACE INTO Balance (timestamp, balance) VALUES (?, ?)`
+	insertData = `INSERT INTO Balance (timestamp, balance) VALUES (?, ?)`
 	_, err = balanceDb.Exec(insertData, time.Now().Unix(), balance)
 	if err != nil {
 		http.Error(w, "Failed to write balance", http.StatusInternalServerError)
@@ -306,7 +326,7 @@ func ClosePositionHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
+	var pl float64
 	var closePosition Position
 
 	body, err := io.ReadAll(r.Body)
@@ -340,7 +360,8 @@ func ClosePositionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	createTableSQL := `
 		CREATE TABLE IF NOT EXISTS ClosePositions (
-			id STRING PRIMARY KEY,
+			order_number INTEGER PRIMARY KEY AUTOINCREMENT,
+			id STRING NOT NULL,
 			price FLOAT NOT NULL,
 			amount INTEGER NOT NULL,
 			pl FLOAT NOT NULL
@@ -366,27 +387,81 @@ func ClosePositionHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Fatal("Failed to enable WAL after retries:", err)
 	}
-	var openPrice float64
-	var openAmount int
 
-	row := openDB.QueryRow("SELECT price, amount FROM OpenPositions WHERE id = ?", closePosition.ID)
-	err = row.Scan(&openPrice, &openAmount)
-	if err == sql.ErrNoRows {
-		http.Error(w, "No open position found with given ID", http.StatusNotFound)
-		return
-	} else if err != nil {
-		http.Error(w, "Failed to query OpenPositions", http.StatusInternalServerError)
-		return
+	for i := 0; i < int(closePosition.Amount); i++ {
+		querySelect := fmt.Sprintf("SELECT order_number, price FROM %s ORDER BY order_number LIMIT 1", closePosition.ID)
+
+		var orderNumber int
+		var price float64
+		err := openDB.QueryRow(querySelect).Scan(&orderNumber, &price)
+		if err == sql.ErrNoRows {
+			log.Println("No more positions to close")
+			break
+		} else if err != nil {
+			log.Printf("Failed to select FIFO position from %s: %v", closePosition.ID, err)
+			break
+		}
+
+		queryDelete := fmt.Sprintf("DELETE FROM %s WHERE order_number = ?", closePosition.ID)
+		_, err = openDB.Exec(queryDelete, orderNumber)
+		if err != nil {
+			log.Printf("Failed to delete position %d from %s: %v", orderNumber, closePosition.ID, err)
+			break
+		}
+		pl += (price - closePosition.Price) * 100
 	}
-
-	pl := ((closePosition.Price - openPrice) * float64(closePosition.Amount)) * 100
-
-	_, err = openDB.Exec("DELETE FROM OpenPositions WHERE id = ?", closePosition.ID)
+	var id string
+	var price float64
+	var amount int
+	var avg float64
+	count := 0
+	row := openDB.QueryRow("SELECT id, price, amount FROM OpenPositions where id = ?", closePosition.ID)
+	err = row.Scan(&id, &price, &amount)
 	if err != nil {
-		log.Printf("Failed to delete open position: %v", err)
+		log.Printf("Failed to read table: %v", err)
 	}
 
-	insertData := `INSERT OR REPLACE INTO ClosePositions (id, price, amount, pl) VALUES (?, ?, ?, ?)`
+	query := fmt.Sprintf("SELECT order_number, price FROM %s ORDER BY order_number", closePosition.ID)
+
+	rows, err := openDB.Query(query)
+	if err != nil {
+		log.Fatalf("Query failed: %v", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var orderNumber int
+		var price float64
+
+		err := rows.Scan(&orderNumber, &price)
+		if err != nil {
+			log.Printf("Scan failed: %v", err)
+			continue
+		}
+
+		avg += price
+		count++
+	}
+	if count != 0 {
+		avg = avg / float64(count)
+		insertData := `INSERT OR REPLACE INTO OpenPositions (id, price, amount) VALUES (?, ?, ?)`
+		_, err = openDB.Exec(insertData, closePosition.ID, avg, count)
+		if err != nil {
+			log.Printf("Failed to write to table: %v", err)
+		}
+	} else {
+		_, err = openDB.Exec("DELETE FROM OpenPositions WHERE id = ?", closePosition.ID)
+		if err != nil {
+			log.Printf("Failed to delete: %v", err)
+			return
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		log.Printf("Rows iteration error: %v", err)
+	}
+
+	insertData := `INSERT INTO ClosePositions (id, price, amount, pl) VALUES (?, ?, ?, ?)`
 	_, err = closeDB.Exec(insertData, closePosition.ID, closePosition.Price, closePosition.Amount, pl)
 	if err != nil {
 		log.Printf("Failed to write to table: %v", err)
