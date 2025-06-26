@@ -86,15 +86,15 @@ async def write_to_db(websocket):
                     cursor.execute("""
                         CREATE TABLE IF NOT EXISTS prices (
                             timestamp INTEGER PRIMARY KEY,
-                            bid_price FLOAT NOT NULL,
-                            ask_price FLOAT NOT NULL,
-                            last_price FLOAT NOT NULL,
-                            high_price FLOAT NOT NULL,
-                            iv FLOAT NOT NULL,
-                            delta FLOAT NOT NULL,
-                            gamma FLOAT NOT NULL,
-                            theta FLOAT NOT NULL,
-                            vega FLOAT NOT NULL
+                            bid_price REAL NOT NULL,
+                            ask_price REAL NOT NULL,
+                            last_price REAL NOT NULL,
+                            high_price REAL NOT NULL,
+                            iv REAL NOT NULL,
+                            delta REAL NOT NULL,
+                            gamma REAL NOT NULL,
+                            theta REAL NOT NULL,
+                            vega REAL NOT NULL
                     )
                     """)
                     cursor.execute("""
@@ -117,9 +117,9 @@ async def write_to_db(websocket):
                     cursor.execute("""
                         CREATE TABLE IF NOT EXISTS prices (
                             timestamp INTEGER PRIMARY KEY AUTOINCREMENT,
-                            bid_price FLOAT NOT NULL,
-                            ask_price FLOAT NOT NULL,
-                            last_price FLOAT NOT NULL,
+                            bid_price REAL NOT NULL,
+                            ask_price REAL NOT NULL,
+                            last_price REAL NOT NULL,
                             bid_size INTEGER NOT NULL,
                             ask_size INTEGER NOT NULL
                     )

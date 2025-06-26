@@ -214,7 +214,7 @@ func OpenPositionHandler(w http.ResponseWriter, r *http.Request) {
 	createTableSQL := `
 		CREATE TABLE IF NOT EXISTS OpenPositions (
 			id STRING PRIMARY KEY,
-			price FLOAT NOT NULL,
+			price REAL NOT NULL,
 			amount INTEGER NOT NULL
 		);`
 	_, err = openDb.Exec(createTableSQL)
@@ -228,33 +228,55 @@ func OpenPositionHandler(w http.ResponseWriter, r *http.Request) {
 		log.Fatal("Query failed process write openDB:", err)
 	}
 	defer rows.Close()
+	var existingAmount int64
+	var existingPrice float64
+	found := false
 
 	for rows.Next() {
 		var id string
 		var price float64
 		var amount int64
-
 		err := rows.Scan(&id, &price, &amount)
 		if err != nil {
 			log.Println("Scan failed:", err)
 			continue
 		}
 		if newPosition.ID == id {
-			avg := ((float64(newPosition.Amount) * newPosition.Price) + (price * float64(amount))) / float64(amount+newPosition.Amount)
-			newPosition.Amount += amount
-			newPosition.Price = math.Round(avg*100) / 100
+			existingAmount = amount
+			existingPrice = price
+			found = true
+			break // no need to keep scanning
 		}
 	}
 
-	insertData := `INSERT INTO OpenPositions (id, price, amount) VALUES (?, ?, ?)`
-	_, err = openDb.Exec(insertData, newPosition.ID, newPosition.Price, newPosition.Amount)
+	updatedAmount := newPosition.Amount
+	if found {
+		// average in the new shares with the existing ones
+		total := float64(existingAmount)*existingPrice + float64(newPosition.Amount)*newPosition.Price
+		updatedAmount = existingAmount + newPosition.Amount
+		newPosition.Price = math.Round(total/float64(updatedAmount)*100) / 100
+	}
+	var exists bool
+	err = openDb.QueryRow("SELECT EXISTS(SELECT 1 FROM OpenPositions WHERE id = ?)", newPosition.ID).Scan(&exists)
+	if err != nil {
+		log.Printf("Failed to check existence: %v", err)
+	}
+
+	if exists {
+		updateData := `UPDATE OpenPositions SET price = ?, amount = ? WHERE id = ?`
+		_, err = openDb.Exec(updateData, newPosition.Price, updatedAmount, newPosition.ID)
+	} else {
+		insertData := `INSERT INTO OpenPositions (id, price, amount) VALUES (?, ?, ?)`
+		_, err = openDb.Exec(insertData, newPosition.ID, newPosition.Price, updatedAmount)
+	}
+
 	if err != nil {
 		log.Printf("Failed to write to table: %v", err)
 	}
 	createTableSQL = fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
 			order_number INTEGER PRIMARY KEY AUTOINCREMENT,
-			price FLOAT NOT NULL
+			price REAL NOT NULL
 		);
 	`, newPosition.ID)
 
@@ -291,7 +313,7 @@ func OpenPositionHandler(w http.ResponseWriter, r *http.Request) {
 	createTableSQL = `
 		CREATE TABLE IF NOT EXISTS Balance (
 			timestamp INTEGER PRIMARY KEY,
-			balance FLOAT NOT NULL
+			balance REAL NOT NULL
 		);`
 	_, err = balanceDb.Exec(createTableSQL)
 	if err != nil {
@@ -313,7 +335,7 @@ func OpenPositionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	balance = balance - (100 * (newPosition.Price * float64(newPosition.Amount)))
 
-	insertData = `INSERT INTO Balance (timestamp, balance) VALUES (?, ?)`
+	insertData := `INSERT INTO Balance (timestamp, balance) VALUES (?, ?)`
 	_, err = balanceDb.Exec(insertData, time.Now().Unix(), balance)
 	if err != nil {
 		http.Error(w, "Failed to write balance", http.StatusInternalServerError)
@@ -362,9 +384,9 @@ func ClosePositionHandler(w http.ResponseWriter, r *http.Request) {
 		CREATE TABLE IF NOT EXISTS ClosePositions (
 			order_number INTEGER PRIMARY KEY AUTOINCREMENT,
 			id STRING NOT NULL,
-			price FLOAT NOT NULL,
+			price REAL NOT NULL,
 			amount INTEGER NOT NULL,
-			pl FLOAT NOT NULL
+			pl REAL NOT NULL
 		);`
 	_, err = closeDB.Exec(createTableSQL)
 	if err != nil {
@@ -408,8 +430,9 @@ func ClosePositionHandler(w http.ResponseWriter, r *http.Request) {
 			log.Printf("Failed to delete position %d from %s: %v", orderNumber, closePosition.ID, err)
 			break
 		}
-		pl += (price - closePosition.Price) * 100
+		pl += math.Round((price-closePosition.Price)*10000) / 100
 	}
+
 	var id string
 	var price float64
 	var amount int

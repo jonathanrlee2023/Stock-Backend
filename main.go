@@ -2,14 +2,18 @@ package main
 
 import (
 	"Go-API/utils"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"math"
 	"net/http"
+	"os"
+	"os/signal"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -20,6 +24,13 @@ type Client struct {
 	ID   string // unique identifier for this client (e.g., user ID, session ID)
 	Mu   sync.Mutex
 	Done chan struct{}
+	once sync.Once
+}
+
+func (c *Client) Close() {
+	c.once.Do(func() {
+		close(c.Done)
+	})
 }
 
 func (c *Client) SafeWrite(messageType int, data []byte) error {
@@ -40,17 +51,45 @@ var upgrader = websocket.Upgrader{
 }
 
 func main() {
-	// Empty cache folder everytime API is turned on
-	folderPath := []string{"./StockDataCache", "./TodayStockDataCache"}
-	for _, value := range folderPath {
-		err := utils.DeleteContents(value)
-		if err != nil {
-			fmt.Println("Error:", err)
-		}
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/connect", websocketConnectHandler)
+	mux.HandleFunc("/startOptionStream", StartOptionStream)
+	mux.HandleFunc("/startStockStream", StartStockStream)
+	mux.HandleFunc("/dataReady", utils.DataReadyHandler)
+	mux.HandleFunc("/newTracker", utils.NewTrackerHandler)
+	mux.HandleFunc("/openPosition", utils.OpenPositionHandler)
+	mux.HandleFunc("/closePosition", utils.ClosePositionHandler)
+	mux.HandleFunc("/closeTracker", utils.RemoveTrackerHandler)
+
+	handler := CorsMiddleware(mux)
+
+	server := &http.Server{
+		Addr:    ":8080",
+		Handler: handler,
 	}
 
-	// start api
-	startApiServer() // blocks forever
+	// Run server in a goroutine
+	go func() {
+		fmt.Println("Server is running on port 8080...")
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("ListenAndServe(): %v", err)
+		}
+	}()
+
+	<-stop
+	log.Println("Shutting down gracefully...")
+
+	shutdownAllClients()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		log.Fatalf("Server Shutdown Failed:%+v", err)
+	}
+	log.Println("Server exited")
 }
 
 // Function that handles http permissions
@@ -67,23 +106,6 @@ func CorsMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
-}
-
-func startApiServer() {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/connect", websocketConnectHandler)
-	mux.HandleFunc("/startOptionStream", StartOptionStream)
-	mux.HandleFunc("/startStockStream", StartStockStream)
-	mux.HandleFunc("/dataReady", utils.DataReadyHandler)
-	mux.HandleFunc("/newTracker", utils.NewTrackerHandler)
-	mux.HandleFunc("/openPosition", utils.OpenPositionHandler)
-	mux.HandleFunc("/closePosition", utils.ClosePositionHandler)
-	mux.HandleFunc("/closeTracker", utils.RemoveTrackerHandler)
-
-	handler := CorsMiddleware(mux)
-
-	fmt.Println("Server is running on port 8080...")
-	log.Fatal(http.ListenAndServe(":8080", handler))
 }
 
 // Handles all websocket connections
@@ -108,18 +130,9 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 		ID:   clientID,
 		Done: make(chan struct{}),
 	}
-	if oldConn, exists := clients[clientID]; exists {
+	if _, exists := clients[clientID]; exists {
 		log.Printf("Client %s already connected — replacing connection", clientID)
-
-		oldConn.Conn.Close()
-
-		// Wait for old goroutines to finish by waiting for Done channel to close
-		<-oldConn.Done
-
-		// Now safe to delete old client
-		clientsMu.Lock()
-		delete(clients, clientID)
-		clientsMu.Unlock()
+		DisconnectClient(clientID) // replaces oldConn.Conn.Close() + oldConn.Close()
 	}
 	clients[clientID] = newClient
 	clientsMu.Unlock()
@@ -127,60 +140,47 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Client connected: %s", clientID)
 
 	defer func() {
-		clientsMu.Lock()
-		client, exists := clients[clientID]
-		if exists {
-			delete(clients, clientID)
-			client.Conn.Close()
-			select {
-			case <-client.Done:
-				// already closed
-			default:
-				close(client.Done)
-			}
-			log.Printf("Client disconnected: %s", clientID)
-		} else {
-			log.Printf("Client %s was already removed", clientID)
-		}
-		clientsMu.Unlock()
+		DisconnectClient(clientID)
 	}()
 
 	// Start reader and writer goroutines
 	if clientID == "PYTHON_CLIENT" {
 		var symbols []string
 		symbols = sendTrackerSymbols()
-		for _, symbol := range symbols {
-			if len(symbol) > 6 {
-				request, err := ParseOptionString(symbol)
-				if err != nil {
-					log.Printf("Could not parse string")
-					return
-				}
-				msg, err := json.Marshal(request)
-				if err != nil {
-					break
-				}
-				err = sendToClient(clients[clientID], msg)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-			} else {
-				request := utils.StockStreamRequest{
-					Symbol: symbol,
-				}
-				msg, err := json.Marshal(request)
-				if err != nil {
-					break
-				}
-				err = sendToClient(clients[clientID], msg)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
+		if symbols != nil {
+			for _, symbol := range symbols {
+				if len(symbol) > 6 {
+					request, err := ParseOptionString(symbol)
+					if err != nil {
+						log.Printf("Could not parse string")
+						return
+					}
+					msg, err := json.Marshal(request)
+					if err != nil {
+						break
+					}
+					err = sendToClient(clients[clientID], msg)
+					if err != nil {
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
+				} else {
+					request := utils.StockStreamRequest{
+						Symbol: symbol,
+					}
+					msg, err := json.Marshal(request)
+					if err != nil {
+						break
+					}
+					err = sendToClient(clients[clientID], msg)
+					if err != nil {
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
 				}
 			}
-
 		}
+
 	}
 
 	go handleClientRead(newClient)
@@ -189,6 +189,39 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	<-newClient.Done
+}
+
+func DisconnectClient(clientID string) {
+	clientsMu.Lock()
+	client, exists := clients[clientID]
+	if !exists {
+		log.Printf("Client %s was already removed", clientID)
+		clientsMu.Unlock()
+		return
+	}
+	delete(clients, clientID)
+	clientsMu.Unlock()
+
+	client.Conn.Close()
+	client.Close() // safe: Once ensures it's only closed once
+	log.Printf("Client disconnected: %s", clientID)
+}
+
+func shutdownAllClients() {
+	clientsMu.Lock()
+	defer clientsMu.Unlock()
+
+	for id, client := range clients {
+		log.Printf("Closing connection for client: %s", id)
+		client.Conn.Close()
+		client.Close()
+		select {
+		case <-client.Done:
+		default:
+			close(client.Done)
+		}
+		delete(clients, id)
+	}
 }
 
 // Sends a message to the python streamer to start a subscription to a certain option ID
@@ -268,12 +301,7 @@ func handleClientRead(client *Client) {
 		msg, err := receiveFromClient(client)
 		if err != nil {
 			log.Printf("Receive error for client %s: %v", client.ID, err)
-			select {
-			case <-client.Done:
-				// already closed
-			default:
-				close(client.Done)
-			}
+			DisconnectClient(client.ID)
 			return
 		}
 
@@ -310,6 +338,7 @@ func handleClientWrite(client *Client) {
 	select {
 	case <-client.Done:
 		log.Printf("handleClientWrite exiting for client %s", client.ID)
+		DisconnectClient(client.ID)
 		timer.Stop()
 		return
 	case t := <-timer.C:
@@ -322,6 +351,7 @@ func handleClientWrite(client *Client) {
 		select {
 		case <-client.Done:
 			log.Printf("handleClientWrite exiting for client %s", client.ID)
+			DisconnectClient(client.ID)
 			return
 		case t := <-ticker.C:
 			processWriteBalance(t, client)
@@ -429,7 +459,7 @@ func processWriteBalance(t time.Time, client *Client) {
 	createTableSQL := `
 		CREATE TABLE IF NOT EXISTS Balance (
 			timestamp INTEGER PRIMARY KEY,
-			balance FLOAT NOT NULL
+			balance REAL NOT NULL
 		);`
 	_, err = balanceDB.Exec(createTableSQL)
 	if err != nil {
@@ -472,7 +502,7 @@ func processWriteBalance(t time.Time, client *Client) {
 	createTableSQL = `
 		CREATE TABLE IF NOT EXISTS OpenPositions (
 			id STRING PRIMARY KEY,
-			price FLOAT NOT NULL,
+			price REAL NOT NULL,
 			amount INTEGER NOT NULL
 		);`
 	_, err = openDB.Exec(createTableSQL)
@@ -550,18 +580,19 @@ func processWriteBalance(t time.Time, client *Client) {
 	}
 }
 
-// Reads the ids from the Tracker db and sends them to the python stream
 func sendTrackerSymbols() []string {
 	var symbols []string
 	db, err := sql.Open("sqlite", "Tracker.db")
 	if err != nil {
-		panic(err)
+		log.Println("No Tracker")
+		return nil
 	}
 	defer db.Close()
 
 	rows, err := db.Query("SELECT id FROM Tracker")
 	if err != nil {
-		panic(err)
+		log.Println("No Tables in Tracker")
+		return nil
 	}
 	defer rows.Close()
 
@@ -570,7 +601,8 @@ func sendTrackerSymbols() []string {
 
 		err := rows.Scan(&id)
 		if err != nil {
-			panic(err)
+			log.Println("No rows to read from")
+			return nil
 		}
 
 		symbols = append(symbols, id)
