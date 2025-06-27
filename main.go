@@ -52,8 +52,10 @@ var upgrader = websocket.Upgrader{
 
 func main() {
 	stop := make(chan os.Signal, 1)
+	// Check if ctrl C is pressed
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
+	// Endpoints for API
 	mux := http.NewServeMux()
 	mux.HandleFunc("/connect", websocketConnectHandler)
 	mux.HandleFunc("/startOptionStream", StartOptionStream)
@@ -132,7 +134,7 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, exists := clients[clientID]; exists {
 		log.Printf("Client %s already connected — replacing connection", clientID)
-		DisconnectClient(clientID) // replaces oldConn.Conn.Close() + oldConn.Close()
+		DisconnectClient(clientID)
 	}
 	clients[clientID] = newClient
 	clientsMu.Unlock()
