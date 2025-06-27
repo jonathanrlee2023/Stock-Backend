@@ -333,7 +333,11 @@ func OpenPositionHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to query Balance", http.StatusInternalServerError)
 		return
 	}
-	balance = balance - (100 * (newPosition.Price * float64(newPosition.Amount)))
+	if len(newPosition.ID) > 6 {
+		balance = balance - (100 * (newPosition.Price * float64(newPosition.Amount)))
+	} else {
+		balance = balance - (newPosition.Price * float64(newPosition.Amount))
+	}
 
 	insertData := `INSERT INTO Balance (timestamp, balance) VALUES (?, ?)`
 	_, err = balanceDb.Exec(insertData, time.Now().Unix(), balance)
@@ -430,7 +434,11 @@ func ClosePositionHandler(w http.ResponseWriter, r *http.Request) {
 			log.Printf("Failed to delete position %d from %s: %v", orderNumber, closePosition.ID, err)
 			break
 		}
-		pl += math.Round((price-closePosition.Price)*10000) / 100
+		if len(closePosition.ID) > 6 {
+			pl += math.Round((closePosition.Price-price)*10000) / 100
+		} else {
+			pl += math.Round((closePosition.Price-price)*100) / 100
+		}
 	}
 
 	var id string
@@ -518,7 +526,11 @@ func ClosePositionHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to query Balance", http.StatusInternalServerError)
 		return
 	}
-	balance = balance + (100 * (closePosition.Price * float64(closePosition.Amount)))
+	if len(closePosition.ID) > 6 {
+		balance = balance + (100 * (closePosition.Price * float64(closePosition.Amount)))
+	} else {
+		balance = balance + (closePosition.Price * float64(closePosition.Amount))
+	}
 
 	insertData = `INSERT OR REPLACE INTO Balance (timestamp, balance) VALUES (?, ?)`
 	_, err = balanceDb.Exec(insertData, time.Now().Unix(), balance)

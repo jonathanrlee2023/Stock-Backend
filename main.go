@@ -366,7 +366,14 @@ func getRecentPrices(FileNames []string, ws *websocket.Conn) {
 	for _, fileName := range FileNames {
 		db, err := sql.Open("sqlite", fmt.Sprintf("%s.db", fileName))
 		if err != nil {
-			log.Printf("Query failed recent prices: %v", err)
+			log.Printf("Query failed recent 1 prices: %v", err)
+		}
+		for i := 0; i < 3; i++ {
+			_, err = db.Exec("PRAGMA journal_mode=WAL;")
+			if err == nil {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
 		}
 		defer db.Close()
 		if len(fileName) > 5 {
@@ -377,7 +384,7 @@ func getRecentPrices(FileNames []string, ws *websocket.Conn) {
 
 			err := row.Scan(&timestamp, &bid, &ask, &last, &high, &iv, &delta, &gamma, &theta, &vega)
 			if err != nil {
-				log.Printf("Query failed recent prices: %v", err)
+				log.Printf("Query failed recent 2 prices: %v", err)
 				return
 			}
 			data := utils.OptionPriceData{
@@ -414,7 +421,7 @@ func getRecentPrices(FileNames []string, ws *websocket.Conn) {
 
 			err := row.Scan(&timestamp, &bid, &ask, &last, &askSize, &bidSize)
 			if err != nil {
-				log.Printf("Query failed recent prices: %v", err)
+				log.Printf("Query failed recent 3 prices: %v", err)
 				return
 			}
 			data := utils.StockPriceData{
@@ -548,17 +555,29 @@ func processWriteBalance(t time.Time, client *Client) {
 			log.Fatal("Failed to enable WAL after retries:", err)
 		}
 		row := db.QueryRow("SELECT * FROM prices ORDER BY timestamp DESC LIMIT 1")
+		if len(names) > 6 {
+			var timestamp int64
+			var bid, ask, last, high, iv, delta, gamma, theta, vega float64
 
-		var timestamp int64
-		var bid, ask, last, high, iv, delta, gamma, theta, vega float64
-
-		err = row.Scan(&timestamp, &bid, &ask, &last, &high, &iv, &delta, &gamma, &theta, &vega)
-		if err != nil {
-			log.Printf("Query failed process write position file: %v", err)
-			return
+			err = row.Scan(&timestamp, &bid, &ask, &last, &high, &iv, &delta, &gamma, &theta, &vega)
+			if err != nil {
+				log.Printf("Query failed process write position file: %v", err)
+				return
+			}
+			mark := math.Round(((ask+bid)/2)*100) / 100
+			realBalance += (mark * float64(amount)) * 100
+		} else {
+			var timestamp, bidSize, askSize int64
+			var bidPrice, askPrice, lastPrice float64
+			err = row.Scan(&timestamp, &bidPrice, &askPrice, &lastPrice, &bidSize, &askSize)
+			if err != nil {
+				log.Printf("Query failed process write position file: %v", err)
+				return
+			}
+			mark := math.Round(((askPrice+bidPrice)/2)*100) / 100
+			realBalance += (mark * float64(amount))
 		}
-		mark := math.Round(((ask+bid)/2)*100) / 100
-		realBalance += (mark * float64(amount)) * 100
+
 	}
 	if err := rows.Err(); err != nil {
 		log.Println("Rows iteration error:", err)
