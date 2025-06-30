@@ -49,6 +49,7 @@ var upgrader = websocket.Upgrader{
 		return true // allow all connections; adjust for production!
 	},
 }
+var ids []string
 
 func main() {
 	stop := make(chan os.Signal, 1)
@@ -187,6 +188,7 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 
 	go handleClientRead(newClient)
 	if clientID == "STOCK_CLIENT" {
+		sendOpenPositions()
 		go handleClientWrite(newClient)
 	}
 
@@ -344,7 +346,7 @@ func handleClientWrite(client *Client) {
 		timer.Stop()
 		return
 	case t := <-timer.C:
-		processWriteBalance(t, client)
+		processWrite(t, client)
 	}
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
@@ -356,7 +358,7 @@ func handleClientWrite(client *Client) {
 			DisconnectClient(client.ID)
 			return
 		case t := <-ticker.C:
-			processWriteBalance(t, client)
+			processWrite(t, client)
 		}
 	}
 }
@@ -445,7 +447,7 @@ func getRecentPrices(FileNames []string, ws *websocket.Conn) {
 }
 
 // Write to a specific client the most recent balance
-func processWriteBalance(t time.Time, client *Client) {
+func processWrite(t time.Time, client *Client) {
 	openPositions := make(map[string]int)
 	var realBalance float64
 
@@ -577,7 +579,6 @@ func processWriteBalance(t time.Time, client *Client) {
 			mark := math.Round(((askPrice+bidPrice)/2)*100) / 100
 			realBalance += (mark * float64(amount))
 		}
-
 	}
 	if err := rows.Err(); err != nil {
 		log.Println("Rows iteration error:", err)
@@ -625,8 +626,28 @@ func sendTrackerSymbols() []string {
 			log.Println("No rows to read from")
 			return nil
 		}
-
-		symbols = append(symbols, id)
+		if len(id) > 6 {
+			request, err := ParseOptionString(id)
+			if err != nil {
+				log.Println("Failed to parse")
+			}
+			expDate, err := ParseExpirationDate(request)
+			if err != nil {
+				log.Println("Failed to parse")
+			}
+			now := time.Now().UTC()
+			if expDate.Before(now) {
+				_, err := db.Exec("DELETE FROM Tracker WHERE id = ?", id)
+				if err != nil {
+					log.Println("Failed to delete expired tracker:", err)
+				} else {
+					log.Printf("Deleted expired tracker: %s (expired on %s)", id, expDate.Format(time.RFC3339))
+				}
+				continue
+			}
+		} else {
+			symbols = append(symbols, id)
+		}
 	}
 	return symbols
 }
@@ -669,4 +690,105 @@ func ParseOptionString(s string) (utils.OptionStreamRequest, error) {
 	req.Price = fmt.Sprintf("%.2f", float64(priceInt)/1000.0)
 
 	return req, nil
+}
+
+func ParseExpirationDate(req utils.OptionStreamRequest) (time.Time, error) {
+	day, err := strconv.Atoi(req.Day)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid day: %v", err)
+	}
+	month, err := strconv.Atoi(req.Month)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid month: %v", err)
+	}
+	yearStr := req.Year
+	var year int
+	if len(yearStr) == 2 {
+		// Interpret YY as 2000+YY if YY < 50, else 1900+YY
+		yy, err := strconv.Atoi(yearStr)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("invalid year: %v", err)
+		}
+		if yy < 50 {
+			year = 2000 + yy
+		} else {
+			year = 1900 + yy
+		}
+	} else if len(yearStr) == 4 {
+		year, err = strconv.Atoi(yearStr)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("invalid year: %v", err)
+		}
+	} else {
+		return time.Time{}, fmt.Errorf("invalid year length: %s", yearStr)
+	}
+
+	// Construct the time.Time object
+	return time.Date(year, time.Month(month), day, 23, 59, 59, 0, time.UTC), nil
+}
+
+func sendOpenPositions() {
+	var openIDs []string
+	openDB, err := sql.Open("sqlite", "Open.db")
+	if err != nil {
+		log.Printf("Query failed process write openDB: %v", err)
+		return
+	}
+	defer openDB.Close()
+	for i := 0; i < 3; i++ {
+		_, err = openDB.Exec("PRAGMA journal_mode=WAL;")
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil {
+		log.Fatal("Failed to enable WAL after retries:", err)
+	}
+	createTableSQL := `
+		CREATE TABLE IF NOT EXISTS OpenPositions (
+			id STRING PRIMARY KEY,
+			price REAL NOT NULL,
+			amount INTEGER NOT NULL
+		);`
+	_, err = openDB.Exec(createTableSQL)
+	rows, err := openDB.Query("SELECT * FROM OpenPositions")
+	if err == sql.ErrNoRows {
+		fmt.Println("No Open Positions Yet")
+		return
+	} else if err != nil {
+		log.Fatal("Query failed process write openDB:", err)
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id string
+		var price float64
+		var amount int64
+
+		err := rows.Scan(&id, &price, &amount)
+		if err != nil {
+			log.Println("Scan failed:", err)
+			continue
+		}
+
+		openIDs = append(openIDs, id)
+	}
+	msg := utils.OpenPositionsMessage{
+		IDs: openIDs,
+	}
+
+	jsonData, err := json.Marshal(msg)
+	if err != nil {
+		log.Println("Failed to marshal open positions:", err)
+		return
+	}
+
+	err = sendToClient(clients["STOCK_CLIENT"], jsonData)
+	if err != nil {
+		errMsg := map[string]string{"error": err.Error()}
+		msg, _ := json.Marshal(errMsg)
+		_ = clients["STOCK_CLIENT"].SafeWrite(websocket.TextMessage, msg)
+	}
 }
