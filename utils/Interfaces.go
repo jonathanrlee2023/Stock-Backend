@@ -15,7 +15,7 @@ type StockStreamRequest struct {
 	Symbol string `json:"symbol"`
 }
 type OpenPositionsMessage struct {
-	IDs []string `json:"idList"`
+	IDs map[string]int64 `json:"idList"`
 }
 type OptionPriceData struct {
 	Symbol    string  `json:"symbol"`

@@ -645,6 +645,7 @@ func sendTrackerSymbols() []string {
 				}
 				continue
 			}
+			symbols = append(symbols, id)
 		} else {
 			symbols = append(symbols, id)
 		}
@@ -728,7 +729,7 @@ func ParseExpirationDate(req utils.OptionStreamRequest) (time.Time, error) {
 }
 
 func sendOpenPositions() {
-	var openIDs []string
+	openIDs := make(map[string]int64)
 	openDB, err := sql.Open("sqlite", "Open.db")
 	if err != nil {
 		log.Printf("Query failed process write openDB: %v", err)
@@ -773,7 +774,7 @@ func sendOpenPositions() {
 			continue
 		}
 
-		openIDs = append(openIDs, id)
+		openIDs[id] = amount
 	}
 	msg := utils.OpenPositionsMessage{
 		IDs: openIDs,
