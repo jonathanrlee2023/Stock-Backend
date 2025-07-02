@@ -7,7 +7,7 @@ import os
 import time
 import stream_func
 import sys
-from datetime import datetime, timedelta
+import datetime
 from filelock import FileLock
 import asyncio
 import websockets
@@ -79,12 +79,12 @@ async def write_to_db(websocket):
             for name in stream_func.file_names:
                 conn = sqlite3.connect(f'{name}.db')
                 cursor = conn.cursor()
-                timestamp = int(time.time())
                 data = stream_func.new_data[name]
-                print(name)
+                today = datetime.date.today()
+                today_str = today.strftime("%Y_%m_%d")
                 if len(name) > 8:
-                    cursor.execute("""
-                        CREATE TABLE IF NOT EXISTS prices (
+                    create_table_sql = f"""
+                        CREATE TABLE IF NOT EXISTS "{today_str}" (
                             timestamp INTEGER PRIMARY KEY,
                             bid_price REAL NOT NULL,
                             ask_price REAL NOT NULL,
@@ -95,13 +95,16 @@ async def write_to_db(websocket):
                             gamma REAL NOT NULL,
                             theta REAL NOT NULL,
                             vega REAL NOT NULL
-                    )
-                    """)
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO prices (
+                        );
+                    """
+                    cursor.execute(create_table_sql)
+                    conn.commit()
+                    insert_table = f"""
+                        INSERT OR REPLACE INTO "{today_str}" (
                             timestamp, bid_price, ask_price, last_price, high_price, iv, delta, gamma, theta, vega
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
+                    """
+                    cursor.execute(insert_table, (
                         timestamp,
                         data["Bid Price"],
                         data["Ask Price"],
@@ -114,21 +117,23 @@ async def write_to_db(websocket):
                         data["Vega"]
                     ))
                 else:
-                    cursor.execute("""
-                        CREATE TABLE IF NOT EXISTS prices (
+                    create_table_sql = f"""
+                        CREATE TABLE IF NOT EXISTS "{today_str}" (
                             timestamp INTEGER PRIMARY KEY AUTOINCREMENT,
                             bid_price REAL NOT NULL,
                             ask_price REAL NOT NULL,
                             last_price REAL NOT NULL,
                             bid_size INTEGER NOT NULL,
                             ask_size INTEGER NOT NULL
-                    )
-                    """)
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO prices (
+                        );
+                    """
+                    cursor.execute(create_table_sql)
+                    insert_table = f"""
+                        INSERT OR REPLACE INTO "{today_str}" (
                             timestamp, bid_price, ask_price, last_price, bid_size, ask_size
                         ) VALUES (?, ?, ?, ?, ?, ?)
-                    """, (
+                    """
+                    cursor.execute(insert_table, (
                         timestamp,
                         data["Bid Price"],
                         data["Ask Price"],
@@ -145,6 +150,7 @@ async def write_to_db(websocket):
 
         else:
             continue
+
 
 async def main():
     load_dotenv()  # loads variables from .env into environment

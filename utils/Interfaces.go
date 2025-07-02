@@ -15,7 +15,8 @@ type StockStreamRequest struct {
 	Symbol string `json:"symbol"`
 }
 type OpenPositionsMessage struct {
-	IDs map[string]int64 `json:"idList"`
+	PrevBalance float64          `json:"prevBalance"`
+	IDs         map[string]int64 `json:"idList"`
 }
 type OptionPriceData struct {
 	Symbol    string  `json:"symbol"`
@@ -45,6 +46,12 @@ type StockDbData struct {
 	Last      float64 `json:"last"`
 	AskSize   int64   `json:"askSize"`
 	BidSize   int64   `json:"bidSize"`
+}
+
+type BalanceDbData struct {
+	Timestamp   int64   `json:"timestamp"`
+	Balance     float64 `json:"balance"`
+	RealBalance float64 `json:"realBalance"`
 }
 
 type OptionDbData struct {

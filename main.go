@@ -12,6 +12,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -57,8 +59,7 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	// Check if ctrl C is pressed
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-
-	WriteEODData()
+	runDailyAt(15, 0, 0, WriteEODData)
 	// Endpoints for API
 	mux := http.NewServeMux()
 	mux.HandleFunc("/connect", websocketConnectHandler)
@@ -96,6 +97,23 @@ func main() {
 		log.Fatalf("Server Shutdown Failed:%+v", err)
 	}
 	log.Println("Server exited")
+}
+
+// Runs a function daily at a specified time
+func runDailyAt(hour, min, sec int, task func()) {
+	go func() {
+		for {
+			now := time.Now()
+			// Next occurrence of the target time today or tomorrow
+			next := time.Date(now.Year(), now.Month(), now.Day(), hour, min, sec, 0, now.Location())
+			if !next.After(now) {
+				next = next.Add(24 * time.Hour)
+			}
+			duration := next.Sub(now)
+			time.Sleep(duration)
+			task()
+		}
+	}()
 }
 
 // Function that handles http permissions
@@ -381,8 +399,11 @@ func getRecentPrices(FileNames []string, ws *websocket.Conn) {
 			time.Sleep(50 * time.Millisecond)
 		}
 		defer db.Close()
+		date := utils.TodayDate()
+
 		if len(fileName) > 5 {
-			row := db.QueryRow("SELECT * FROM prices ORDER BY timestamp DESC LIMIT 1")
+			query := fmt.Sprintf(`SELECT * FROM "%s" ORDER BY timestamp DESC LIMIT 1`, date)
+			row := db.QueryRow(query)
 
 			var timestamp int64
 			var bid, ask, last, high, iv, delta, gamma, theta, vega float64
@@ -418,7 +439,8 @@ func getRecentPrices(FileNames []string, ws *websocket.Conn) {
 				return
 			}
 		} else {
-			row := db.QueryRow("SELECT * FROM prices ORDER BY timestamp DESC LIMIT 1")
+			query := fmt.Sprintf(`SELECT * FROM "%s" ORDER BY timestamp DESC LIMIT 1`, date)
+			row := db.QueryRow(query)
 
 			var timestamp int64
 			var bid, ask, last float64
@@ -453,6 +475,7 @@ func getRecentPrices(FileNames []string, ws *websocket.Conn) {
 func processWrite(t time.Time, client *Client) {
 	openPositions := make(map[string]int)
 	var realBalance float64
+	var balance float64
 
 	balanceDB, err := sql.Open("sqlite", "Balance.db")
 	if err != nil {
@@ -470,31 +493,53 @@ func processWrite(t time.Time, client *Client) {
 	if err != nil {
 		log.Fatal("Failed to enable WAL after retries:", err)
 	}
-	createTableSQL := `
-		CREATE TABLE IF NOT EXISTS Balance (
-			timestamp INTEGER PRIMARY KEY,
-			balance REAL NOT NULL
-		);`
+	date := utils.TodayDate()
+
+	createTableSQL := fmt.Sprintf(`
+	CREATE TABLE IF NOT EXISTS "%s" (
+		timestamp INTEGER PRIMARY KEY,
+		balance REAL NOT NULL,
+		realBalance REAL NOT NULL	
+	);`, date)
 	_, err = balanceDB.Exec(createTableSQL)
 	if err != nil {
-		log.Printf("Query failed process write balanceDB: %v", err)
+		log.Printf("Failed to create today's table in Balance.db: %v", err)
 		return
 	}
-	row := balanceDB.QueryRow("SELECT * FROM Balance ORDER BY timestamp DESC LIMIT 1")
 
-	var timestamp int64
-
-	err = row.Scan(&timestamp, &realBalance)
-	if err == sql.ErrNoRows {
-		realBalance = 10000
-	} else if err != nil {
-		log.Printf("Query failed process write balanceDB: %v", err)
-		return
-	}
-	insertData := `INSERT OR REPLACE INTO Balance (timestamp, balance) VALUES (?, ?)`
-	_, err = balanceDB.Exec(insertData, time.Now().Unix(), realBalance)
+	tables, err := getDateTables(balanceDB)
 	if err != nil {
-		log.Printf("Query failed process write balanceDB: %v", err)
+		log.Printf("Failed to get date tables in Balance.db: %v", err)
+		return
+	}
+
+	// Sort tables in descending order (newest dates first)
+	sort.Slice(tables, func(i, j int) bool {
+		return tables[i] > tables[j]
+	})
+	balance = 10000
+	realBalance = 10000 // default fallback
+
+	found := false
+	for _, tbl := range tables {
+		query := fmt.Sprintf(`SELECT timestamp, balance, realBalance FROM "%s" ORDER BY timestamp DESC LIMIT 1`, tbl)
+		row := balanceDB.QueryRow(query)
+
+		var timestamp int64
+		err := row.Scan(&timestamp, &balance, &realBalance)
+		if err == sql.ErrNoRows {
+			continue // table exists but is empty — try earlier table
+		} else if err != nil {
+			log.Printf("Failed to query table %s: %v", tbl, err)
+			continue
+		}
+
+		found = true
+		break
+	}
+
+	if !found {
+		log.Printf("No existing balances found; using default balance: %.2f", realBalance)
 	}
 
 	openDB, err := sql.Open("sqlite", "Open.db")
@@ -542,6 +587,8 @@ func processWrite(t time.Time, client *Client) {
 		openPositions[id] = int(amount)
 	}
 
+	tempBalance := balance
+
 	for names, amount := range openPositions {
 		db, err := sql.Open("sqlite", fmt.Sprintf("%s.db", names))
 		if err != nil {
@@ -559,7 +606,9 @@ func processWrite(t time.Time, client *Client) {
 		if err != nil {
 			log.Fatal("Failed to enable WAL after retries:", err)
 		}
-		row := db.QueryRow("SELECT * FROM prices ORDER BY timestamp DESC LIMIT 1")
+		date := utils.TodayDate()
+		query := fmt.Sprintf(`SELECT * FROM "%s" ORDER BY timestamp DESC LIMIT 1`, date)
+		row := db.QueryRow(query)
 		if len(names) > 6 {
 			var timestamp int64
 			var bid, ask, last, high, iv, delta, gamma, theta, vega float64
@@ -570,7 +619,7 @@ func processWrite(t time.Time, client *Client) {
 				return
 			}
 			mark := math.Round(((ask+bid)/2)*100) / 100
-			realBalance += (mark * float64(amount)) * 100
+			tempBalance += (mark * float64(amount)) * 100
 		} else {
 			var timestamp, bidSize, askSize int64
 			var bidPrice, askPrice, lastPrice float64
@@ -580,11 +629,18 @@ func processWrite(t time.Time, client *Client) {
 				return
 			}
 			mark := math.Round(((askPrice+bidPrice)/2)*100) / 100
-			realBalance += (mark * float64(amount))
+			tempBalance += (mark * float64(amount))
 		}
 	}
+	realBalance = tempBalance
 	if err := rows.Err(); err != nil {
 		log.Println("Rows iteration error:", err)
+	}
+
+	insertData := fmt.Sprintf(`INSERT OR REPLACE INTO "%s" (timestamp, balance, realBalance) VALUES (?, ?, ?)`, date)
+	_, err = balanceDB.Exec(insertData, time.Now().Unix(), balance, realBalance)
+	if err != nil {
+		log.Printf("Failed to insert initial balance into table %s: %v", date, err)
 	}
 	message := utils.StockPriceData{
 		Symbol:    "balance",
@@ -727,12 +783,13 @@ func ParseExpirationDate(req utils.OptionStreamRequest) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("invalid year length: %s", yearStr)
 	}
 
-	// Construct the time.Time object
 	return time.Date(year, time.Month(month), day, 23, 59, 59, 0, time.UTC), nil
 }
 
+// Sends open position and previous balance
 func sendOpenPositions() {
 	openIDs := make(map[string]int64)
+	prevBalance := getMostRecentBalance()
 	openDB, err := sql.Open("sqlite", "Open.db")
 	if err != nil {
 		log.Printf("Query failed process write openDB: %v", err)
@@ -779,8 +836,10 @@ func sendOpenPositions() {
 
 		openIDs[id] = amount
 	}
+
 	msg := utils.OpenPositionsMessage{
-		IDs: openIDs,
+		PrevBalance: prevBalance,
+		IDs:         openIDs,
 	}
 
 	jsonData, err := json.Marshal(msg)
@@ -797,72 +856,137 @@ func sendOpenPositions() {
 	}
 }
 
-func GetLastEntriesPerDay(db *sql.DB, fileName string) ([]utils.StockDbData, []utils.OptionDbData, error) {
-	if len(fileName) > 8 {
-		query := `
-			SELECT timestamp, bid_price, ask_price, last_price, high_price, iv, delta, gamma, theta, vega
-			FROM prices
-			JOIN (
-				SELECT DATE(datetime(timestamp, 'unixepoch')) AS day, MAX(timestamp) AS latest_ts
-				FROM prices
-				GROUP BY day
-			) AS daily_max
-			ON DATE(datetime(timestamp, 'unixepoch')) = daily_max.day
-			AND timestamp = daily_max.latest_ts
-			ORDER BY timestamp;
-		`
-
-		rows, err := db.Query(query)
-		if err != nil {
-			return nil, nil, fmt.Errorf("query failed: %w", err)
-		}
-		defer rows.Close()
-		var results []utils.OptionDbData
-		for rows.Next() {
-			var e utils.OptionDbData
-			if err := rows.Scan(&e.Timestamp, &e.Bid, &e.Ask, &e.High, &e.Last, &e.IV, &e.Delta, &e.Gamma, &e.Theta, &e.Vega); err != nil {
-				return nil, nil, fmt.Errorf("scan failed: %w", err)
-			}
-			results = append(results, e)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, nil, fmt.Errorf("rows iteration error: %w", err)
-
-		}
-		return nil, results, nil
-	} else {
-		query := `
-			SELECT timestamp, bid_price, ask_price, last_price, bid_size, ask_size
-			FROM prices
-			JOIN (
-				SELECT DATE(datetime(timestamp, 'unixepoch')) AS day, MAX(timestamp) AS latest_ts
-				FROM prices
-				GROUP BY day
-			) AS daily_max
-			ON DATE(datetime(timestamp, 'unixepoch')) = daily_max.day
-			AND timestamp = daily_max.latest_ts
-			ORDER BY timestamp;
-		`
-
-		rows, err := db.Query(query)
-		if err != nil {
-			return nil, nil, fmt.Errorf("query failed: %w", err)
-		}
-		defer rows.Close()
-		var results []utils.StockDbData
-		for rows.Next() {
-			var e utils.StockDbData
-			if err := rows.Scan(&e.Timestamp, &e.Bid, &e.Ask, &e.Last, &e.AskSize, &e.BidSize); err != nil {
-				return nil, nil, fmt.Errorf("scan failed: %w", err)
-			}
-			results = append(results, e)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, nil, fmt.Errorf("rows iteration error: %w", err)
-
-		}
-		return results, nil, nil
+// Gets the previous day's last balance
+func getMostRecentBalance() float64 {
+	const balanceDBPath = "Balance.db"
+	db, err := sql.Open("sqlite", balanceDBPath)
+	if err != nil {
+		log.Printf("Failed to open Balance.db: %v", err)
+		return 10000
 	}
+	defer db.Close()
+
+	query := `SELECT balance FROM EODPrices ORDER BY timestamp DESC LIMIT 1;`
+	row := db.QueryRow(query)
+
+	var balance float64
+	err = row.Scan(&balance)
+	if err == sql.ErrNoRows {
+		log.Println("No rows in EODPrices; using default balance 10000")
+		return 10000
+	} else if err != nil {
+		log.Printf("Failed to read latest EOD balance: %v", err)
+		return 10000
+	}
+
+	log.Printf("Found most recent EOD balance: %.2f", balance)
+	return balance
+}
+
+// Gets the last entries of each table
+func GetLastEntriesPerDay(db *sql.DB, fileName string) ([]utils.StockDbData, []utils.BalanceDbData, []utils.OptionDbData, error) {
+	tables, err := getDateTables(db) // get all date-named tables
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to get date tables: %w", err)
+	}
+
+	if len(fileName) > 8 && fileName != "Balance.db" {
+		var allResults []utils.OptionDbData
+
+		for _, tableName := range tables {
+			query := fmt.Sprintf(`
+				SELECT timestamp, bid_price, ask_price, last_price, high_price, iv, delta, gamma, theta, vega
+				FROM "%s"
+				ORDER BY timestamp DESC
+				LIMIT 1;
+			`, tableName)
+
+			row := db.QueryRow(query)
+
+			var e utils.OptionDbData
+			err := row.Scan(&e.Timestamp, &e.Bid, &e.Ask, &e.Last, &e.High, &e.IV, &e.Delta, &e.Gamma, &e.Theta, &e.Vega)
+			if err != nil {
+				if err == sql.ErrNoRows {
+					continue
+				}
+				return nil, nil, nil, fmt.Errorf("scan failed in table %s: %w", tableName, err)
+			}
+			allResults = append(allResults, e)
+		}
+		return nil, nil, allResults, nil
+	} else if fileName == "Balance.db" {
+		var allResults []utils.BalanceDbData
+
+		for _, tableName := range tables {
+			query := fmt.Sprintf(`
+				SELECT timestamp, balance, realBalance
+				FROM "%s"
+				ORDER BY timestamp DESC
+				LIMIT 1;
+			`, tableName)
+
+			row := db.QueryRow(query)
+
+			var e utils.BalanceDbData
+			err := row.Scan(&e.Timestamp, &e.Balance, &e.RealBalance)
+			if err != nil {
+				if err == sql.ErrNoRows {
+					continue
+				}
+				return nil, nil, nil, fmt.Errorf("scan failed in table %s: %w", tableName, err)
+			}
+			allResults = append(allResults, e)
+		}
+		return nil, allResults, nil, nil
+	} else {
+		var allResults []utils.StockDbData
+
+		for _, tableName := range tables {
+			query := fmt.Sprintf(`
+				SELECT timestamp, bid_price, ask_price, last_price, bid_size, ask_size
+				FROM "%s"
+				ORDER BY timestamp DESC
+				LIMIT 1;
+			`, tableName)
+
+			row := db.QueryRow(query)
+
+			var e utils.StockDbData
+			err := row.Scan(&e.Timestamp, &e.Bid, &e.Ask, &e.Last, &e.BidSize, &e.AskSize)
+			if err != nil {
+				if err == sql.ErrNoRows {
+					continue
+				}
+				return nil, nil, nil, fmt.Errorf("scan failed in table %s: %w", tableName, err)
+			}
+			allResults = append(allResults, e)
+		}
+		return allResults, nil, nil, nil
+	}
+}
+
+// Retrieves all the tables for a given database
+func getDateTables(db *sql.DB) ([]string, error) {
+	const query = `SELECT name FROM sqlite_master WHERE type='table';`
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tables []string
+	dateRegex := regexp.MustCompile(`^\d{4}_\d{2}_\d{2}$`) // YYYY_MM_DD format
+
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		if dateRegex.MatchString(name) {
+			tables = append(tables, name)
+		}
+	}
+	return tables, rows.Err()
 }
 
 func WriteEODData() {
@@ -871,7 +995,6 @@ func WriteEODData() {
 	excluded := map[string]struct{}{
 		"Open.db":    {},
 		"Close.db":   {},
-		"Balance.db": {},
 		"Tracker.db": {},
 	}
 
@@ -902,9 +1025,10 @@ func WriteEODData() {
 		}
 		defer db.Close()
 
-		if len(path) > 8 {
-			_, data, err := GetLastEntriesPerDay(db, path)
-			fmt.Println(data)
+		fileName := filepath.Base(path)
+
+		if len(fileName) > 8 && fileName != "Balance.db" {
+			_, _, data, err := GetLastEntriesPerDay(db, fileName)
 			createTableSQL := `
 				CREATE TABLE IF NOT EXISTS EODPrices (
 					timestamp INTEGER PRIMARY KEY,
@@ -938,9 +1062,40 @@ func WriteEODData() {
 					return fmt.Errorf("failed to insert entry %+v: %w", entry, err)
 				}
 			}
-		} else {
-			data, _, err := GetLastEntriesPerDay(db, path)
+		} else if fileName == "Balance.db" {
+			_, data, _, err := GetLastEntriesPerDay(db, fileName)
+			if err != nil {
+				log.Println(err)
+			}
 			fmt.Println(data)
+			createTableSQL := `
+				CREATE TABLE IF NOT EXISTS EODPrices (
+					timestamp INTEGER PRIMARY KEY,
+					balance REAL NOT NULL,
+					realBalance REAL NOT NULL
+				);`
+
+			if _, err := db.Exec(createTableSQL); err != nil {
+				return fmt.Errorf("failed to create table: %w", err)
+			}
+
+			insertSQL := `INSERT OR REPLACE INTO EODPrices (
+                            timestamp, balance, realBalance
+                        ) VALUES (?, ?, ?)`
+			stmt, err := db.Prepare(insertSQL)
+			if err != nil {
+				return fmt.Errorf("failed to prepare insert statement: %w", err)
+			}
+			defer stmt.Close()
+
+			for _, entry := range data {
+				_, err = stmt.Exec(entry.Timestamp, entry.Balance, entry.RealBalance)
+				if err != nil {
+					return fmt.Errorf("failed to insert entry %+v: %w", entry, err)
+				}
+			}
+		} else {
+			data, _, _, err := GetLastEntriesPerDay(db, fileName)
 
 			createTableSQL := `
 				CREATE TABLE IF NOT EXISTS EODPrices (

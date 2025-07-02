@@ -26,6 +26,12 @@ type Position struct {
 	Amount int64   `json:"amount"`
 }
 
+func TodayDate() string {
+	today := time.Now()
+	todayStr := today.Format("2006_01_02")
+	return todayStr
+}
+
 func DataReadyHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
@@ -309,27 +315,32 @@ func OpenPositionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	defer balanceDb.Close()
+	today := TodayDate()
 
-	createTableSQL = `
-		CREATE TABLE IF NOT EXISTS Balance (
-			timestamp INTEGER PRIMARY KEY,
-			balance REAL NOT NULL
-		);`
+	createTableSQL = fmt.Sprintf(`
+	CREATE TABLE IF NOT EXISTS "%s" (
+		timestamp INTEGER PRIMARY KEY,
+		balance REAL NOT NULL,
+		realBalance REAL NOT NULL
+	);`, today)
 	_, err = balanceDb.Exec(createTableSQL)
 	if err != nil {
 		http.Error(w, "Failed to create Balance table", http.StatusInternalServerError)
 		return
 	}
-
-	row := balanceDb.QueryRow("SELECT * FROM Balance ORDER BY timestamp DESC LIMIT 1")
+	fmt.Println(today)
+	row := balanceDb.QueryRow(fmt.Sprintf(`SELECT timestamp, balance, realBalance FROM "%s" ORDER BY timestamp DESC LIMIT 1`, today))
 
 	var timestamp int64
 	var balance float64
+	var realBalance float64
 
-	err = row.Scan(&timestamp, &balance)
+	err = row.Scan(&timestamp, &balance, &realBalance)
 	if err == sql.ErrNoRows {
 		balance = 10000
+		realBalance = 10000
 	} else if err != nil {
+		log.Println(err)
 		http.Error(w, "Failed to query Balance", http.StatusInternalServerError)
 		return
 	}
@@ -339,8 +350,10 @@ func OpenPositionHandler(w http.ResponseWriter, r *http.Request) {
 		balance = balance - (newPosition.Price * float64(newPosition.Amount))
 	}
 
-	insertData := `INSERT INTO Balance (timestamp, balance) VALUES (?, ?)`
-	_, err = balanceDb.Exec(insertData, time.Now().Unix(), balance)
+	fmt.Println(balance)
+
+	insertData := fmt.Sprintf(`INSERT INTO "%s" (timestamp, balance, realBalance) VALUES (?, ?, ?)`, today)
+	_, err = balanceDb.Exec(insertData, time.Now().Unix(), balance, realBalance)
 	if err != nil {
 		http.Error(w, "Failed to write balance", http.StatusInternalServerError)
 	}
@@ -513,13 +526,15 @@ func ClosePositionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	defer balanceDb.Close()
+	today := TodayDate()
 
-	row = balanceDb.QueryRow("SELECT * FROM Balance ORDER BY timestamp DESC LIMIT 1")
+	row = balanceDb.QueryRow(fmt.Sprintf(`SELECT timestamp, balance, realBalance FROM "%s" ORDER BY timestamp DESC LIMIT 1`, today))
 
 	var timestamp int64
 	var balance float64
+	var realBalance float64
 
-	err = row.Scan(&timestamp, &balance)
+	err = row.Scan(&timestamp, &balance, &realBalance)
 	if err == sql.ErrNoRows {
 		http.Error(w, "No Rows", http.StatusInternalServerError)
 	} else if err != nil {
@@ -532,8 +547,8 @@ func ClosePositionHandler(w http.ResponseWriter, r *http.Request) {
 		balance = balance + (closePosition.Price * float64(closePosition.Amount))
 	}
 
-	insertData = `INSERT OR REPLACE INTO Balance (timestamp, balance) VALUES (?, ?)`
-	_, err = balanceDb.Exec(insertData, time.Now().Unix(), balance)
+	insertData = fmt.Sprintf(`INSERT OR REPLACE INTO %s (timestamp, balance, realBalance) VALUES (?, ?, ?)`, today)
+	_, err = balanceDb.Exec(insertData, time.Now().Unix(), balance, balance)
 	if err != nil {
 		http.Error(w, "Failed to write balance", http.StatusInternalServerError)
 	}
