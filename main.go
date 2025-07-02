@@ -11,7 +11,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -56,6 +58,7 @@ func main() {
 	// Check if ctrl C is pressed
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
+	WriteEODData()
 	// Endpoints for API
 	mux := http.NewServeMux()
 	mux.HandleFunc("/connect", websocketConnectHandler)
@@ -791,5 +794,190 @@ func sendOpenPositions() {
 		errMsg := map[string]string{"error": err.Error()}
 		msg, _ := json.Marshal(errMsg)
 		_ = clients["STOCK_CLIENT"].SafeWrite(websocket.TextMessage, msg)
+	}
+}
+
+func GetLastEntriesPerDay(db *sql.DB, fileName string) ([]utils.StockDbData, []utils.OptionDbData, error) {
+	if len(fileName) > 8 {
+		query := `
+			SELECT timestamp, bid_price, ask_price, last_price, high_price, iv, delta, gamma, theta, vega
+			FROM prices
+			JOIN (
+				SELECT DATE(datetime(timestamp, 'unixepoch')) AS day, MAX(timestamp) AS latest_ts
+				FROM prices
+				GROUP BY day
+			) AS daily_max
+			ON DATE(datetime(timestamp, 'unixepoch')) = daily_max.day
+			AND timestamp = daily_max.latest_ts
+			ORDER BY timestamp;
+		`
+
+		rows, err := db.Query(query)
+		if err != nil {
+			return nil, nil, fmt.Errorf("query failed: %w", err)
+		}
+		defer rows.Close()
+		var results []utils.OptionDbData
+		for rows.Next() {
+			var e utils.OptionDbData
+			if err := rows.Scan(&e.Timestamp, &e.Bid, &e.Ask, &e.High, &e.Last, &e.IV, &e.Delta, &e.Gamma, &e.Theta, &e.Vega); err != nil {
+				return nil, nil, fmt.Errorf("scan failed: %w", err)
+			}
+			results = append(results, e)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, nil, fmt.Errorf("rows iteration error: %w", err)
+
+		}
+		return nil, results, nil
+	} else {
+		query := `
+			SELECT timestamp, bid_price, ask_price, last_price, bid_size, ask_size
+			FROM prices
+			JOIN (
+				SELECT DATE(datetime(timestamp, 'unixepoch')) AS day, MAX(timestamp) AS latest_ts
+				FROM prices
+				GROUP BY day
+			) AS daily_max
+			ON DATE(datetime(timestamp, 'unixepoch')) = daily_max.day
+			AND timestamp = daily_max.latest_ts
+			ORDER BY timestamp;
+		`
+
+		rows, err := db.Query(query)
+		if err != nil {
+			return nil, nil, fmt.Errorf("query failed: %w", err)
+		}
+		defer rows.Close()
+		var results []utils.StockDbData
+		for rows.Next() {
+			var e utils.StockDbData
+			if err := rows.Scan(&e.Timestamp, &e.Bid, &e.Ask, &e.Last, &e.AskSize, &e.BidSize); err != nil {
+				return nil, nil, fmt.Errorf("scan failed: %w", err)
+			}
+			results = append(results, e)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, nil, fmt.Errorf("rows iteration error: %w", err)
+
+		}
+		return results, nil, nil
+	}
+}
+
+func WriteEODData() {
+	dir := "." // current working directory
+
+	excluded := map[string]struct{}{
+		"Open.db":    {},
+		"Close.db":   {},
+		"Balance.db": {},
+		"Tracker.db": {},
+	}
+
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if info.IsDir() {
+			return nil
+		}
+
+		if !strings.HasSuffix(info.Name(), ".db") {
+			return nil
+		}
+
+		if _, found := excluded[info.Name()]; found {
+			fmt.Printf("Skipping excluded file: %s\n", info.Name())
+			return nil
+		}
+
+		fmt.Printf("Processing database: %s\n", path)
+
+		db, err := sql.Open("sqlite", path)
+		if err != nil {
+			log.Printf("Failed to open database %s: %v\n", path, err)
+			return nil
+		}
+		defer db.Close()
+
+		if len(path) > 8 {
+			_, data, err := GetLastEntriesPerDay(db, path)
+			fmt.Println(data)
+			createTableSQL := `
+				CREATE TABLE IF NOT EXISTS EODPrices (
+					timestamp INTEGER PRIMARY KEY,
+					bid_price REAL NOT NULL,
+					ask_price REAL NOT NULL,
+					last_price REAL NOT NULL,
+					high_price REAL NOT NULL,
+					iv REAL NOT NULL,
+					delta REAL NOT NULL,
+					gamma REAL NOT NULL,
+					theta REAL NOT NULL,
+					vega REAL NOT NULL
+				);`
+
+			if _, err := db.Exec(createTableSQL); err != nil {
+				return fmt.Errorf("failed to create table: %w", err)
+			}
+
+			insertSQL := `INSERT OR REPLACE INTO EODPrices (
+                            timestamp, bid_price, ask_price, last_price, high_price, iv, delta, gamma, theta, vega
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+			stmt, err := db.Prepare(insertSQL)
+			if err != nil {
+				return fmt.Errorf("failed to prepare insert statement: %w", err)
+			}
+			defer stmt.Close()
+
+			for _, entry := range data {
+				_, err = stmt.Exec(entry.Timestamp, entry.Bid, entry.Ask, entry.Last, entry.High, entry.IV, entry.Delta, entry.Gamma, entry.Theta, entry.Vega)
+				if err != nil {
+					return fmt.Errorf("failed to insert entry %+v: %w", entry, err)
+				}
+			}
+		} else {
+			data, _, err := GetLastEntriesPerDay(db, path)
+			fmt.Println(data)
+
+			createTableSQL := `
+				CREATE TABLE IF NOT EXISTS EODPrices (
+					timestamp INTEGER PRIMARY KEY,
+					bid_price REAL NOT NULL,
+					ask_price REAL NOT NULL,
+					last_price REAL NOT NULL,
+					bid_size INTEGER NOT NULL,
+					ask_size INTEGER NOT NULL
+				);`
+
+			if _, err := db.Exec(createTableSQL); err != nil {
+				return fmt.Errorf("failed to create table: %w", err)
+			}
+
+			insertSQL := `INSERT OR REPLACE INTO EODPrices (
+                            timestamp, bid_price, ask_price, last_price, bid_size, ask_size
+                        ) VALUES (?, ?, ?, ?, ?, ?)`
+			stmt, err := db.Prepare(insertSQL)
+			if err != nil {
+				return fmt.Errorf("failed to prepare insert statement: %w", err)
+			}
+			defer stmt.Close()
+
+			for _, entry := range data {
+				_, err := stmt.Exec(entry.Timestamp, entry.Bid, entry.Ask, entry.Last, entry.BidSize, entry.AskSize)
+				if err != nil {
+					return fmt.Errorf("failed to insert entry %+v: %w", entry, err)
+				}
+			}
+
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		log.Fatalf("Failed walking folder: %v", err)
 	}
 }

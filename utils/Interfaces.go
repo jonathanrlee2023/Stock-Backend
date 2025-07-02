@@ -38,6 +38,28 @@ type StockPriceData struct {
 	Mark      float64 `json:"mark"`
 }
 
+type StockDbData struct {
+	Timestamp int64   `json:"timestamp"`
+	Bid       float64 `json:"bid"`
+	Ask       float64 `json:"ask"`
+	Last      float64 `json:"last"`
+	AskSize   int64   `json:"askSize"`
+	BidSize   int64   `json:"bidSize"`
+}
+
+type OptionDbData struct {
+	Timestamp int64   `json:"timestamp"`
+	Bid       float64 `json:"bid"`
+	Ask       float64 `json:"ask"`
+	Last      float64 `json:"last"`
+	High      float64 `json:"high"`
+	IV        float64 `json:"iv"`
+	Delta     float64 `json:"delta"`
+	Gamma     float64 `json:"gamma"`
+	Theta     float64 `json:"theta"`
+	Vega      float64 `json:"vega"`
+}
+
 type AlpacaResponse struct {
 	Bars map[string][]struct {
 		C  float64   `json:"c"`
