@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import pytz
 import requests
 import schwabdev
 from dotenv import load_dotenv
@@ -151,12 +152,29 @@ async def write_to_db(websocket):
         else:
             continue
 
+def is_weekday_business_hours_central(now=None):
+    if now is None:   
+        now = datetime.datetime.now(datetime.timezone.utc)
+
+    central = pytz.timezone('US/Central')
+    now_central = now.astimezone(central)
+
+    if now_central.weekday() >= 5:  # 5=Saturday, 6=Sunday
+        return False
+
+    start = now_central.replace(hour=8, minute=30, second=0, microsecond=0)
+    end = now_central.replace(hour=15, minute=0, second=0, microsecond=0)
+
+    return start <= now_central <= end
 
 async def main():
     load_dotenv()  # loads variables from .env into environment
 
     appKey = os.getenv("appKey")
     appSecret = os.getenv("appSecret")
+
+    while is_weekday_business_hours_central(None) is False:
+        time.sleep(5)
 
     client = schwabdev.Client(app_key=appKey, app_secret=appSecret)
 

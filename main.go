@@ -431,13 +431,18 @@ func getRecentPrices(FileNames []string, ws *websocket.Conn) {
 			if err != nil {
 				return
 			}
-			err = sendToClient(clients["STOCK_CLIENT"], msg)
-			if err != nil {
-				errMsg := map[string]string{"error": err.Error()}
-				msg, _ := json.Marshal(errMsg)
-				_ = ws.WriteMessage(websocket.TextMessage, msg)
-				return
+			if clients["STOCK_CLIENT"] != nil {
+				err = sendToClient(clients["STOCK_CLIENT"], msg)
+				if err != nil {
+					errMsg := map[string]string{"error": err.Error()}
+					msg, _ := json.Marshal(errMsg)
+					_ = ws.WriteMessage(websocket.TextMessage, msg)
+					return
+				}
+			} else {
+				log.Println("Stock Client is not connected")
 			}
+
 		} else {
 			query := fmt.Sprintf(`SELECT * FROM "%s" ORDER BY timestamp DESC LIMIT 1`, date)
 			row := db.QueryRow(query)
@@ -460,12 +465,16 @@ func getRecentPrices(FileNames []string, ws *websocket.Conn) {
 			if err != nil {
 				return
 			}
-			err = sendToClient(clients["STOCK_CLIENT"], msg)
-			if err != nil {
-				errMsg := map[string]string{"error": err.Error()}
-				msg, _ := json.Marshal(errMsg)
-				_ = ws.WriteMessage(websocket.TextMessage, msg)
-				return
+			if clients["STOCK_CLIENT"] != nil {
+				err = sendToClient(clients["STOCK_CLIENT"], msg)
+				if err != nil {
+					errMsg := map[string]string{"error": err.Error()}
+					msg, _ := json.Marshal(errMsg)
+					_ = ws.WriteMessage(websocket.TextMessage, msg)
+					return
+				}
+			} else {
+				log.Println("Stock Client is not connected")
 			}
 		}
 	}
@@ -866,11 +875,11 @@ func getMostRecentBalance() float64 {
 	}
 	defer db.Close()
 
-	query := `SELECT balance FROM EODPrices ORDER BY timestamp DESC LIMIT 1;`
+	query := `SELECT realBalance FROM EODPrices ORDER BY timestamp DESC LIMIT 1;`
 	row := db.QueryRow(query)
 
-	var balance float64
-	err = row.Scan(&balance)
+	var realBalance float64
+	err = row.Scan(&realBalance)
 	if err == sql.ErrNoRows {
 		log.Println("No rows in EODPrices; using default balance 10000")
 		return 10000
@@ -879,8 +888,8 @@ func getMostRecentBalance() float64 {
 		return 10000
 	}
 
-	log.Printf("Found most recent EOD balance: %.2f", balance)
-	return balance
+	log.Printf("Found most recent EOD balance: %.2f", realBalance)
+	return realBalance
 }
 
 // Gets the last entries of each table

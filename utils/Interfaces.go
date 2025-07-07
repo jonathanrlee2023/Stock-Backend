@@ -33,6 +33,26 @@ type OptionPriceData struct {
 	Vega      float64 `json:"vega"`
 }
 
+type CSVOptionData struct {
+	Symbol    string  `json:"symbol"`    // Option symbol or ticker
+	Timestamp int64   `json:"timestamp"` // Unix timestamp (or could be string if using formatted time)
+	Mark      float64 `json:"mark"`      // Straddle price at time t (current mark)
+
+	IV      float64 `json:"iv"`      // Current implied volatility
+	DeltaIV float64 `json:"deltaIV"` // IV_t - IV_t-1
+	AccelIV float64 `json:"accelIV"` // (IV_t - IV_t-1) - (IV_t-1 - IV_t-2)
+
+	SmaIV      float64 `json:"smaIV"`      // 5-period (or N-period) simple moving average of IV
+	SmaIvSpike float64 `json:"smaIvSpike"` // IV / SMA — indicates IV spike
+	IVZScore   float64 `json:"ivZScore"`   // (IV - mean) / stddev — how extreme IV is
+
+	Theta float64 `json:"theta"` // (Optional) Theta at t (to track time decay)
+	Vega  float64 `json:"vega"`  // (Optional) Vega at t (useful if later modeling delta_IV * vega)
+
+	FutureReturn float64 `json:"futureReturn"` // (Mark_t+N - Mark_t) / Mark_t
+	Label        int     `json:"label"`        // 1 if futureReturn > threshold (e.g., 5%), else 0
+}
+
 type StockPriceData struct {
 	Symbol    string  `json:"symbol"`
 	Timestamp int64   `json:"timestamp"`
