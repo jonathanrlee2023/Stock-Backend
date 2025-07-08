@@ -59,7 +59,12 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	// Check if ctrl C is pressed
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	runDailyAt(15, 0, 0, WriteEODData)
+	runDailyAt(15, 0, 5, func() {
+		WriteOpenCloseData("Start")
+	})
+	runDailyAt(15, 0, 5, func() {
+		WriteOpenCloseData("End")
+	})
 	// Endpoints for API
 	mux := http.NewServeMux()
 	mux.HandleFunc("/connect", websocketConnectHandler)
@@ -893,36 +898,62 @@ func getMostRecentBalance() float64 {
 }
 
 // Gets the last entries of each table
-func GetLastEntriesPerDay(db *sql.DB, fileName string) ([]utils.StockDbData, []utils.BalanceDbData, []utils.OptionDbData, error) {
+func GetLastEntriesPerDay(db *sql.DB, fileName, startOrEnd string) ([]utils.StockDbData, []utils.BalanceDbData, []utils.OptionDbData, error) {
 	tables, err := getDateTables(db) // get all date-named tables
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to get date tables: %w", err)
 	}
 
 	if len(fileName) > 8 && fileName != "Balance.db" {
-		var allResults []utils.OptionDbData
+		if startOrEnd == "End" {
+			var allResults []utils.OptionDbData
 
-		for _, tableName := range tables {
-			query := fmt.Sprintf(`
-				SELECT timestamp, bid_price, ask_price, last_price, high_price, iv, delta, gamma, theta, vega
-				FROM "%s"
-				ORDER BY timestamp DESC
-				LIMIT 1;
-			`, tableName)
+			for _, tableName := range tables {
+				query := fmt.Sprintf(`
+					SELECT timestamp, bid_price, ask_price, last_price, high_price, iv, delta, gamma, theta, vega
+					FROM "%s"
+					ORDER BY timestamp DESC
+					LIMIT 1;
+				`, tableName)
 
-			row := db.QueryRow(query)
+				row := db.QueryRow(query)
 
-			var e utils.OptionDbData
-			err := row.Scan(&e.Timestamp, &e.Bid, &e.Ask, &e.Last, &e.High, &e.IV, &e.Delta, &e.Gamma, &e.Theta, &e.Vega)
-			if err != nil {
-				if err == sql.ErrNoRows {
-					continue
+				var e utils.OptionDbData
+				err := row.Scan(&e.Timestamp, &e.Bid, &e.Ask, &e.Last, &e.High, &e.IV, &e.Delta, &e.Gamma, &e.Theta, &e.Vega)
+				if err != nil {
+					if err == sql.ErrNoRows {
+						continue
+					}
+					return nil, nil, nil, fmt.Errorf("scan failed in table %s: %w", tableName, err)
 				}
-				return nil, nil, nil, fmt.Errorf("scan failed in table %s: %w", tableName, err)
+				allResults = append(allResults, e)
 			}
-			allResults = append(allResults, e)
+			return nil, nil, allResults, nil
+		} else {
+			var allResults []utils.OptionDbData
+
+			for _, tableName := range tables {
+				query := fmt.Sprintf(`
+					SELECT timestamp, bid_price, ask_price, last_price, high_price, iv, delta, gamma, theta, vega
+					FROM "%s"
+					ORDER BY timestamp ASC
+					LIMIT 1;
+				`, tableName)
+
+				row := db.QueryRow(query)
+
+				var e utils.OptionDbData
+				err := row.Scan(&e.Timestamp, &e.Bid, &e.Ask, &e.Last, &e.High, &e.IV, &e.Delta, &e.Gamma, &e.Theta, &e.Vega)
+				if err != nil {
+					if err == sql.ErrNoRows {
+						continue
+					}
+					return nil, nil, nil, fmt.Errorf("scan failed in table %s: %w", tableName, err)
+				}
+				allResults = append(allResults, e)
+			}
+			return nil, nil, allResults, nil
 		}
-		return nil, nil, allResults, nil
 	} else if fileName == "Balance.db" {
 		var allResults []utils.BalanceDbData
 
@@ -948,29 +979,55 @@ func GetLastEntriesPerDay(db *sql.DB, fileName string) ([]utils.StockDbData, []u
 		}
 		return nil, allResults, nil, nil
 	} else {
-		var allResults []utils.StockDbData
+		if startOrEnd == "End" {
+			var allResults []utils.StockDbData
 
-		for _, tableName := range tables {
-			query := fmt.Sprintf(`
+			for _, tableName := range tables {
+				query := fmt.Sprintf(`
 				SELECT timestamp, bid_price, ask_price, last_price, bid_size, ask_size
 				FROM "%s"
 				ORDER BY timestamp DESC
 				LIMIT 1;
 			`, tableName)
 
-			row := db.QueryRow(query)
+				row := db.QueryRow(query)
 
-			var e utils.StockDbData
-			err := row.Scan(&e.Timestamp, &e.Bid, &e.Ask, &e.Last, &e.BidSize, &e.AskSize)
-			if err != nil {
-				if err == sql.ErrNoRows {
-					continue
+				var e utils.StockDbData
+				err := row.Scan(&e.Timestamp, &e.Bid, &e.Ask, &e.Last, &e.BidSize, &e.AskSize)
+				if err != nil {
+					if err == sql.ErrNoRows {
+						continue
+					}
+					return nil, nil, nil, fmt.Errorf("scan failed in table %s: %w", tableName, err)
 				}
-				return nil, nil, nil, fmt.Errorf("scan failed in table %s: %w", tableName, err)
+				allResults = append(allResults, e)
 			}
-			allResults = append(allResults, e)
+			return allResults, nil, nil, nil
+		} else {
+			var allResults []utils.StockDbData
+
+			for _, tableName := range tables {
+				query := fmt.Sprintf(`
+				SELECT timestamp, bid_price, ask_price, last_price, bid_size, ask_size
+				FROM "%s"
+				ORDER BY timestamp ASC
+				LIMIT 1;
+			`, tableName)
+
+				row := db.QueryRow(query)
+
+				var e utils.StockDbData
+				err := row.Scan(&e.Timestamp, &e.Bid, &e.Ask, &e.Last, &e.BidSize, &e.AskSize)
+				if err != nil {
+					if err == sql.ErrNoRows {
+						continue
+					}
+					return nil, nil, nil, fmt.Errorf("scan failed in table %s: %w", tableName, err)
+				}
+				allResults = append(allResults, e)
+			}
+			return allResults, nil, nil, nil
 		}
-		return allResults, nil, nil, nil
 	}
 }
 
@@ -998,7 +1055,7 @@ func getDateTables(db *sql.DB) ([]string, error) {
 	return tables, rows.Err()
 }
 
-func WriteEODData() {
+func WriteOpenCloseData(startOrEnd string) {
 	dir := "." // current working directory
 
 	excluded := map[string]struct{}{
@@ -1037,8 +1094,9 @@ func WriteEODData() {
 		fileName := filepath.Base(path)
 
 		if len(fileName) > 8 && fileName != "Balance.db" {
-			_, _, data, err := GetLastEntriesPerDay(db, fileName)
-			createTableSQL := `
+			if startOrEnd == "End" {
+				_, _, data, err := GetLastEntriesPerDay(db, fileName, startOrEnd)
+				createTableSQL := `
 				CREATE TABLE IF NOT EXISTS EODPrices (
 					timestamp INTEGER PRIMARY KEY,
 					bid_price REAL NOT NULL,
@@ -1052,27 +1110,64 @@ func WriteEODData() {
 					vega REAL NOT NULL
 				);`
 
-			if _, err := db.Exec(createTableSQL); err != nil {
-				return fmt.Errorf("failed to create table: %w", err)
-			}
+				if _, err := db.Exec(createTableSQL); err != nil {
+					return fmt.Errorf("failed to create table: %w", err)
+				}
 
-			insertSQL := `INSERT OR REPLACE INTO EODPrices (
+				insertSQL := `INSERT OR REPLACE INTO EODPrices (
                             timestamp, bid_price, ask_price, last_price, high_price, iv, delta, gamma, theta, vega
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-			stmt, err := db.Prepare(insertSQL)
-			if err != nil {
-				return fmt.Errorf("failed to prepare insert statement: %w", err)
-			}
-			defer stmt.Close()
-
-			for _, entry := range data {
-				_, err = stmt.Exec(entry.Timestamp, entry.Bid, entry.Ask, entry.Last, entry.High, entry.IV, entry.Delta, entry.Gamma, entry.Theta, entry.Vega)
+				stmt, err := db.Prepare(insertSQL)
 				if err != nil {
-					return fmt.Errorf("failed to insert entry %+v: %w", entry, err)
+					return fmt.Errorf("failed to prepare insert statement: %w", err)
+				}
+				defer stmt.Close()
+
+				for _, entry := range data {
+					_, err = stmt.Exec(entry.Timestamp, entry.Bid, entry.Ask, entry.Last, entry.High, entry.IV, entry.Delta, entry.Gamma, entry.Theta, entry.Vega)
+					if err != nil {
+						return fmt.Errorf("failed to insert entry %+v: %w", entry, err)
+					}
+				}
+			} else if startOrEnd == "Start" {
+				_, _, data, err := GetLastEntriesPerDay(db, fileName, startOrEnd)
+				createTableSQL := `
+				CREATE TABLE IF NOT EXISTS SODPrices (
+					timestamp INTEGER PRIMARY KEY,
+					bid_price REAL NOT NULL,
+					ask_price REAL NOT NULL,
+					last_price REAL NOT NULL,
+					high_price REAL NOT NULL,
+					iv REAL NOT NULL,
+					delta REAL NOT NULL,
+					gamma REAL NOT NULL,
+					theta REAL NOT NULL,
+					vega REAL NOT NULL
+				);`
+
+				if _, err := db.Exec(createTableSQL); err != nil {
+					return fmt.Errorf("failed to create table: %w", err)
+				}
+
+				insertSQL := `INSERT OR REPLACE INTO SODPrices (
+                            timestamp, bid_price, ask_price, last_price, high_price, iv, delta, gamma, theta, vega
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+				stmt, err := db.Prepare(insertSQL)
+				if err != nil {
+					return fmt.Errorf("failed to prepare insert statement: %w", err)
+				}
+				defer stmt.Close()
+
+				for _, entry := range data {
+					_, err = stmt.Exec(entry.Timestamp, entry.Bid, entry.Ask, entry.Last, entry.High, entry.IV, entry.Delta, entry.Gamma, entry.Theta, entry.Vega)
+					if err != nil {
+						return fmt.Errorf("failed to insert entry %+v: %w", entry, err)
+					}
 				}
 			}
+
 		} else if fileName == "Balance.db" {
-			_, data, _, err := GetLastEntriesPerDay(db, fileName)
+			_, data, _, err := GetLastEntriesPerDay(db, fileName, startOrEnd)
 			if err != nil {
 				log.Println(err)
 			}
@@ -1104,38 +1199,71 @@ func WriteEODData() {
 				}
 			}
 		} else {
-			data, _, _, err := GetLastEntriesPerDay(db, fileName)
+			if startOrEnd == "End" {
+				data, _, _, err := GetLastEntriesPerDay(db, fileName, startOrEnd)
 
-			createTableSQL := `
-				CREATE TABLE IF NOT EXISTS EODPrices (
-					timestamp INTEGER PRIMARY KEY,
-					bid_price REAL NOT NULL,
-					ask_price REAL NOT NULL,
-					last_price REAL NOT NULL,
-					bid_size INTEGER NOT NULL,
-					ask_size INTEGER NOT NULL
-				);`
+				createTableSQL := `
+					CREATE TABLE IF NOT EXISTS EODPrices (
+						timestamp INTEGER PRIMARY KEY,
+						bid_price REAL NOT NULL,
+						ask_price REAL NOT NULL,
+						last_price REAL NOT NULL,
+						bid_size INTEGER NOT NULL,
+						ask_size INTEGER NOT NULL
+					);`
 
-			if _, err := db.Exec(createTableSQL); err != nil {
-				return fmt.Errorf("failed to create table: %w", err)
-			}
+				if _, err := db.Exec(createTableSQL); err != nil {
+					return fmt.Errorf("failed to create table: %w", err)
+				}
 
-			insertSQL := `INSERT OR REPLACE INTO EODPrices (
-                            timestamp, bid_price, ask_price, last_price, bid_size, ask_size
-                        ) VALUES (?, ?, ?, ?, ?, ?)`
-			stmt, err := db.Prepare(insertSQL)
-			if err != nil {
-				return fmt.Errorf("failed to prepare insert statement: %w", err)
-			}
-			defer stmt.Close()
-
-			for _, entry := range data {
-				_, err := stmt.Exec(entry.Timestamp, entry.Bid, entry.Ask, entry.Last, entry.BidSize, entry.AskSize)
+				insertSQL := `INSERT OR REPLACE INTO EODPrices (
+								timestamp, bid_price, ask_price, last_price, bid_size, ask_size
+							) VALUES (?, ?, ?, ?, ?, ?)`
+				stmt, err := db.Prepare(insertSQL)
 				if err != nil {
-					return fmt.Errorf("failed to insert entry %+v: %w", entry, err)
+					return fmt.Errorf("failed to prepare insert statement: %w", err)
+				}
+				defer stmt.Close()
+
+				for _, entry := range data {
+					_, err := stmt.Exec(entry.Timestamp, entry.Bid, entry.Ask, entry.Last, entry.BidSize, entry.AskSize)
+					if err != nil {
+						return fmt.Errorf("failed to insert entry %+v: %w", entry, err)
+					}
+				}
+			} else if startOrEnd == "Start" {
+				data, _, _, err := GetLastEntriesPerDay(db, fileName, startOrEnd)
+
+				createTableSQL := `
+					CREATE TABLE IF NOT EXISTS SODPrices (
+						timestamp INTEGER PRIMARY KEY,
+						bid_price REAL NOT NULL,
+						ask_price REAL NOT NULL,
+						last_price REAL NOT NULL,
+						bid_size INTEGER NOT NULL,
+						ask_size INTEGER NOT NULL
+					);`
+
+				if _, err := db.Exec(createTableSQL); err != nil {
+					return fmt.Errorf("failed to create table: %w", err)
+				}
+
+				insertSQL := `INSERT OR REPLACE INTO SODPrices (
+								timestamp, bid_price, ask_price, last_price, bid_size, ask_size
+							) VALUES (?, ?, ?, ?, ?, ?)`
+				stmt, err := db.Prepare(insertSQL)
+				if err != nil {
+					return fmt.Errorf("failed to prepare insert statement: %w", err)
+				}
+				defer stmt.Close()
+
+				for _, entry := range data {
+					_, err := stmt.Exec(entry.Timestamp, entry.Bid, entry.Ask, entry.Last, entry.BidSize, entry.AskSize)
+					if err != nil {
+						return fmt.Errorf("failed to insert entry %+v: %w", entry, err)
+					}
 				}
 			}
-
 		}
 
 		return nil

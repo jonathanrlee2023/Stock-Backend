@@ -1,30 +1,32 @@
-import asyncio
+from datetime import datetime, timedelta
+import finnhub
 import json
-from schwabdev import Client
-from dotenv import load_dotenv
-import os
 
-load_dotenv()
+# Setup
+api_client = finnhub.Client(api_key="d1mlkl1r01qlvnp378dgd1mlkl1r01qlvnp378e0")
 
-appKey = os.getenv("appKey")
-appSecret = os.getenv("appSecret")
+# Get upcoming earnings for a ticker
+tickers = ["AAPL", "MSFT", "TSLA"]
+results = {}
+today = datetime.today().strftime('%Y-%m-%d')
+future = (datetime.today() + timedelta(days=90)).strftime('%Y-%m-%d')
 
-client = Client(app_key=appKey, app_secret=appSecret)
+tickers = ["AAPL", "MSFT", "TSLA"]
+results = {}
 
-def receiver(data):
-    print("RECEIVED DATA:", json.dumps(data, indent=2))
+for symbol in tickers:
+    try:
+        response = api_client.earnings_calendar(_from=today, to=future, symbol=symbol)
+        events = response.get('earningsCalendar', [])
+        if events:
+            results[symbol] = events[0]['date']  # just the date string
+        else:
+            results[symbol] = None
+    except Exception as e:
+        print(f"Error for {symbol}: {e}")
+        results[symbol] = None
 
-async def main():
-    streamer = client.stream
-    streamer.start(receiver=receiver)
+with open("earnings_dates.json", "w") as f:
+    json.dump(results, f, indent=2)
 
-    await asyncio.sleep(2)  # Wait for LOGIN response
-
-    sub_request = streamer.level_one_equities("AAPL", "0,1,2,3,4,5", command='ADD')
-    print("Sending sub request:", sub_request)
-
-    await streamer.send_async(sub_request)
-
-    await asyncio.sleep(10)  # Keep process alive to receive updates
-
-asyncio.run(main())
+print("Saved earnings dates to earnings_dates.json")

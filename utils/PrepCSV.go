@@ -7,6 +7,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 )
 
@@ -70,57 +71,59 @@ func GetDataFromDB(ticker string) {
 	}
 	defer db.Close()
 
-	rows, err := db.Query(`SELECT * FROM EODPrices`)
-
-	if err == sql.ErrNoRows {
-		fmt.Println("No EOD Prices Yet")
-		return
-	} else if err != nil {
-		log.Fatal("Query failed process write openDB:", err)
-		return
-	}
-	defer rows.Close()
-
-	var history []OptionRow
-	var featureRows []CSVOptionData
-	lookahead := 1    // How far in the future to measure return
-	smaWindow := 2    // Rolling average window
-	zScoreWindow := 5 // Z-score history
-
-	for rows.Next() {
-		var ts int64
-		var bid, ask, last, high, iv, delta, gamma, theta, vega float64
-
-		err := rows.Scan(&ts, &bid, &ask, &last, &high, &iv, &delta, &gamma, &theta, &vega)
+	// Helper to get rows from either table
+	fetchRows := func(table string) []OptionRow {
+		query := fmt.Sprintf(`SELECT timestamp, bid_price, ask_price, last_price, high_price, iv, delta, gamma, theta, vega FROM %s`, table)
+		rows, err := db.Query(query)
 		if err != nil {
-			log.Printf("Failed to scan: %v", err)
+			log.Printf("Query failed for table %s: %v", table, err)
+			return nil
+		}
+		defer rows.Close()
+
+		var data []OptionRow
+		for rows.Next() {
+			var ts int64
+			var bid, ask, last, high, iv, delta, gamma, theta, vega float64
+
+			if err := rows.Scan(&ts, &bid, &ask, &last, &high, &iv, &delta, &gamma, &theta, &vega); err != nil {
+				log.Printf("Failed to scan from %s: %v", table, err)
+				continue
+			}
+			mark := (bid + ask) / 2
+			data = append(data, OptionRow{
+				Timestamp: ts,
+				Mark:      mark,
+				IV:        iv,
+				Theta:     theta,
+				Vega:      vega,
+			})
+		}
+		return data
+	}
+
+	// Fetch and merge both sets
+	history := append(fetchRows("EODPrices"), fetchRows("SODPrices")...)
+
+	// Sort combined history by timestamp
+	sort.Slice(history, func(i, j int) bool {
+		return history[i].Timestamp < history[j].Timestamp
+	})
+
+	var featureRows []CSVOptionData
+	lookahead := 2
+	smaWindow := 2
+	zScoreWindow := 5
+
+	for i := range history {
+		if i < zScoreWindow || i < 2 || i+lookahead >= len(history) {
 			continue
 		}
 
-		mark := (bid + ask) / 2
-
-		row := OptionRow{
-			Timestamp: ts,
-			Mark:      mark,
-			IV:        iv,
-			Theta:     theta,
-			Vega:      vega,
-		}
-		history = append(history, row)
-
-		// We need at least 10 history rows to compute everything
-		if len(history) < zScoreWindow+lookahead {
-			continue
-		}
-
-		i := len(history) - 1
-		iv = history[i].IV
+		iv := history[i].IV
 		markNow := history[i].Mark
 
-		// deltaIV
 		deltaIV := iv - history[i-1].IV
-
-		// accelIV
 		accelIV := (iv - history[i-1].IV) - (history[i-1].IV - history[i-2].IV)
 
 		// SMA
@@ -144,19 +147,20 @@ func GetDataFromDB(ticker string) {
 			ivZ = (iv - mean) / std
 		}
 
-		// Future return (Mark_t+5 / Mark_t - 1)
-		markFuture := history[i-lookahead+1].Mark
-		futureReturn := (markFuture - markNow) / markNow
-
-		// Label = 1 if return > 5%
 		label := 0
-		if futureReturn > 0.05 {
-			label = 1
+		futureReturn := 0.0
+		// Scan all future entries up to i + 3
+		for j := i + 1; j <= i+3; j++ {
+			futureReturn = (history[j].Mark - markNow) / markNow
+			if futureReturn > 0.03 {
+				label = 1
+				break // No need to continue once a spike is found
+			}
 		}
 
 		featureRow := CSVOptionData{
 			Symbol:       ticker,
-			Timestamp:    ts,
+			Timestamp:    history[i].Timestamp,
 			Mark:         markNow,
 			IV:           iv,
 			DeltaIV:      deltaIV,
@@ -164,13 +168,14 @@ func GetDataFromDB(ticker string) {
 			SmaIV:        sma,
 			SmaIvSpike:   smaIvSpike,
 			IVZScore:     ivZ,
-			Theta:        theta,
-			Vega:         vega,
+			Theta:        history[i].Theta,
+			Vega:         history[i].Vega,
 			FutureReturn: futureReturn,
 			Label:        label,
 		}
 		featureRows = append(featureRows, featureRow)
 	}
+
 	err = PrepCSV(fmt.Sprintf("%s_features.csv", ticker), featureRows)
 	if err != nil {
 		log.Printf("Failed to write CSV for %s: %v", ticker, err)
