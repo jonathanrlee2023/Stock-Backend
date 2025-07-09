@@ -51,7 +51,6 @@ async def start_stock_stream(streamer, ticker):
         "0,1,2,3,4,5",
         command="ADD"
     )
-    print(request)
 
     await streamer.send_async(
         request
@@ -59,7 +58,6 @@ async def start_stock_stream(streamer, ticker):
 
 def receive_data(response):
     parsed = json.loads(response)
-    print(parsed)
     if 'data' in parsed:
         for item in parsed['data']:
             content = item.get("content", [])

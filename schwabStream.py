@@ -13,17 +13,17 @@ from filelock import FileLock
 import asyncio
 import websockets
 import traceback
+import earnings
 
 stream_started = False
 stream_lock = asyncio.Lock()
+tickers = []
 
 async def listen_for_messages(websocket, streamer):
     global stream_started
 
     async for message in websocket:
         print("Received message")
-        print(message)
-        print(streamer.subscriptions)
         data = json.loads(message)
         symbol = data["symbol"]
 
@@ -59,6 +59,7 @@ async def listen_for_messages(websocket, streamer):
                         )
                     )
             if len(data) == 1:
+                tickers.append(symbol)
                 if symbol not in streamer.subscriptions.get('LEVELONE_EQUITIES', {}):
                     asyncio.create_task(
                         stream_func.start_stock_stream(
@@ -72,9 +73,15 @@ async def listen_for_messages(websocket, streamer):
             print("Stream handling error:", e)
 
 async def write_to_db(websocket):
+    earningsSent = False
     while True:
         await asyncio.sleep(15 - time.time() % 15)
         timestamp = int(time.time())        
+
+        if earningsSent is False:
+            earnings.getEarningsDate(tickers=tickers)
+            earningsSent = True
+
         
         if len(stream_func.file_names) != 0:
             for name in stream_func.file_names:
@@ -183,11 +190,23 @@ async def main():
     uri = "ws://localhost:8080/connect?id=PYTHON_CLIENT"
 
     async with websockets.connect(uri) as websocket:
-        print("Connected to Websocket")    
-        await asyncio.gather(
-            listen_for_messages(websocket, streamer),
-            write_to_db(websocket)
-        )
-        await asyncio.Future()
+        print("Connected to Websocket")
+
+        # Start background tasks
+        tasks = [
+            asyncio.create_task(listen_for_messages(websocket, streamer)),
+            asyncio.create_task(write_to_db(websocket))
+        ]
+
+        try:
+            while True:
+                if not is_weekday_business_hours_central():
+                    print("Shutting down: after 3PM Central.")
+                    for task in tasks:
+                        task.cancel()
+                    break
+                await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            print("Tasks were cancelled.")
 
 asyncio.run(main())

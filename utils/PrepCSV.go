@@ -3,12 +3,17 @@ package utils
 import (
 	"database/sql"
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
+	"time"
 )
 
 type OptionRow struct {
@@ -17,6 +22,60 @@ type OptionRow struct {
 	IV        float64
 	Theta     float64
 	Vega      float64
+}
+
+type EarningsDates map[string]string
+
+func InitCSVData() {
+	f, err := os.Open("earnings_dates.json")
+	if err != nil {
+		log.Printf("Failed to open file: %v", err)
+		return
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(f)
+	if err != nil {
+		log.Printf("Failed to read file: %v", err)
+		return
+	}
+
+	var dates EarningsDates
+	if err := json.Unmarshal(data, &dates); err != nil {
+		log.Printf("Failed to parse JSON: %v", err)
+		return
+	}
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		log.Fatalf("ReadDir error: %v", err)
+		return
+	}
+
+	var dbFiles []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		ext := filepath.Ext(name)
+		if ext != ".db" {
+			continue
+		}
+
+		// Remove the final ".db" and see if there's *another* ".db"
+		base := strings.TrimSuffix(name, ext)
+		if filepath.Ext(base) != ".db" && len(name) > 15 {
+			dbFiles = append(dbFiles, name)
+		}
+	}
+
+	fmt.Println(dbFiles)
+
+	for _, entry := range dbFiles {
+		fmt.Println(entry)
+		GetDataFromDB(entry, dates)
+	}
+
 }
 
 func PrepCSV(fileName string, featureRows []CSVOptionData) error {
@@ -32,7 +91,7 @@ func PrepCSV(fileName string, featureRows []CSVOptionData) error {
 	// Write headers
 	headers := []string{
 		"symbol", "timestamp", "mark", "iv", "deltaIV", "accelIV", "smaIV",
-		"smaIvSpike", "ivZScore", "theta", "vega", "futureReturn", "label",
+		"smaIvSpike", "ivZScore", "theta", "vega", "futureReturn", "label", "daysToEarnings",
 	}
 	if err := writer.Write(headers); err != nil {
 		return err
@@ -54,6 +113,7 @@ func PrepCSV(fileName string, featureRows []CSVOptionData) error {
 			strconv.FormatFloat(row.Vega, 'f', 6, 64),
 			strconv.FormatFloat(row.FutureReturn, 'f', 6, 64),
 			strconv.Itoa(row.Label),
+			strconv.FormatInt(row.DaysToEarnings, 10),
 		}
 		if err := writer.Write(record); err != nil {
 			return err
@@ -63,13 +123,29 @@ func PrepCSV(fileName string, featureRows []CSVOptionData) error {
 	return nil
 }
 
-func GetDataFromDB(ticker string) {
-	db, err := sql.Open("sqlite", fmt.Sprintf("%s.db", ticker))
+func GetDataFromDB(ticker string, dates EarningsDates) {
+	fmt.Println(ticker)
+	db, err := sql.Open("sqlite", "file:"+ticker+"?mode=ro")
 	if err != nil {
 		log.Printf("Query failed process write %s: %v", ticker, err)
 		return
 	}
 	defer db.Close()
+
+	underlyingTicker := extractTicker(ticker)
+
+	edStr, ok := dates[underlyingTicker]
+	if !ok {
+		log.Printf("No earnings date for %s, skipping daysToEarnings", ticker)
+	}
+	var earningsDate time.Time
+	if ok {
+		earningsDate, err = time.Parse("2006-01-02", edStr)
+		if err != nil {
+			log.Printf("Invalid earnings date format for %s: %v", ticker, err)
+			ok = false
+		}
+	}
 
 	// Helper to get rows from either table
 	fetchRows := func(table string) []OptionRow {
@@ -116,10 +192,11 @@ func GetDataFromDB(ticker string) {
 	zScoreWindow := 5
 
 	for i := range history {
-		if i < zScoreWindow || i < 2 || i+lookahead >= len(history) {
+		if i < zScoreWindow || i < 2 || i+lookahead+1 >= len(history) {
 			continue
 		}
 
+		curr := history[i]
 		iv := history[i].IV
 		markNow := history[i].Mark
 
@@ -158,20 +235,28 @@ func GetDataFromDB(ticker string) {
 			}
 		}
 
+		var daysToEarnings int64
+		if ok {
+			now := time.Unix(curr.Timestamp, 0)
+			diff := earningsDate.Sub(now).Hours() / 24
+			daysToEarnings = int64(math.Ceil(diff))
+		}
+
 		featureRow := CSVOptionData{
-			Symbol:       ticker,
-			Timestamp:    history[i].Timestamp,
-			Mark:         markNow,
-			IV:           iv,
-			DeltaIV:      deltaIV,
-			AccelIV:      accelIV,
-			SmaIV:        sma,
-			SmaIvSpike:   smaIvSpike,
-			IVZScore:     ivZ,
-			Theta:        history[i].Theta,
-			Vega:         history[i].Vega,
-			FutureReturn: futureReturn,
-			Label:        label,
+			Symbol:         ticker,
+			Timestamp:      history[i].Timestamp,
+			Mark:           markNow,
+			IV:             iv,
+			DeltaIV:        deltaIV,
+			AccelIV:        accelIV,
+			SmaIV:          sma,
+			SmaIvSpike:     smaIvSpike,
+			IVZScore:       ivZ,
+			Theta:          history[i].Theta,
+			Vega:           history[i].Vega,
+			FutureReturn:   futureReturn,
+			Label:          label,
+			DaysToEarnings: daysToEarnings,
 		}
 		featureRows = append(featureRows, featureRow)
 	}
@@ -182,4 +267,10 @@ func GetDataFromDB(ticker string) {
 	} else {
 		log.Printf("CSV written for %s with %d rows", ticker, len(featureRows))
 	}
+}
+
+func extractTicker(optionID string) string {
+	// Split into at most 2 pieces
+	parts := strings.SplitN(optionID, "_", 2)
+	return parts[0]
 }

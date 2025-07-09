@@ -49,8 +49,9 @@ type CSVOptionData struct {
 	Theta float64 `json:"theta"` // (Optional) Theta at t (to track time decay)
 	Vega  float64 `json:"vega"`  // (Optional) Vega at t (useful if later modeling delta_IV * vega)
 
-	FutureReturn float64 `json:"futureReturn"` // (Mark_t+N - Mark_t) / Mark_t
-	Label        int     `json:"label"`        // 1 if futureReturn > threshold (e.g., 5%), else 0
+	FutureReturn   float64 `json:"futureReturn"` // (Mark_t+N - Mark_t) / Mark_t
+	Label          int     `json:"label"`        // 1 if futureReturn > threshold (e.g., 5%), else 0
+	DaysToEarnings int64   `json:"daysToEarnings"`
 }
 
 type StockPriceData struct {

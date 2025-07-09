@@ -59,12 +59,14 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	// Check if ctrl C is pressed
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	utils.InitCSVData()
 	runDailyAt(15, 0, 5, func() {
 		WriteOpenCloseData("Start")
 	})
-	runDailyAt(15, 0, 5, func() {
+	runDailyAt(15, 0, 10, func() {
 		WriteOpenCloseData("End")
 	})
+
 	// Endpoints for API
 	mux := http.NewServeMux()
 	mux.HandleFunc("/connect", websocketConnectHandler)
@@ -176,36 +178,35 @@ func websocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 	if clientID == "PYTHON_CLIENT" {
 		var symbols []string
 		symbols = sendTrackerSymbols()
-		if symbols != nil {
-			for _, symbol := range symbols {
-				if len(symbol) > 6 {
-					request, err := ParseOptionString(symbol)
-					if err != nil {
-						log.Printf("Could not parse string")
-						return
-					}
-					msg, err := json.Marshal(request)
-					if err != nil {
-						break
-					}
-					err = sendToClient(clients[clientID], msg)
-					if err != nil {
-						http.Error(w, err.Error(), http.StatusInternalServerError)
-						return
-					}
-				} else {
-					request := utils.StockStreamRequest{
-						Symbol: symbol,
-					}
-					msg, err := json.Marshal(request)
-					if err != nil {
-						break
-					}
-					err = sendToClient(clients[clientID], msg)
-					if err != nil {
-						http.Error(w, err.Error(), http.StatusInternalServerError)
-						return
-					}
+
+		for _, symbol := range symbols {
+			if len(symbol) > 6 {
+				request, err := ParseOptionString(symbol)
+				if err != nil {
+					log.Printf("Could not parse string")
+					return
+				}
+				msg, err := json.Marshal(request)
+				if err != nil {
+					break
+				}
+				err = sendToClient(clients[clientID], msg)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+			} else {
+				request := utils.StockStreamRequest{
+					Symbol: symbol,
+				}
+				msg, err := json.Marshal(request)
+				if err != nil {
+					break
+				}
+				err = sendToClient(clients[clientID], msg)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
 				}
 			}
 		}
@@ -505,7 +506,7 @@ func processWrite(t time.Time, client *Client) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	if err != nil {
-		log.Fatal("Failed to enable WAL after retries:", err)
+		log.Printf("Failed to enable WAL after retries:", err)
 	}
 	date := utils.TodayDate()
 
@@ -570,7 +571,7 @@ func processWrite(t time.Time, client *Client) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	if err != nil {
-		log.Fatal("Failed to enable WAL after retries:", err)
+		log.Printf("Failed to enable WAL after retries: %v", err)
 	}
 	createTableSQL = `
 		CREATE TABLE IF NOT EXISTS OpenPositions (
@@ -583,7 +584,7 @@ func processWrite(t time.Time, client *Client) {
 	if err == sql.ErrNoRows {
 		fmt.Println("No Open Positions Yet")
 	} else if err != nil {
-		log.Fatal("Query failed process write openDB:", err)
+		log.Printf("Query failed process write openDB: %v", err)
 	}
 	defer rows.Close()
 
@@ -618,7 +619,7 @@ func processWrite(t time.Time, client *Client) {
 			time.Sleep(50 * time.Millisecond)
 		}
 		if err != nil {
-			log.Fatal("Failed to enable WAL after retries:", err)
+			log.Printf("Failed to enable WAL after retries: %v", err)
 		}
 		date := utils.TodayDate()
 		query := fmt.Sprintf(`SELECT * FROM "%s" ORDER BY timestamp DESC LIMIT 1`, date)
@@ -818,7 +819,7 @@ func sendOpenPositions() {
 		time.Sleep(50 * time.Millisecond)
 	}
 	if err != nil {
-		log.Fatal("Failed to enable WAL after retries:", err)
+		log.Printf("Failed to enable WAL after retries: %v", err)
 	}
 	createTableSQL := `
 		CREATE TABLE IF NOT EXISTS OpenPositions (
@@ -832,7 +833,7 @@ func sendOpenPositions() {
 		fmt.Println("No Open Positions Yet")
 		return
 	} else if err != nil {
-		log.Fatal("Query failed process write openDB:", err)
+		log.Printf("Query failed process write openDB: %v", err)
 		return
 	}
 	defer rows.Close()
@@ -1066,6 +1067,19 @@ func WriteOpenCloseData(startOrEnd string) {
 
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			log.Printf("Error accessing path %q: %v\n", path, err)
+			return nil // or return err if you want to stop walking
+		}
+
+		if info == nil {
+			log.Printf("FileInfo is nil for path: %s\n", path)
+			return nil
+		}
+		if strings.Contains(info.Name(), "-shm") || strings.Contains(info.Name(), "-wal") {
+			fmt.Printf("Skipping SQLite system file: %s\n", info.Name())
+			return nil
+		}
+		if err != nil {
 			return err
 		}
 
@@ -1270,6 +1284,6 @@ func WriteOpenCloseData(startOrEnd string) {
 	})
 
 	if err != nil {
-		log.Fatalf("Failed walking folder: %v", err)
+		log.Printf("Failed walking folder: %v", err)
 	}
 }
