@@ -26,12 +26,7 @@ type Position struct {
 	Amount int64   `json:"amount"`
 }
 
-func TodayDate() string {
-	today := time.Now()
-	todayStr := today.Format("2006_01_02")
-	return todayStr
-}
-
+// Handles the file names coming from python client, reads from db, and sends to frontend
 func DataReadyHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
@@ -94,6 +89,7 @@ func DataReadyHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Data has been read")
 }
 
+// Handles call from frontend to add a symbol to the tracker db
 func NewTrackerHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
@@ -137,6 +133,8 @@ func NewTrackerHandler(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Fprintf(w, "Data has been read")
 }
+
+// Handles the removal of a symbol from the tracker db
 func RemoveTrackerHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
@@ -180,6 +178,7 @@ func RemoveTrackerHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Data has been deleted")
 }
 
+// Handles the creation of a position
 func OpenPositionHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
@@ -360,6 +359,7 @@ func OpenPositionHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Position Opened")
 }
 
+// Handles the closing of a position
 func ClosePositionHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)

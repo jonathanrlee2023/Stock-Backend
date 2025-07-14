@@ -70,3 +70,9 @@ func FindCommonTimes(slice1, slice2 []time.Time) (earliest, latest *time.Time) {
 
 	return earliest, latest
 }
+
+func TodayDate() string {
+	today := time.Now()
+	todayStr := today.Format("2006_01_02")
+	return todayStr
+}

@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,6 +21,8 @@ type OptionRow struct {
 	Timestamp int64
 	Mark      float64
 	IV        float64
+	Delta     float64
+	Gamma     float64
 	Theta     float64
 	Vega      float64
 }
@@ -52,13 +55,14 @@ func InitCSVData() {
 	}
 
 	var dbFiles []string
+	var callDB = regexp.MustCompile(`^[A-Z]+_\d{6}C\d+\.db$`)
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
 		name := e.Name()
 		ext := filepath.Ext(name)
-		if ext != ".db" {
+		if ext != ".db" || !callDB.MatchString(name) {
 			continue
 		}
 
@@ -68,8 +72,6 @@ func InitCSVData() {
 			dbFiles = append(dbFiles, name)
 		}
 	}
-
-	fmt.Println(dbFiles)
 
 	for _, entry := range dbFiles {
 		fmt.Println(entry)
@@ -91,7 +93,7 @@ func PrepCSV(fileName string, featureRows []CSVOptionData) error {
 	// Write headers
 	headers := []string{
 		"symbol", "timestamp", "mark", "iv", "deltaIV", "accelIV", "smaIV",
-		"smaIvSpike", "ivZScore", "theta", "vega", "futureReturn", "label", "daysToEarnings",
+		"smaIvSpike", "ivZScore", "theta", "vega", "futureReturn", "futurePrice", "label", "daysToEarnings",
 	}
 	if err := writer.Write(headers); err != nil {
 		return err
@@ -102,7 +104,7 @@ func PrepCSV(fileName string, featureRows []CSVOptionData) error {
 		record := []string{
 			row.Symbol,
 			strconv.FormatInt(row.Timestamp, 10),
-			strconv.FormatFloat(row.Mark, 'f', 6, 64),
+			strconv.FormatFloat(row.Mark, 'f', 2, 64),
 			strconv.FormatFloat(row.IV, 'f', 6, 64),
 			strconv.FormatFloat(row.DeltaIV, 'f', 6, 64),
 			strconv.FormatFloat(row.AccelIV, 'f', 6, 64),
@@ -111,7 +113,8 @@ func PrepCSV(fileName string, featureRows []CSVOptionData) error {
 			strconv.FormatFloat(row.IVZScore, 'f', 6, 64),
 			strconv.FormatFloat(row.Theta, 'f', 6, 64),
 			strconv.FormatFloat(row.Vega, 'f', 6, 64),
-			strconv.FormatFloat(row.FutureReturn, 'f', 6, 64),
+			strconv.FormatFloat(row.FutureReturn, 'f', 4, 64),
+			strconv.FormatFloat(row.FuturePrice, 'f', 2, 64),
 			strconv.Itoa(row.Label),
 			strconv.FormatInt(row.DaysToEarnings, 10),
 		}
@@ -125,12 +128,22 @@ func PrepCSV(fileName string, featureRows []CSVOptionData) error {
 
 func GetDataFromDB(ticker string, dates EarningsDates) {
 	fmt.Println(ticker)
-	db, err := sql.Open("sqlite", "file:"+ticker+"?mode=ro")
+	callDB, err := sql.Open("sqlite", "file:"+ticker+"?mode=ro")
 	if err != nil {
-		log.Printf("Query failed process write %s: %v", ticker, err)
+		log.Printf("open call DB %s failed: %v", ticker, err)
 		return
 	}
-	defer db.Close()
+	defer callDB.Close()
+
+	// 2) Derive & open put DB
+	putID := flipCallPut(ticker)
+	putDB, err := sql.Open("sqlite", "file:"+putID+"?mode=ro")
+	if err != nil {
+		log.Printf("open put DB %s failed: %v; continuing with call-only", putID, err)
+	}
+	if putDB != nil {
+		defer putDB.Close()
+	}
 
 	underlyingTicker := extractTicker(ticker)
 
@@ -148,40 +161,45 @@ func GetDataFromDB(ticker string, dates EarningsDates) {
 	}
 
 	// Helper to get rows from either table
-	fetchRows := func(table string) []OptionRow {
-		query := fmt.Sprintf(`SELECT timestamp, bid_price, ask_price, last_price, high_price, iv, delta, gamma, theta, vega FROM %s`, table)
-		rows, err := db.Query(query)
-		if err != nil {
-			log.Printf("Query failed for table %s: %v", table, err)
-			return nil
-		}
-		defer rows.Close()
-
-		var data []OptionRow
-		for rows.Next() {
-			var ts int64
-			var bid, ask, last, high, iv, delta, gamma, theta, vega float64
-
-			if err := rows.Scan(&ts, &bid, &ask, &last, &high, &iv, &delta, &gamma, &theta, &vega); err != nil {
-				log.Printf("Failed to scan from %s: %v", table, err)
-				continue
-			}
-			mark := (bid + ask) / 2
-			data = append(data, OptionRow{
-				Timestamp: ts,
-				Mark:      mark,
-				IV:        iv,
-				Theta:     theta,
-				Vega:      vega,
-			})
-		}
-		return data
-	}
 
 	// Fetch and merge both sets
-	history := append(fetchRows("EODPrices"), fetchRows("SODPrices")...)
+	callRows := append(
+		fetchRowsFromDB(callDB, "EODPrices"),
+		fetchRowsFromDB(callDB, "SODPrices")...,
+	)
 
-	// Sort combined history by timestamp
+	var putRows []OptionRow
+	if putDB != nil {
+		putRows = append(
+			fetchRowsFromDB(putDB, "EODPrices"),
+			fetchRowsFromDB(putDB, "SODPrices")...,
+		)
+	}
+
+	merged := make(map[int64]OptionRow, len(callRows))
+	for _, entry := range callRows {
+		merged[entry.Timestamp] = entry
+	}
+	for _, entry := range putRows {
+		if base, ok := merged[entry.Timestamp]; ok {
+			// sum mark & Greeks
+			base.Mark += entry.Mark
+			base.Delta += entry.Delta
+			base.Gamma += entry.Gamma
+			base.Theta += entry.Theta
+			base.Vega += entry.Vega
+			merged[entry.Timestamp] = base
+		} else {
+			// no call at this timestamp? keep put-only row
+			merged[entry.Timestamp] = entry
+		}
+	}
+
+	history := make([]OptionRow, 0, len(merged))
+	for _, row := range merged {
+		history = append(history, row)
+	}
+
 	sort.Slice(history, func(i, j int) bool {
 		return history[i].Timestamp < history[j].Timestamp
 	})
@@ -226,11 +244,13 @@ func GetDataFromDB(ticker string, dates EarningsDates) {
 
 		label := 0
 		futureReturn := 0.0
+		futurePrice := 0.0
 		// Scan all future entries up to i + 3
 		for j := i + 1; j <= i+3; j++ {
 			futureReturn = (history[j].Mark - markNow) / markNow
-			if futureReturn > 0.03 {
+			if futureReturn > 0.01 {
 				label = 1
+				futurePrice = history[j].Mark
 				break // No need to continue once a spike is found
 			}
 		}
@@ -240,6 +260,10 @@ func GetDataFromDB(ticker string, dates EarningsDates) {
 			now := time.Unix(curr.Timestamp, 0)
 			diff := earningsDate.Sub(now).Hours() / 24
 			daysToEarnings = int64(math.Ceil(diff))
+		}
+
+		if daysToEarnings <= 0 {
+			continue
 		}
 
 		featureRow := CSVOptionData{
@@ -252,20 +276,23 @@ func GetDataFromDB(ticker string, dates EarningsDates) {
 			SmaIV:          sma,
 			SmaIvSpike:     smaIvSpike,
 			IVZScore:       ivZ,
+			Delta:          history[i].Delta,
+			Gamma:          history[i].Gamma,
 			Theta:          history[i].Theta,
 			Vega:           history[i].Vega,
 			FutureReturn:   futureReturn,
+			FuturePrice:    futurePrice,
 			Label:          label,
 			DaysToEarnings: daysToEarnings,
 		}
 		featureRows = append(featureRows, featureRow)
 	}
 
-	err = PrepCSV(fmt.Sprintf("%s_features.csv", ticker), featureRows)
+	err = PrepCSV(fmt.Sprintf("%s_features.csv", underlyingTicker), featureRows)
 	if err != nil {
 		log.Printf("Failed to write CSV for %s: %v", ticker, err)
 	} else {
-		log.Printf("CSV written for %s with %d rows", ticker, len(featureRows))
+		log.Printf("CSV written for %s with %d rows", underlyingTicker, len(featureRows))
 	}
 }
 
@@ -273,4 +300,54 @@ func extractTicker(optionID string) string {
 	// Split into at most 2 pieces
 	parts := strings.SplitN(optionID, "_", 2)
 	return parts[0]
+}
+
+func flipCallPut(optID string) string {
+	// find the last 'C' or 'P' in the string
+	idx := strings.LastIndexAny(optID, "CP")
+	if idx < 0 {
+		return optID
+	}
+	var other byte
+	if optID[idx] == 'C' {
+		other = 'P'
+	} else {
+		other = 'C'
+	}
+	// rebuild string with that one character swapped
+	return optID[:idx] + string(other) + optID[idx+1:]
+}
+
+func fetchRowsFromDB(db *sql.DB, table string) []OptionRow {
+	q := fmt.Sprintf(
+		`SELECT timestamp, bid_price, ask_price, last_price, high_price, iv, delta, gamma, theta, vega 
+       FROM %s`, table)
+
+	rows, err := db.Query(q)
+	if err != nil {
+		log.Printf("Query %s failed: %v", table, err)
+		return nil
+	}
+	defer rows.Close()
+
+	var out []OptionRow
+	for rows.Next() {
+		var ts int64
+		var bid, ask, last, high, iv, delta, gamma, theta, vega float64
+		if err := rows.Scan(&ts, &bid, &ask, &last, &high, &iv, &delta, &gamma, &theta, &vega); err != nil {
+			log.Printf("Scan %s failed: %v", table, err)
+			continue
+		}
+		mark := (bid + ask) / 2
+		out = append(out, OptionRow{
+			Timestamp: ts,
+			Mark:      mark,
+			IV:        iv,
+			Delta:     delta,
+			Gamma:     gamma,
+			Theta:     theta,
+			Vega:      vega,
+		})
+	}
+	return out
 }

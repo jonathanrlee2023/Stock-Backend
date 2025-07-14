@@ -64,7 +64,6 @@ def receive_data(response):
 
             for quote in content:
                 symbol = quote.get("key")
-                print(symbol)
                 if '  ' in symbol:
                     symbol = re.sub(r'\s+', '_', symbol)
                 if symbol not in new_data:
@@ -82,5 +81,4 @@ def receive_data(response):
                 # Merge new data into stored state
                 if symbol not in file_names:
                     file_names.append(symbol)
-                    print(f'{symbol}.db')
                 new_data[symbol].update(labeled_data[symbol]) 

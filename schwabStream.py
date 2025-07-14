@@ -44,7 +44,6 @@ async def listen_for_messages(websocket, streamer):
 
         await websocket.send(f"Streaming started for {symbol}")
         try:
-            print(len(data))
             if len(data) > 1:
                 if symbol not in streamer.subscriptions.get('LEVELONE_OPTIONS', {}):
                     asyncio.create_task(
@@ -58,8 +57,10 @@ async def listen_for_messages(websocket, streamer):
                             type=option_type
                         )
                     )
+                    stripped_ticker = symbol.split("_", 1)[0]
+                    if stripped_ticker not in tickers:
+                        tickers.append(stripped_ticker)
             if len(data) == 1:
-                tickers.append(symbol)
                 if symbol not in streamer.subscriptions.get('LEVELONE_EQUITIES', {}):
                     asyncio.create_task(
                         stream_func.start_stock_stream(
@@ -67,6 +68,8 @@ async def listen_for_messages(websocket, streamer):
                             ticker=symbol,
                         )
                     )
+                    if symbol not in tickers:
+                        tickers.append(symbol)
         except requests.exceptions.ReadTimeout:
             print("Timeout while connecting to Schwab API.")
         except Exception as e:
@@ -79,7 +82,7 @@ async def write_to_db(websocket):
         timestamp = int(time.time())        
 
         if earningsSent is False:
-            earnings.getEarningsDate(tickers=tickers)
+            earnings.updateEarningsDate(tickers=tickers)
             earningsSent = True
 
         

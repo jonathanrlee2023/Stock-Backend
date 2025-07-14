@@ -3,3 +3,5 @@ tokens.json
 *.db
 *.json
 *.csv
+*.db-wal
+*.db-shm

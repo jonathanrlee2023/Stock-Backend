@@ -1,12 +1,24 @@
-from datetime import datetime, timedelta
-import time
-import finnhub
 import json
+from datetime import datetime, timedelta
+import os
+import time
+from dotenv import load_dotenv
+import finnhub
 
-def getEarningsDate(tickers):
-    api_client = finnhub.Client(api_key="d1mlkl1r01qlvnp378dgd1mlkl1r01qlvnp378e0")
+def updateEarningsDate(tickers):
+    load_dotenv()  # Loads variables from .env into environment
 
-    results = {}
+    api_key = os.getenv("API_KEY")
+
+    api_client = finnhub.Client(api_key=api_key)  # replace with actual key
+
+    # Load existing data
+    try:
+        with open("earnings_dates.json", "r") as f:
+            earnings_data = json.load(f)
+    except FileNotFoundError:
+        earnings_data = {}
+
     today = datetime.today().strftime('%Y-%m-%d')
     future = (datetime.today() + timedelta(days=90)).strftime('%Y-%m-%d')
 
@@ -16,14 +28,15 @@ def getEarningsDate(tickers):
             response = api_client.earnings_calendar(_from=today, to=future, symbol=symbol)
             events = response.get('earningsCalendar', [])
             if events:
-                results[symbol] = events[0]['date']  # just the date string
+                earnings_data[symbol] = events[0]['date']
             else:
-                results[symbol] = None
+                earnings_data[symbol] = None
         except Exception as e:
             print(f"Error for {symbol}: {e}")
-            results[symbol] = None
+            earnings_data[symbol] = None
 
+    # Save updated data
     with open("earnings_dates.json", "w") as f:
-        json.dump(results, f, indent=2)
+        json.dump(earnings_data, f, indent=2)
 
-    print("Saved earnings dates to earnings_dates.json")
+    print("Updated earnings_dates.json with latest data.")

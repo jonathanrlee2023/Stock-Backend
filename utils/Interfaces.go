@@ -1,6 +1,31 @@
 package utils
 
-import "time"
+import (
+	"sync"
+	"time"
+
+	"github.com/gorilla/websocket"
+)
+
+type Client struct {
+	Conn *websocket.Conn
+	ID   string // unique identifier for this client (e.g., user ID, session ID)
+	Mu   sync.Mutex
+	Done chan struct{}
+	once sync.Once
+}
+
+func (c *Client) Close() {
+	c.once.Do(func() {
+		close(c.Done)
+	})
+}
+
+func (c *Client) SafeWrite(messageType int, data []byte) error {
+	c.Mu.Lock()
+	defer c.Mu.Unlock()
+	return c.Conn.WriteMessage(messageType, data)
+}
 
 type OptionStreamRequest struct {
 	Symbol string `json:"symbol"`
@@ -16,7 +41,8 @@ type StockStreamRequest struct {
 }
 type OpenPositionsMessage struct {
 	PrevBalance float64          `json:"prevBalance"`
-	IDs         map[string]int64 `json:"idList"`
+	OpenIDs     map[string]int64 `json:"openIdList"`
+	TrackerIDs  []string         `json:"trackerIdList"`
 }
 type OptionPriceData struct {
 	Symbol    string  `json:"symbol"`
@@ -46,12 +72,16 @@ type CSVOptionData struct {
 	SmaIvSpike float64 `json:"smaIvSpike"` // IV / SMA — indicates IV spike
 	IVZScore   float64 `json:"ivZScore"`   // (IV - mean) / stddev — how extreme IV is
 
+	Delta float64 `json:"delta"`
+	Gamma float64 `json:"gamma"`
 	Theta float64 `json:"theta"` // (Optional) Theta at t (to track time decay)
 	Vega  float64 `json:"vega"`  // (Optional) Vega at t (useful if later modeling delta_IV * vega)
 
-	FutureReturn   float64 `json:"futureReturn"` // (Mark_t+N - Mark_t) / Mark_t
-	Label          int     `json:"label"`        // 1 if futureReturn > threshold (e.g., 5%), else 0
-	DaysToEarnings int64   `json:"daysToEarnings"`
+	FutureReturn float64 `json:"futureReturn"` // (Mark_t+N - Mark_t) / Mark_t
+	FuturePrice  float64 `json:"futurePrice"`  // (Mark_t+N - Mark_t) / Mark_t
+
+	Label          int   `json:"label"` // 1 if futureReturn > threshold (e.g., 5%), else 0
+	DaysToEarnings int64 `json:"daysToEarnings"`
 }
 
 type StockPriceData struct {
