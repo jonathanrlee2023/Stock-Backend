@@ -248,7 +248,7 @@ func GetDataFromDB(ticker string, dates EarningsDates) {
 		// Scan all future entries up to i + 3
 		for j := i + 1; j <= i+3; j++ {
 			futureReturn = (history[j].Mark - markNow) / markNow
-			if futureReturn > 0.01 {
+			if futureReturn > 0.02 {
 				label = 1
 				futurePrice = history[j].Mark
 				break // No need to continue once a spike is found

@@ -14,6 +14,7 @@ import asyncio
 import websockets
 import traceback
 import earnings
+import test
 
 stream_started = False
 stream_lock = asyncio.Lock()
@@ -185,6 +186,7 @@ async def main():
 
     while is_weekday_business_hours_central(None) is False:
         time.sleep(5)
+        print("Not in trading hours")
 
     client = schwabdev.Client(app_key=appKey, app_secret=appSecret)
 
@@ -198,7 +200,8 @@ async def main():
         # Start background tasks
         tasks = [
             asyncio.create_task(listen_for_messages(websocket, streamer)),
-            asyncio.create_task(write_to_db(websocket))
+            asyncio.create_task(write_to_db(websocket)),
+            asyncio.create_task(test.write_upcoming_earnings_symbols())
         ]
 
         try:
