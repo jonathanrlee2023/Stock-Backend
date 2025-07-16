@@ -1,7 +1,10 @@
 import asyncio
 import datetime
+import json
+import os
 import sqlite3
 import time
+from dotenv import load_dotenv
 import finnhub
 
 def get_next_option_expiration(start_date=None, weeks_out=2):
@@ -24,16 +27,55 @@ def format_option_id(symbol, strike, option_type="C", weeks_out=2):
     
     return f"{symbol.upper()}_{expiration_str}{option_type.upper()}{strike_formatted}"
 
-async def write_upcoming_earnings_symbols():
+async def updateEarningsDate(client, tickers):
+    print("1")
+    # Load existing data
+    earnings_data = None
+    try:
+        with open("earnings_dates.json", "r") as f:
+            earnings_data = json.load(f)
+    except FileNotFoundError:
+        earnings_data = {}
+    print(earnings_data)
+    today = datetime.datetime.today().strftime('%Y-%m-%d')
+    future = (datetime.datetime.today() + datetime.timedelta(days=90)).strftime('%Y-%m-%d')
+
+    for symbol in tickers:
+        try:
+            print("ok")
+            await asyncio.sleep(1)            
+            response = client.earnings_calendar(_from=today, to=future, symbol=symbol)
+            events = response.get('earningsCalendar', [])
+            if events:
+                earnings_data[symbol] = events[0]['date']
+            else:
+                earnings_data[symbol] = None
+        except Exception as e:
+            print(f"Error for {symbol}: {e}")
+            earnings_data[symbol] = None
+
+    # Save updated data
+    with open("earnings_dates.json", "w") as f:
+        json.dump(earnings_data, f, indent=2)
+
+    print("Updated earnings_dates.json with latest data.")
+
+async def write_upcoming_earnings_symbols(tickers):
+    print("Entered")
+    load_dotenv()  # Loads variables from .env into environment
+
+    api_key = os.getenv("API_KEY")
+    finnhub_client = finnhub.Client(api_key=api_key)
+
+    await updateEarningsDate(client=finnhub_client, tickers=tickers)
     makret_cap_dict = {}
 
-    finnhub_client = finnhub.Client(api_key="d1mlkl1r01qlvnp378dgd1mlkl1r01qlvnp378e0")
 
     # Get today's date
-    today = datetime.today()
+    today = datetime.datetime.today()
 
     # Calculate date one week from now
-    one_week_out = today + datetime.timedelta(days=7)
+    one_week_out = today + datetime.timedelta(days=14)
 
     # Format as YYYY-MM-DD
     _from = one_week_out.strftime('%Y-%m-%d')
@@ -52,12 +94,15 @@ async def write_upcoming_earnings_symbols():
 
 
     for entry in calendar:
-        symbol = entry["symbol"]
-        await asyncio.sleep(1)
-        market_cap_response = (finnhub_client.company_profile2(symbol=symbol))
-        market_cap = market_cap_response.get("marketCapitalization")
-        makret_cap_dict[symbol] = market_cap
-
+        try:
+            symbol = entry["symbol"]
+            print(symbol)
+            await asyncio.sleep(1)
+            market_cap_response = (finnhub_client.company_profile2(symbol=symbol))
+            market_cap = market_cap_response.get("marketCapitalization")
+            makret_cap_dict[symbol] = market_cap
+        except Exception as e:
+            print(e)
 
     top_10 = dict(sorted(makret_cap_dict.items(), key=lambda item: item[1] or 0, reverse=True)[:5])
 

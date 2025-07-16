@@ -77,14 +77,9 @@ async def listen_for_messages(websocket, streamer):
             print("Stream handling error:", e)
 
 async def write_to_db(websocket):
-    earningsSent = False
     while True:
         await asyncio.sleep(15 - time.time() % 15)
         timestamp = int(time.time())        
-
-        if earningsSent is False:
-            earnings.updateEarningsDate(tickers=tickers)
-            earningsSent = True
 
         
         if len(stream_func.file_names) != 0:
@@ -201,8 +196,11 @@ async def main():
         tasks = [
             asyncio.create_task(listen_for_messages(websocket, streamer)),
             asyncio.create_task(write_to_db(websocket)),
-            asyncio.create_task(test.write_upcoming_earnings_symbols())
         ]
+
+        await asyncio.sleep(10) 
+
+        tasks.append(asyncio.create_task(test.write_upcoming_earnings_symbols(tickers=tickers)))
 
         try:
             while True:

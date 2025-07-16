@@ -69,7 +69,30 @@ func InitCSVData() {
 		// Remove the final ".db" and see if there's *another* ".db"
 		base := strings.TrimSuffix(name, ext)
 		if filepath.Ext(base) != ".db" && len(name) > 15 {
-			dbFiles = append(dbFiles, name)
+			underlyingTicker := extractTicker(name)
+
+			edStr, ok := dates[underlyingTicker]
+			if !ok {
+				log.Printf("No earnings date for %s, skipping daysToEarnings", name)
+			}
+			var earningsDate time.Time
+			if ok {
+				earningsDate, err = time.Parse("2006-01-02", edStr)
+				if err != nil {
+					log.Printf("Invalid earnings date format for %s: %v", name, err)
+					ok = false
+				}
+			}
+			var daysToEarnings int64
+			if ok {
+				now := time.Now()
+				diff := earningsDate.Sub(now).Hours() / 24
+				daysToEarnings = int64(math.Ceil(diff))
+			}
+
+			if daysToEarnings > 0 {
+				dbFiles = append(dbFiles, name)
+			}
 		}
 	}
 
