@@ -278,98 +278,107 @@ func StartStockStream(w http.ResponseWriter, r *http.Request) {
 
 // Retrieve the most recent prices from an array of FileNames(tickers) and write to STOCK_CLIENT
 func getRecentPrices(FileNames []string, ws *websocket.Conn) {
-	for _, fileName := range FileNames {
-		db, err := sql.Open("sqlite", fmt.Sprintf("%s.db", fileName))
+	// Preallocate slices to avoid repeated reallocations
+	optionPrices := make([]OptionPriceData, 0, len(FileNames))
+	stockPrices := make([]StockPriceData, 0, len(FileNames))
+	date := TodayDate()
+
+	for _, name := range FileNames {
+		// Open DB
+		dbPath := fmt.Sprintf("%s.db", name)
+		db, err := sql.Open("sqlite", dbPath)
 		if err != nil {
-			log.Printf("Query failed recent 1 prices: %v", err)
+			log.Printf("failed to open %s: %v", dbPath, err)
+			continue
 		}
+
+		// Ensure WAL mode before querying
 		for i := 0; i < 3; i++ {
-			_, err = db.Exec("PRAGMA journal_mode=WAL;")
-			if err == nil {
+			if _, err = db.Exec("PRAGMA journal_mode=WAL;"); err == nil {
 				break
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
-		defer db.Close()
-		date := TodayDate()
 
-		if len(fileName) > 5 {
-			query := fmt.Sprintf(`SELECT * FROM "%s" ORDER BY timestamp DESC LIMIT 1`, date)
-			row := db.QueryRow(query)
+		// Build and execute query
+		query := fmt.Sprintf(`SELECT * FROM "%s" ORDER BY timestamp DESC LIMIT 1`, date)
+		row := db.QueryRow(query)
 
-			var timestamp int64
+		switch {
+		case len(name) > 8:
+			// Option row
+			var ts int64
 			var bid, ask, last, high, iv, delta, gamma, theta, vega float64
 
-			err := row.Scan(&timestamp, &bid, &ask, &last, &high, &iv, &delta, &gamma, &theta, &vega)
-			if err != nil {
-				log.Printf("Query failed recent 2 prices: %v", err)
-				return
-			}
-			data := OptionPriceData{
-				Symbol:    fileName,
-				Timestamp: timestamp,
-				Bid:       bid,
-				Ask:       ask,
-				Mark:      math.Round(((ask+bid)/2)*100) / 100,
-				Last:      last,
-				High:      high,
-				IV:        iv,
-				Delta:     delta,
-				Gamma:     gamma,
-				Theta:     theta,
-				Vega:      vega,
-			}
-			msg, err := json.Marshal(data)
-			if err != nil {
-				return
-			}
-			if clients["STOCK_CLIENT"] != nil {
-				err = SendToClient(clients["STOCK_CLIENT"], msg)
-				if err != nil {
-					errMsg := map[string]string{"error": err.Error()}
-					msg, _ := json.Marshal(errMsg)
-					_ = ws.WriteMessage(websocket.TextMessage, msg)
-					return
-				}
+			if err := row.Scan(&ts, &bid, &ask, &last, &high, &iv, &delta, &gamma, &theta, &vega); err != nil {
+				log.Printf("scan option %s: %v", name, err)
 			} else {
-				log.Println("Stock Client is not connected")
+				opt := OptionPriceData{
+					Symbol:    name,
+					Timestamp: ts,
+					Bid:       bid,
+					Ask:       ask,
+					Mark:      math.Round(((ask+bid)/2)*100) / 100,
+					Last:      last,
+					High:      high,
+					IV:        iv,
+					Delta:     delta,
+					Gamma:     gamma,
+					Theta:     theta,
+					Vega:      vega,
+				}
+				optionPrices = append(optionPrices, opt)
 			}
 
-		} else {
-			query := fmt.Sprintf(`SELECT * FROM "%s" ORDER BY timestamp DESC LIMIT 1`, date)
-			row := db.QueryRow(query)
-
-			var timestamp int64
+		default:
+			// Stock row
+			var ts int64
 			var bid, ask, last float64
 			var askSize, bidSize int64
 
-			err := row.Scan(&timestamp, &bid, &ask, &last, &askSize, &bidSize)
-			if err != nil {
-				log.Printf("Query failed recent 3 prices: %v", err)
-				return
-			}
-			data := StockPriceData{
-				Symbol:    fileName,
-				Timestamp: timestamp,
-				Mark:      math.Round(((ask+bid)/2)*100) / 100,
-			}
-			msg, err := json.Marshal(data)
-			if err != nil {
-				return
-			}
-			if clients["STOCK_CLIENT"] != nil {
-				err = SendToClient(clients["STOCK_CLIENT"], msg)
-				if err != nil {
-					errMsg := map[string]string{"error": err.Error()}
-					msg, _ := json.Marshal(errMsg)
-					_ = ws.WriteMessage(websocket.TextMessage, msg)
-					return
-				}
+			if err := row.Scan(&ts, &bid, &ask, &last, &askSize, &bidSize); err != nil {
+				log.Printf("scan stock %s: %v", name, err)
 			} else {
-				log.Println("Stock Client is not connected")
+				stk := StockPriceData{
+					Symbol:    name,
+					Timestamp: ts,
+					Mark:      math.Round(((ask+bid)/2)*100) / 100,
+				}
+				stockPrices = append(stockPrices, stk)
 			}
 		}
+
+		db.Close()
 	}
+
+	// Send both payloads as two JSON arrays
+	client := clients["STOCK_CLIENT"]
+	if client == nil {
+		log.Println("Stock Client is not connected")
+		return
+	}
+
+	// Helper to marshal & send JSON
+	send := func(v interface{}) error {
+		msg, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		return SendToClient(client, msg)
+	}
+
+	if err := send(optionPrices); err != nil {
+		errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
+		_ = ws.WriteMessage(websocket.TextMessage, errMsg)
+		return
+	}
+
+	if err := send(stockPrices); err != nil {
+		errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
+		_ = ws.WriteMessage(websocket.TextMessage, errMsg)
+		return
+	}
+
 }
 
 // Write to a specific client the most recent balance
@@ -392,7 +401,7 @@ func processWrite(t time.Time, client *Client) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	if err != nil {
-		log.Printf("Failed to enable WAL after retries:", err)
+		log.Printf("Failed to enable WAL after retries: %v", err)
 	}
 	date := TodayDate()
 

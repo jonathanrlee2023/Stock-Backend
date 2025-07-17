@@ -127,6 +127,7 @@ func SendOpenPositions(clients map[string]*Client) {
 	}
 }
 
+// Send symbols from Tracker.db to python client
 func SendTrackerSymbols() []string {
 	var symbols []string
 	fmt.Println(os.Getwd())

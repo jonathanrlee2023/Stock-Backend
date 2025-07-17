@@ -19,13 +19,6 @@ func main() {
 	// Check if ctrl C is pressed
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
-	runDailyAt(15, 0, 5, func() {
-		utils.WriteOpenCloseData("Start")
-		utils.WriteOpenCloseData("End")
-		utils.InitCSVData()
-		utils.DeleteUnusedData()
-	})
-
 	// Endpoints for API
 	mux := http.NewServeMux()
 	mux.HandleFunc("/connect", utils.WebsocketConnectHandler)
@@ -44,6 +37,14 @@ func main() {
 		Handler: handler,
 	}
 
+	runDailyAt(15, 0, 5, func() {
+		utils.WriteOpenCloseData("Start")
+		utils.WriteOpenCloseData("End")
+		utils.InitCSVData()
+		utils.DeleteUnusedData()
+		totalShutdown(server)
+	})
+
 	// Run server in a goroutine
 	go func() {
 		fmt.Println("Server is running on port 8080...")
@@ -53,6 +54,10 @@ func main() {
 	}()
 
 	<-stop
+	totalShutdown(server)
+}
+
+func totalShutdown(server *http.Server) {
 	log.Println("Shutting down gracefully...")
 
 	utils.ShutdownAllClients()

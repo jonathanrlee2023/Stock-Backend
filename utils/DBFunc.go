@@ -58,9 +58,6 @@ func WriteOpenCloseData(startOrEnd string) {
 			fmt.Printf("Skipping SQLite system file: %s\n", info.Name())
 			return nil
 		}
-		if err != nil {
-			return err
-		}
 
 		if info.IsDir() {
 			return nil

@@ -198,9 +198,9 @@ async def main():
             asyncio.create_task(write_to_db(websocket)),
         ]
 
-        await asyncio.sleep(10) 
+        # await asyncio.sleep(10) 
 
-        tasks.append(asyncio.create_task(test.write_upcoming_earnings_symbols(tickers=tickers)))
+        # tasks.append(asyncio.create_task(test.write_upcoming_earnings_symbols(tickers=tickers)))
 
         try:
             while True:

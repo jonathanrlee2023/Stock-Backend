@@ -29,6 +29,8 @@ type OptionRow struct {
 
 type EarningsDates map[string]string
 
+var totalRows []CSVOptionData
+
 func InitCSVData() {
 	f, err := os.Open("earnings_dates.json")
 	if err != nil {
@@ -90,7 +92,7 @@ func InitCSVData() {
 				daysToEarnings = int64(math.Ceil(diff))
 			}
 
-			if daysToEarnings > 0 {
+			if daysToEarnings > 0 && daysToEarnings < 21 {
 				dbFiles = append(dbFiles, name)
 			}
 		}
@@ -100,7 +102,7 @@ func InitCSVData() {
 		fmt.Println(entry)
 		GetDataFromDB(entry, dates)
 	}
-
+	totalRowsAnalysis()
 }
 
 func PrepCSV(fileName string, featureRows []CSVOptionData) error {
@@ -309,6 +311,7 @@ func GetDataFromDB(ticker string, dates EarningsDates) {
 			DaysToEarnings: daysToEarnings,
 		}
 		featureRows = append(featureRows, featureRow)
+		totalRows = append(totalRows, featureRow)
 	}
 
 	err = PrepCSV(fmt.Sprintf("%s_features.csv", underlyingTicker), featureRows)
@@ -373,4 +376,35 @@ func fetchRowsFromDB(db *sql.DB, table string) []OptionRow {
 		})
 	}
 	return out
+}
+
+func totalRowsAnalysis() {
+	positiveEarningsMap := make(map[int]int)
+	negativeEarningsMap := make(map[int]int)
+	percentageMap := make(map[int]float64)
+
+	for _, row := range totalRows {
+		if row.Label == 1 {
+			if positiveEarningsMap[int(row.DaysToEarnings)] == 0 {
+				positiveEarningsMap[int(row.DaysToEarnings)] = 1
+			} else {
+				positiveEarningsMap[int(row.DaysToEarnings)] += 1
+			}
+		} else if row.Label == 0 {
+			if negativeEarningsMap[int(row.DaysToEarnings)] == 0 {
+				negativeEarningsMap[int(row.DaysToEarnings)] = 1
+			} else {
+				negativeEarningsMap[int(row.DaysToEarnings)*-1] += 1
+			}
+		}
+	}
+	for key, value := range positiveEarningsMap {
+		total := value
+		total += negativeEarningsMap[key]
+		percentageMap[key] = (float64(value) / float64(total)) * 100.0
+	}
+	for key, value := range percentageMap {
+		fmt.Printf("With %d days till earnings, there were %d that hit the mark, with %.2f percent positive\n", key, positiveEarningsMap[key], value)
+	}
+
 }
