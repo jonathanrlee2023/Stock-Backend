@@ -230,12 +230,11 @@ func GetDataFromDB(ticker string, dates EarningsDates) {
 	})
 
 	var featureRows []CSVOptionData
-	lookahead := 2
 	smaWindow := 2
 	zScoreWindow := 5
 
 	for i := range history {
-		if i < zScoreWindow || i < 2 || i+lookahead+1 >= len(history) {
+		if i < zScoreWindow || i < 2 {
 			continue
 		}
 
@@ -270,8 +269,8 @@ func GetDataFromDB(ticker string, dates EarningsDates) {
 		label := 0
 		futureReturn := 0.0
 		futurePrice := 0.0
-		// Scan all future entries up to i + 3
-		for j := i + 1; j <= i+3; j++ {
+		// Scan all future entries
+		for j := i + 1; j < len(history); j++ {
 			futureReturn = (history[j].Mark - markNow) / markNow
 			if futureReturn > 0.02 {
 				label = 1
@@ -314,34 +313,12 @@ func GetDataFromDB(ticker string, dates EarningsDates) {
 		totalRows = append(totalRows, featureRow)
 	}
 
-	err = PrepCSV(fmt.Sprintf("%s_features.csv", underlyingTicker), featureRows)
+	err = PrepCSV(fmt.Sprintf("%s_%s.csv", underlyingTicker, dates[underlyingTicker]), featureRows)
 	if err != nil {
 		log.Printf("Failed to write CSV for %s: %v", ticker, err)
 	} else {
 		log.Printf("CSV written for %s with %d rows", underlyingTicker, len(featureRows))
 	}
-}
-
-func extractTicker(optionID string) string {
-	// Split into at most 2 pieces
-	parts := strings.SplitN(optionID, "_", 2)
-	return parts[0]
-}
-
-func flipCallPut(optID string) string {
-	// find the last 'C' or 'P' in the string
-	idx := strings.LastIndexAny(optID, "CP")
-	if idx < 0 {
-		return optID
-	}
-	var other byte
-	if optID[idx] == 'C' {
-		other = 'P'
-	} else {
-		other = 'C'
-	}
-	// rebuild string with that one character swapped
-	return optID[:idx] + string(other) + optID[idx+1:]
 }
 
 func fetchRowsFromDB(db *sql.DB, table string) []OptionRow {

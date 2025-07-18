@@ -59,6 +59,26 @@ type OptionPriceData struct {
 	Vega      float64 `json:"vega"`
 }
 
+// MixedQuote represents either an equity quote (with Bid/Ask Size)
+// or an option quote (with Greeks and IV). Absent fields stay nil.
+type MixedQuote struct {
+	BidPrice  float64 `json:"Bid Price"`
+	AskPrice  float64 `json:"Ask Price"`
+	LastPrice float64 `json:"Last Price"`
+
+	// Equity-only
+	BidSize *int `json:"Bid Size,omitempty"`
+	AskSize *int `json:"Ask Size,omitempty"`
+
+	// Option-only
+	HighPrice *float64 `json:"High Price,omitempty"`
+	IV        *float64 `json:"IV,omitempty"`
+	Delta     *float64 `json:"Delta,omitempty"`
+	Gamma     *float64 `json:"Gamma,omitempty"`
+	Theta     *float64 `json:"Theta,omitempty"`
+	Vega      *float64 `json:"Vega,omitempty"`
+}
+
 type CSVOptionData struct {
 	Symbol    string  `json:"symbol"`    // Option symbol or ticker
 	Timestamp int64   `json:"timestamp"` // Unix timestamp (or could be string if using formatted time)

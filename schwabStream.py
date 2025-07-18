@@ -14,7 +14,7 @@ import asyncio
 import websockets
 import traceback
 import earnings
-import test
+import earnings
 
 stream_started = False
 stream_lock = asyncio.Lock()
@@ -150,11 +150,7 @@ async def write_to_db(websocket):
                     ))
                 conn.commit()
                 conn.close()
-            await websocket.send(json.dumps({
-                "type": "dataReady",
-                "filenames": stream_func.file_names
-            }))
-
+            await websocket.send(json.dumps(stream_func.new_data))
         else:
             continue
 
@@ -187,6 +183,9 @@ async def main():
 
     streamer = client.stream
 
+    response = client.option_expiration_chain("AAPL")
+    print(response.json())
+
     uri = "ws://localhost:8080/connect?id=PYTHON_CLIENT"
 
     async with websockets.connect(uri) as websocket:
@@ -200,7 +199,7 @@ async def main():
 
         # await asyncio.sleep(10) 
 
-        # tasks.append(asyncio.create_task(test.write_upcoming_earnings_symbols(tickers=tickers)))
+        # tasks.append(asyncio.create_task(earnings.write_upcoming_earnings_symbols(tickers=tickers, client=client)))
 
         try:
             while True:

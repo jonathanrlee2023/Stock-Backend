@@ -131,14 +131,21 @@ func SendOpenPositions(clients map[string]*Client) {
 func SendTrackerSymbols() []string {
 	var symbols []string
 	fmt.Println(os.Getwd())
-	db, err := sql.Open("sqlite", "Tracker.db")
+	trackerDB, err := sql.Open("sqlite", "Tracker.db")
 	if err != nil {
 		log.Println("No Tracker")
 		return nil
 	}
-	defer db.Close()
+	defer trackerDB.Close()
 
-	rows, err := db.Query("SELECT id FROM Tracker")
+	openDB, err := sql.Open("sqlite", "Open.db")
+	if err != nil {
+		log.Println("No Tracker")
+		return nil
+	}
+	defer openDB.Close()
+
+	rows, err := trackerDB.Query("SELECT id FROM Tracker")
 	if err != nil {
 		log.Println("No Tables in Tracker")
 		return nil
@@ -164,11 +171,17 @@ func SendTrackerSymbols() []string {
 			}
 			now := time.Now().UTC()
 			if expDate.Before(now) {
-				_, err := db.Exec("DELETE FROM Tracker WHERE id = ?", id)
+				_, err := trackerDB.Exec("DELETE FROM Tracker WHERE id = ?", id)
 				if err != nil {
 					log.Println("Failed to delete expired tracker:", err)
 				} else {
 					log.Printf("Deleted expired tracker: %s (expired on %s)", id, expDate.Format(time.RFC3339))
+				}
+				_, err = openDB.Exec("DELETE FROM OpenPositions WHERE id = ?", id)
+				if err != nil {
+					log.Println("Failed to delete expired symbol:", err)
+				} else {
+					log.Printf("Deleted expired symbol: %s (expired on %s)", id, expDate.Format(time.RFC3339))
 				}
 				continue
 			}

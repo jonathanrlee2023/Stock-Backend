@@ -3,6 +3,7 @@ package utils
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -46,6 +47,7 @@ func ParseOptionString(s string) (OptionStreamRequest, error) {
 	return req, nil
 }
 
+// Takes a struct based on an option id and returns a time.Time
 func ParseExpirationDate(req OptionStreamRequest) (time.Time, error) {
 	day, err := strconv.Atoi(req.Day)
 	if err != nil {
@@ -78,4 +80,26 @@ func ParseExpirationDate(req OptionStreamRequest) (time.Time, error) {
 	}
 
 	return time.Date(year, time.Month(month), day, 23, 59, 59, 0, time.UTC), nil
+}
+
+func extractTicker(optionID string) string {
+	// Split into at most 2 pieces
+	parts := strings.SplitN(optionID, "_", 2)
+	return parts[0]
+}
+
+func flipCallPut(optID string) string {
+	// find the last 'C' or 'P' in the string
+	idx := strings.LastIndexAny(optID, "CP")
+	if idx < 0 {
+		return optID
+	}
+	var other byte
+	if optID[idx] == 'C' {
+		other = 'P'
+	} else {
+		other = 'C'
+	}
+	// rebuild string with that one character swapped
+	return optID[:idx] + string(other) + optID[idx+1:]
 }

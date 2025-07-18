@@ -45,6 +45,8 @@ func main() {
 		totalShutdown(server)
 	})
 
+	utils.InitCSVData()
+
 	// Run server in a goroutine
 	go func() {
 		fmt.Println("Server is running on port 8080...")
@@ -68,6 +70,7 @@ func totalShutdown(server *http.Server) {
 		log.Fatalf("Server Shutdown Failed:%+v", err)
 	}
 	log.Println("Server exited")
+	os.Exit(0)
 }
 
 // Runs a function daily at a specified time

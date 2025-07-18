@@ -160,7 +160,7 @@ func ShutdownAllClients() {
 	}
 }
 
-// Receives and handles a websocket message
+// Receives and handles a websocket message from python client and sends data to frontend
 func HandleClientRead(client *Client) {
 	for {
 		msg, err := ReceiveFromClient(client)
@@ -177,19 +177,85 @@ func HandleClientRead(client *Client) {
 		default:
 		}
 
-		var incoming struct {
-			Type      string   `json:"type"`
-			Filenames []string `json:"filenames"`
+		var quotes map[string]MixedQuote
+		if err := json.Unmarshal(msg, &quotes); err != nil {
+			// If it’s not a quotes payload, skip or handle other message types here
+			log.Printf("Invalid quotes JSON from %s: %v", client.ID, err)
+			continue
 		}
-		if err := json.Unmarshal(msg, &incoming); err != nil {
-			log.Printf("Invalid message from client %s: %v", client.ID, err)
+		optionPrices := make([]OptionPriceData, 0, len(quotes))
+		stockPrices := make([]StockPriceData, 0, len(quotes))
+		timestamp := time.Now().Unix()
+		// Process each symbol
+		for symbol, q := range quotes {
+			switch {
+			// Equity quote if BidSize/AskSize are present
+			case q.BidSize != nil && q.AskSize != nil:
+				log.Printf(
+					"Equity %s: bid=%.2f (size=%d) ask=%.2f (size=%d) last=%.2f",
+					symbol, q.BidPrice, *q.BidSize, q.AskPrice, *q.AskSize, q.LastPrice,
+				)
+				stock := StockPriceData{
+					Symbol:    symbol,
+					Timestamp: timestamp,
+					Mark:      math.Round(((q.AskPrice+q.BidPrice)/2)*100) / 100,
+				}
+
+				stockPrices = append(stockPrices, stock)
+
+			// Option quote if IV or Greeks are present
+			case q.IV != nil:
+				log.Printf(
+					"Option %s: bid=%.2f ask=%.2f last=%.2f high=%.2f IV=%.2f Δ=%.2f Γ=%.2f Θ=%.2f ν=%.2f",
+					symbol, q.BidPrice, q.AskPrice, q.LastPrice, *q.HighPrice,
+					*q.IV, *q.Delta, *q.Gamma, *q.Theta, *q.Vega,
+				)
+				option := OptionPriceData{
+					Symbol:    symbol,
+					Timestamp: timestamp,
+					Bid:       q.BidPrice,
+					Ask:       q.AskPrice,
+					Mark:      math.Round(((q.AskPrice+q.BidPrice)/2)*100) / 100,
+					Last:      q.LastPrice,
+					High:      *q.HighPrice,
+					IV:        *q.IV,
+					Delta:     *q.Delta,
+					Gamma:     *q.Gamma,
+					Theta:     *q.Theta,
+					Vega:      *q.Vega,
+				}
+				optionPrices = append(optionPrices, option)
+
+			default:
+				log.Printf("Unrecognized quote type for %s: %+v", symbol, q)
+			}
+		}
+		// Send both payloads as two JSON arrays
+		client := clients["STOCK_CLIENT"]
+		if client == nil {
+			log.Println("Stock Client is not connected")
 			continue
 		}
 
-		fmt.Printf("Received from %s: %+v\n", client.ID, incoming)
+		// Helper to marshal & send JSON
+		send := func(v interface{}) error {
+			msg, err := json.Marshal(v)
+			if err != nil {
+				return err
+			}
+			return SendToClient(client, msg)
+		}
 
-		if incoming.Type == "dataReady" {
-			getRecentPrices(incoming.Filenames, client.Conn)
+		if err := send(optionPrices); err != nil {
+			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
+			_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
+			return
+		}
+
+		if err := send(stockPrices); err != nil {
+			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
+			_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
+			return
 		}
 	}
 }
@@ -274,111 +340,6 @@ func StartStockStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fmt.Fprintf(w, "Sent to WebSocket!")
-}
-
-// Retrieve the most recent prices from an array of FileNames(tickers) and write to STOCK_CLIENT
-func getRecentPrices(FileNames []string, ws *websocket.Conn) {
-	// Preallocate slices to avoid repeated reallocations
-	optionPrices := make([]OptionPriceData, 0, len(FileNames))
-	stockPrices := make([]StockPriceData, 0, len(FileNames))
-	date := TodayDate()
-
-	for _, name := range FileNames {
-		// Open DB
-		dbPath := fmt.Sprintf("%s.db", name)
-		db, err := sql.Open("sqlite", dbPath)
-		if err != nil {
-			log.Printf("failed to open %s: %v", dbPath, err)
-			continue
-		}
-
-		// Ensure WAL mode before querying
-		for i := 0; i < 3; i++ {
-			if _, err = db.Exec("PRAGMA journal_mode=WAL;"); err == nil {
-				break
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
-
-		// Build and execute query
-		query := fmt.Sprintf(`SELECT * FROM "%s" ORDER BY timestamp DESC LIMIT 1`, date)
-		row := db.QueryRow(query)
-
-		switch {
-		case len(name) > 8:
-			// Option row
-			var ts int64
-			var bid, ask, last, high, iv, delta, gamma, theta, vega float64
-
-			if err := row.Scan(&ts, &bid, &ask, &last, &high, &iv, &delta, &gamma, &theta, &vega); err != nil {
-				log.Printf("scan option %s: %v", name, err)
-			} else {
-				opt := OptionPriceData{
-					Symbol:    name,
-					Timestamp: ts,
-					Bid:       bid,
-					Ask:       ask,
-					Mark:      math.Round(((ask+bid)/2)*100) / 100,
-					Last:      last,
-					High:      high,
-					IV:        iv,
-					Delta:     delta,
-					Gamma:     gamma,
-					Theta:     theta,
-					Vega:      vega,
-				}
-				optionPrices = append(optionPrices, opt)
-			}
-
-		default:
-			// Stock row
-			var ts int64
-			var bid, ask, last float64
-			var askSize, bidSize int64
-
-			if err := row.Scan(&ts, &bid, &ask, &last, &askSize, &bidSize); err != nil {
-				log.Printf("scan stock %s: %v", name, err)
-			} else {
-				stk := StockPriceData{
-					Symbol:    name,
-					Timestamp: ts,
-					Mark:      math.Round(((ask+bid)/2)*100) / 100,
-				}
-				stockPrices = append(stockPrices, stk)
-			}
-		}
-
-		db.Close()
-	}
-
-	// Send both payloads as two JSON arrays
-	client := clients["STOCK_CLIENT"]
-	if client == nil {
-		log.Println("Stock Client is not connected")
-		return
-	}
-
-	// Helper to marshal & send JSON
-	send := func(v interface{}) error {
-		msg, err := json.Marshal(v)
-		if err != nil {
-			return err
-		}
-		return SendToClient(client, msg)
-	}
-
-	if err := send(optionPrices); err != nil {
-		errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-		_ = ws.WriteMessage(websocket.TextMessage, errMsg)
-		return
-	}
-
-	if err := send(stockPrices); err != nil {
-		errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-		_ = ws.WriteMessage(websocket.TextMessage, errMsg)
-		return
-	}
-
 }
 
 // Write to a specific client the most recent balance
