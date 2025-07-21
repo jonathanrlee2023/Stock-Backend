@@ -185,28 +185,32 @@ async def main():
 
     uri = "ws://localhost:8080/connect?id=PYTHON_CLIENT"
 
-    async with websockets.connect(uri) as websocket:
-        print("Connected to Websocket")
 
-        # Start background tasks
-        tasks = [
-            asyncio.create_task(listen_for_messages(websocket, streamer)),
-            asyncio.create_task(write_to_db(websocket)),
-        ]
+    try:
+        async with websockets.connect(uri) as websocket:
+            print("Connected to Websocket")
+            # Start background tasks
+            tasks = [
+                asyncio.create_task(listen_for_messages(websocket, streamer)),
+                asyncio.create_task(write_to_db(websocket)),
+            ]
 
-        await asyncio.sleep(10) 
+            await asyncio.sleep(10) 
 
-        tasks.append(asyncio.create_task(earnings.write_upcoming_earnings_symbols(tickers=tickers, client=client)))
+            tasks.append(asyncio.create_task(earnings.write_upcoming_earnings_symbols(tickers=tickers, client=client)))
 
-        try:
-            while True:
-                if not is_weekday_business_hours_central():
-                    print("Shutting down: after 3PM Central.")
-                    for task in tasks:
-                        task.cancel()
-                    break
-                await asyncio.sleep(60)
-        except asyncio.CancelledError:
-            print("Tasks were cancelled.")
+            try:
+                while True:
+                    if not is_weekday_business_hours_central():
+                        print("Shutting down: after 3PM Central.")
+                        for task in tasks:
+                            task.cancel()
+                        break
+                    await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                print("Tasks were cancelled.")
+    except (ConnectionRefusedError, websockets.exceptions.InvalidURI) as e:
+        print(f"Failed to connect to WebSocket: {e}")
+        return
 
 asyncio.run(main())

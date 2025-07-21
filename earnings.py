@@ -165,8 +165,6 @@ async def write_upcoming_earnings_symbols(tickers, client):
         call_id = format_option_id(symbol=symbol, strike=rounded_price, client=client, option_type="C" )
         put_id = format_option_id(symbol=symbol, strike=rounded_price, client=client, option_type="P")
 
-        print(call_id)
-        print(put_id)
         # Insert both option IDs into the table
         cursor.execute(insert_table, (call_id,))
         cursor.execute(insert_table, (put_id,))
