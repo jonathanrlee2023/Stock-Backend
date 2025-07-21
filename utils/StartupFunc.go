@@ -136,12 +136,32 @@ func SendTrackerSymbols() []string {
 		log.Println("No Tracker")
 		return nil
 	}
+	for i := 0; i < 3; i++ {
+		_, err = trackerDB.Exec("PRAGMA journal_mode=WAL;")
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil {
+		log.Printf("Failed to enable WAL after retries: %v", err)
+	}
 	defer trackerDB.Close()
 
 	openDB, err := sql.Open("sqlite", "Open.db")
 	if err != nil {
 		log.Println("No Tracker")
 		return nil
+	}
+	for i := 0; i < 3; i++ {
+		_, err = openDB.Exec("PRAGMA journal_mode=WAL;")
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil {
+		log.Printf("Failed to enable WAL after retries: %v", err)
 	}
 	defer openDB.Close()
 
@@ -171,6 +191,7 @@ func SendTrackerSymbols() []string {
 			}
 			now := time.Now().UTC()
 			if expDate.Before(now) {
+				log.Println("Ran")
 				_, err := trackerDB.Exec("DELETE FROM Tracker WHERE id = ?", id)
 				if err != nil {
 					log.Println("Failed to delete expired tracker:", err)

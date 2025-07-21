@@ -99,9 +99,11 @@ func InitCSVData() {
 	}
 
 	for _, entry := range dbFiles {
-		fmt.Println(entry)
 		GetDataFromDB(entry, dates)
 	}
+
+	scanAndLoadCSVs()
+
 	totalRowsAnalysis()
 }
 
@@ -152,7 +154,6 @@ func PrepCSV(fileName string, featureRows []CSVOptionData) error {
 }
 
 func GetDataFromDB(ticker string, dates EarningsDates) {
-	fmt.Println(ticker)
 	callDB, err := sql.Open("sqlite", "file:"+ticker+"?mode=ro")
 	if err != nil {
 		log.Printf("open call DB %s failed: %v", ticker, err)
@@ -234,7 +235,7 @@ func GetDataFromDB(ticker string, dates EarningsDates) {
 	zScoreWindow := 5
 
 	for i := range history {
-		if i < zScoreWindow || i < 2 {
+		if i < zScoreWindow || i < 2 || i+2 >= len(history) {
 			continue
 		}
 
@@ -242,7 +243,7 @@ func GetDataFromDB(ticker string, dates EarningsDates) {
 		iv := history[i].IV
 		markNow := history[i].Mark
 
-		deltaIV := iv - history[i-1].IV
+		deltaIV := history[i+1].IV - iv
 		accelIV := (iv - history[i-1].IV) - (history[i-1].IV - history[i-2].IV)
 
 		// SMA
@@ -310,7 +311,6 @@ func GetDataFromDB(ticker string, dates EarningsDates) {
 			DaysToEarnings: daysToEarnings,
 		}
 		featureRows = append(featureRows, featureRow)
-		totalRows = append(totalRows, featureRow)
 	}
 
 	err = PrepCSV(fmt.Sprintf("%s_%s.csv", underlyingTicker, dates[underlyingTicker]), featureRows)
@@ -356,6 +356,7 @@ func fetchRowsFromDB(db *sql.DB, table string) []OptionRow {
 }
 
 func totalRowsAnalysis() {
+	fmt.Println(len(totalRows))
 	positiveEarningsMap := make(map[int]int)
 	negativeEarningsMap := make(map[int]int)
 	percentageMap := make(map[int]float64)
@@ -371,10 +372,13 @@ func totalRowsAnalysis() {
 			if negativeEarningsMap[int(row.DaysToEarnings)] == 0 {
 				negativeEarningsMap[int(row.DaysToEarnings)] = 1
 			} else {
-				negativeEarningsMap[int(row.DaysToEarnings)*-1] += 1
+				negativeEarningsMap[int(row.DaysToEarnings)] += 1
 			}
 		}
 	}
+	fmt.Println(positiveEarningsMap)
+	fmt.Println(negativeEarningsMap)
+
 	for key, value := range positiveEarningsMap {
 		total := value
 		total += negativeEarningsMap[key]
@@ -384,4 +388,142 @@ func totalRowsAnalysis() {
 		fmt.Printf("With %d days till earnings, there were %d that hit the mark, with %.2f percent positive\n", key, positiveEarningsMap[key], value)
 	}
 
+}
+
+// scanAndLoadCSVs walks the directory, parses every .csv, and appends to totalRows.
+func scanAndLoadCSVs() error {
+	// 1. Find all .csv files
+	pattern := filepath.Join(".", "*.csv")
+	files, err := filepath.Glob(pattern)
+	if err != nil {
+		return fmt.Errorf("glob pattern error: %w", err)
+	}
+
+	// 2. Iterate each file
+	for _, fname := range files {
+		f, err := os.Open(fname)
+		if err != nil {
+			log.Printf("failed to open %s: %v", fname, err)
+			continue
+		}
+
+		reader := csv.NewReader(f)
+		reader.FieldsPerRecord = 15 // allow variable columns if needed
+
+		// Optional: skip header row
+		if _, err := reader.Read(); err != nil {
+			f.Close()
+			if err != io.EOF {
+				log.Printf("read header %s: %v", fname, err)
+			}
+			continue
+		}
+
+		// parse each record
+		for {
+			rec, err := reader.Read()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				log.Printf("read row %s: %v", fname, err)
+				break
+			}
+
+			row, err := parseRow(rec)
+			if err != nil {
+				log.Printf("parse row %s: %v", fname, err)
+				continue
+			}
+			totalRows = append(totalRows, row)
+		}
+		f.Close()
+	}
+	return nil
+}
+
+// parseRow converts a 15-string slice into a Row struct.
+func parseRow(r []string) (CSVOptionData, error) {
+	// 1) parse timestamp as Unix seconds
+	tsInt, err := strconv.ParseInt(r[1], 10, 64)
+	if err != nil {
+		return CSVOptionData{}, fmt.Errorf("timestamp: %w", err)
+	}
+
+	// 2) helper to parse float64
+	pf := func(s string) (float64, error) {
+		return strconv.ParseFloat(s, 64)
+	}
+
+	mark, err := pf(r[2])
+	if err != nil {
+		return CSVOptionData{}, fmt.Errorf("mark: %w", err)
+	}
+	iv, err := pf(r[3])
+	if err != nil {
+		return CSVOptionData{}, fmt.Errorf("iv: %w", err)
+	}
+	dIV, err := pf(r[4])
+	if err != nil {
+		return CSVOptionData{}, fmt.Errorf("deltaIV: %w", err)
+	}
+	aIV, err := pf(r[5])
+	if err != nil {
+		return CSVOptionData{}, fmt.Errorf("accelIV: %w", err)
+	}
+	smaIV, err := pf(r[6])
+	if err != nil {
+		return CSVOptionData{}, fmt.Errorf("smaIV: %w", err)
+	}
+	spike, err := pf(r[7])
+	if err != nil {
+		return CSVOptionData{}, fmt.Errorf("smaIvSpike: %w", err)
+	}
+	zScore, err := pf(r[8])
+	if err != nil {
+		return CSVOptionData{}, fmt.Errorf("ivZScore: %w", err)
+	}
+	theta, err := pf(r[9])
+	if err != nil {
+		return CSVOptionData{}, fmt.Errorf("theta: %w", err)
+	}
+	vega, err := pf(r[10])
+	if err != nil {
+		return CSVOptionData{}, fmt.Errorf("vega: %w", err)
+	}
+	futRet, err := pf(r[11])
+	if err != nil {
+		return CSVOptionData{}, fmt.Errorf("futureReturn: %w", err)
+	}
+	futPrice, err := pf(r[12])
+	if err != nil {
+		return CSVOptionData{}, fmt.Errorf("futurePrice: %w", err)
+	}
+
+	lbl, err := strconv.Atoi(r[13])
+	if err != nil {
+		return CSVOptionData{}, fmt.Errorf("label: %w", err)
+	}
+	dte, err := strconv.ParseInt(r[14], 10, 64)
+	if err != nil {
+		return CSVOptionData{}, fmt.Errorf("daysToEarnings: %w", err)
+	}
+
+	return CSVOptionData{
+		Symbol:         r[0],
+		Timestamp:      tsInt,
+		Mark:           mark,
+		IV:             iv,
+		DeltaIV:        dIV,
+		AccelIV:        aIV,
+		SmaIV:          smaIV,
+		SmaIvSpike:     spike,
+		IVZScore:       zScore,
+		Theta:          theta,
+		Vega:           vega,
+		FutureReturn:   futRet,
+		FuturePrice:    futPrice,
+		Label:          lbl,
+		DaysToEarnings: dte,
+	}, nil
 }

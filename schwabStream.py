@@ -183,9 +183,6 @@ async def main():
 
     streamer = client.stream
 
-    response = client.option_expiration_chain("AAPL")
-    print(response.json())
-
     uri = "ws://localhost:8080/connect?id=PYTHON_CLIENT"
 
     async with websockets.connect(uri) as websocket:
@@ -197,9 +194,9 @@ async def main():
             asyncio.create_task(write_to_db(websocket)),
         ]
 
-        # await asyncio.sleep(10) 
+        await asyncio.sleep(10) 
 
-        # tasks.append(asyncio.create_task(earnings.write_upcoming_earnings_symbols(tickers=tickers, client=client)))
+        tasks.append(asyncio.create_task(earnings.write_upcoming_earnings_symbols(tickers=tickers, client=client)))
 
         try:
             while True:

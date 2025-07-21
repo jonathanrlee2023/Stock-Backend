@@ -45,8 +45,6 @@ func main() {
 		totalShutdown(server)
 	})
 
-	utils.InitCSVData()
-
 	// Run server in a goroutine
 	go func() {
 		fmt.Println("Server is running on port 8080...")
