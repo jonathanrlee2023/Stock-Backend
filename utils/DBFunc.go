@@ -35,6 +35,7 @@ func getDateTables(db *sql.DB) ([]string, error) {
 	return tables, rows.Err()
 }
 
+// Function to make sure the EOD or Start of day table exists in option db
 func ensureOptionTable(db *sql.Tx, tableName string) error {
 	sql := fmt.Sprintf(`
       CREATE TABLE IF NOT EXISTS %s (
@@ -55,6 +56,8 @@ func ensureOptionTable(db *sql.Tx, tableName string) error {
 	}
 	return nil
 }
+
+// Function to make sure the EOD or Start of day table exists in stock db
 func ensureStockTable(db *sql.Tx, tableName string) error {
 	sql := fmt.Sprintf(`
       CREATE TABLE IF NOT EXISTS %s (
@@ -71,6 +74,8 @@ func ensureStockTable(db *sql.Tx, tableName string) error {
 	}
 	return nil
 }
+
+// Function to insert prices into EOD or SOD table for options
 func insertOptionPrices(db *sql.Tx, tableName string, data []OptionDbData) error {
 	insertSQL := fmt.Sprintf(`
       INSERT OR REPLACE INTO %s (
@@ -99,6 +104,8 @@ func insertOptionPrices(db *sql.Tx, tableName string, data []OptionDbData) error
 	}
 	return nil
 }
+
+// Function to insert prices into EOD or SOD table for stocks
 func insertStockPrices(db *sql.Tx, tableName string, data []StockDbData) error {
 	insertSQL := fmt.Sprintf(`
       INSERT OR REPLACE INTO %s (
@@ -125,6 +132,7 @@ func insertStockPrices(db *sql.Tx, tableName string, data []StockDbData) error {
 	return nil
 }
 
+// Walks through every db and writes the SOD and EOD data in its own table
 func WriteOpenCloseData() {
 	dir := "." // current working directory
 
@@ -278,6 +286,7 @@ func WriteOpenCloseData() {
 	}
 }
 
+// Deletes all the filler data for each database
 func DeleteUnusedData() error {
 	dir := "."
 

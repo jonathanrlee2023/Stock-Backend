@@ -24,7 +24,6 @@ func main() {
 	mux.HandleFunc("/connect", utils.WebsocketConnectHandler)
 	mux.HandleFunc("/startOptionStream", utils.StartOptionStream)
 	mux.HandleFunc("/startStockStream", utils.StartStockStream)
-	mux.HandleFunc("/dataReady", utils.DataReadyHandler)
 	mux.HandleFunc("/newTracker", utils.NewTrackerHandler)
 	mux.HandleFunc("/openPosition", utils.OpenPositionHandler)
 	mux.HandleFunc("/closePosition", utils.ClosePositionHandler)
