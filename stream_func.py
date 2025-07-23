@@ -64,8 +64,7 @@ def receive_data(response):
 
             for quote in content:
                 symbol = quote.get("key")
-                if '  ' in symbol:
-                    symbol = re.sub(r'\s+', '_', symbol)
+                symbol = re.sub(r'\s+', '_', symbol)
                 if symbol not in new_data:
                     new_data[symbol] = {}         
                 if symbol not in labeled_data:

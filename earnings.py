@@ -146,9 +146,9 @@ async def write_upcoming_earnings_symbols(tickers, client):
         except Exception as e:
             print(e)
 
-    top_10 = dict(sorted(makret_cap_dict.items(), key=lambda item: item[1] or 0, reverse=True)[:5])
+    top_5 = dict(sorted(makret_cap_dict.items(), key=lambda item: item[1] or 0, reverse=True)[:5])
 
-    for symbol, cap in top_10.items():
+    for symbol, cap in top_5.items():
         conn = sqlite3.connect('Tracker.db')
         cursor = conn.cursor()
 

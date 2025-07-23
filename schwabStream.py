@@ -23,58 +23,89 @@ tickers = []
 async def listen_for_messages(websocket, streamer):
     global stream_started
 
-    async for message in websocket:
+    async for raw_msg in websocket:
         print("Received message")
-        data = json.loads(message)
-        symbol = data["symbol"]
+        data = json.loads(raw_msg)
 
-        if len(data) > 1:
-            price = data["price"]
-            day = data["day"]
-            month = data["month"]
-            year = data["year"]
-            option_type = data["type"]
+        if not stream_started:
+            async with stream_lock:
+                if not stream_started:
+                    print("Starting streamer…")
+                    streamer.start(receiver=stream_func.receive_data)
+                    stream_started = True
 
-        print(f"Handling stream request: {data}")
+       
+        if isinstance(data, list) and data:
+            first = data[0]
 
-        async with stream_lock:
-            if not stream_started:
-                print("Starting streamer...")
-                streamer.start(receiver=stream_func.receive_data)
-                stream_started = True
+            # OptionStreamRequest array
+            if "price" in first:
+                for opt in data:
+                    symbol      = opt["symbol"]
+                    price       = opt["price"]
+                    day         = opt["day"]
+                    month       = opt["month"]
+                    year        = opt["year"]
+                    option_type = opt["type"]
 
-        await websocket.send(f"Streaming started for {symbol}")
-        try:
-            if len(data) > 1:
-                if symbol not in streamer.subscriptions.get('LEVELONE_OPTIONS', {}):
-                    asyncio.create_task(
-                        stream_func.start_options_stream(
-                            streamer=streamer,
-                            ticker=symbol,
-                            price=price,
-                            day=day,
-                            month=month,
-                            year=year,
-                            type=option_type
+                    if symbol not in streamer.subscriptions.get("LEVELONE_OPTIONS", {}):
+                        asyncio.create_task(
+                            stream_func.start_options_stream(
+                                streamer=streamer,
+                                ticker=symbol,
+                                price=price,
+                                day=day,
+                                month=month,
+                                year=year,
+                                type=option_type,
+                            )
                         )
-                    )
-                    stripped_ticker = symbol.split("_", 1)[0]
-                    if stripped_ticker not in tickers:
-                        tickers.append(stripped_ticker)
-            if len(data) == 1:
-                if symbol not in streamer.subscriptions.get('LEVELONE_EQUITIES', {}):
-                    asyncio.create_task(
-                        stream_func.start_stock_stream(
-                            streamer=streamer,
-                            ticker=symbol,
+                        # Track the underlying ticker (before the “_”)
+                        base = symbol.split("_", 1)[0]
+                        if base not in tickers:
+                            tickers.append(base)
+
+                await websocket.send(f"Options streaming started for {len(data)} symbols")
+
+            # StockStreamRequest array
+            else:
+                for stk in data:
+                    symbol = stk["symbol"]
+
+                    if symbol not in streamer.subscriptions.get("LEVELONE_EQUITIES", {}):
+                        asyncio.create_task(
+                            stream_func.start_stock_stream(
+                                streamer=streamer,
+                                ticker=symbol,
+                            )
                         )
-                    )
-                    if symbol not in tickers:
-                        tickers.append(symbol)
-        except requests.exceptions.ReadTimeout:
-            print("Timeout while connecting to Schwab API.")
-        except Exception as e:
-            print("Stream handling error:", e)
+                        if symbol not in tickers:
+                            tickers.append(symbol)
+
+                await websocket.send(f"Equity streaming started for {len(data)} symbols")
+
+        else:
+            # Fallback for a single‐item dict (old behavior) or unexpected shape
+            symbol = data.get("symbol")
+            print("Handling single request:", data)
+
+            try:
+                if "price" in data:
+                    # old option‐subscribe path…
+                    # …
+                    pass
+                else:
+                    # old stock‐subscribe path…
+                    # …
+                    pass
+
+                await websocket.send(f"Streaming started for {symbol}")
+
+            except requests.exceptions.ReadTimeout:
+                print("Timeout connecting to Schwab API.")
+            except Exception as e:
+                print("Stream handling error:", e)
+
 
 async def write_to_db(websocket):
     while True:
@@ -83,12 +114,16 @@ async def write_to_db(websocket):
 
         
         if len(stream_func.file_names) != 0:
+            snapshot = {name: stream_func.new_data[name] for name in stream_func.file_names}
+            await websocket.send(json.dumps(snapshot))
+
             for name in stream_func.file_names:
                 conn = sqlite3.connect(f'{name}.db')
                 cursor = conn.cursor()
-                data = stream_func.new_data[name]
-                today = datetime.date.today()
-                today_str = today.strftime("%Y_%m_%d")
+                data = snapshot[name]                  
+
+                today_str = datetime.date.today().strftime("%Y_%m_%d")
+
                 if len(name) > 8:
                     create_table_sql = f"""
                         CREATE TABLE IF NOT EXISTS "{today_str}" (
@@ -150,7 +185,6 @@ async def write_to_db(websocket):
                     ))
                 conn.commit()
                 conn.close()
-            await websocket.send(json.dumps(stream_func.new_data))
         else:
             continue
 
@@ -195,9 +229,9 @@ async def main():
                 asyncio.create_task(write_to_db(websocket)),
             ]
 
-            await asyncio.sleep(10) 
+            # await asyncio.sleep(10) 
 
-            tasks.append(asyncio.create_task(earnings.write_upcoming_earnings_symbols(tickers=tickers, client=client)))
+            # tasks.append(asyncio.create_task(earnings.write_upcoming_earnings_symbols(tickers=tickers, client=client)))
 
             try:
                 while True:

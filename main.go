@@ -38,8 +38,7 @@ func main() {
 	}
 
 	runDailyAt(15, 0, 5, func() {
-		utils.WriteOpenCloseData("Start")
-		utils.WriteOpenCloseData("End")
+		utils.WriteOpenCloseData()
 		utils.InitCSVData()
 		utils.DeleteUnusedData()
 		totalShutdown(server)

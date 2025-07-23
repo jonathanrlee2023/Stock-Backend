@@ -81,39 +81,30 @@ func WebsocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Start reader and writer goroutines
 	if clientID == "PYTHON_CLIENT" {
-		var symbols []string
-		symbols = SendTrackerSymbols()
+		var optionSymbols []OptionStreamRequest
+		var stockSymbols []StockStreamRequest
+		optionSymbols, stockSymbols = SendTrackerSymbols()
 
-		for _, symbol := range symbols {
-			if len(symbol) > 6 {
-				request, err := ParseOptionString(symbol)
-				if err != nil {
-					log.Printf("Could not parse string")
-					return
-				}
-				msg, err := json.Marshal(request)
-				if err != nil {
-					break
-				}
-				err = SendToClient(clients[clientID], msg)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-			} else {
-				request := StockStreamRequest{
-					Symbol: symbol,
-				}
-				msg, err := json.Marshal(request)
-				if err != nil {
-					break
-				}
-				err = SendToClient(clients[clientID], msg)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-			}
+		optionMsg, err := json.Marshal(optionSymbols)
+		if err != nil {
+			log.Printf("Error Marshalling: %v", err)
+			return
+		}
+		err = SendToClient(clients[clientID], optionMsg)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		stockMsg, err := json.Marshal(stockSymbols)
+		if err != nil {
+			log.Printf("Error Marshalling: %v", err)
+			return
+		}
+		err = SendToClient(clients[clientID], stockMsg)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 
 	}
@@ -191,10 +182,6 @@ func HandleClientRead(client *Client) {
 			switch {
 			// Equity quote if BidSize/AskSize are present
 			case q.BidSize != nil && q.AskSize != nil:
-				log.Printf(
-					"Equity %s: bid=%.2f (size=%d) ask=%.2f (size=%d) last=%.2f",
-					symbol, q.BidPrice, *q.BidSize, q.AskPrice, *q.AskSize, q.LastPrice,
-				)
 				stock := StockPriceData{
 					Symbol:    symbol,
 					Timestamp: timestamp,
@@ -205,11 +192,6 @@ func HandleClientRead(client *Client) {
 
 			// Option quote if IV or Greeks are present
 			case q.IV != nil:
-				log.Printf(
-					"Option %s: bid=%.2f ask=%.2f last=%.2f high=%.2f IV=%.2f Δ=%.2f Γ=%.2f Θ=%.2f ν=%.2f",
-					symbol, q.BidPrice, q.AskPrice, q.LastPrice, *q.HighPrice,
-					*q.IV, *q.Delta, *q.Gamma, *q.Theta, *q.Vega,
-				)
 				option := OptionPriceData{
 					Symbol:    symbol,
 					Timestamp: timestamp,

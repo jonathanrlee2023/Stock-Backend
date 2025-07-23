@@ -128,13 +128,14 @@ func SendOpenPositions(clients map[string]*Client) {
 }
 
 // Send symbols from Tracker.db to python client
-func SendTrackerSymbols() []string {
-	var symbols []string
+func SendTrackerSymbols() ([]OptionStreamRequest, []StockStreamRequest) {
+	var optionSymbols []OptionStreamRequest
+	var stockSymbols []StockStreamRequest
 	fmt.Println(os.Getwd())
 	trackerDB, err := sql.Open("sqlite", "Tracker.db")
 	if err != nil {
 		log.Println("No Tracker")
-		return nil
+		return nil, nil
 	}
 	for i := 0; i < 3; i++ {
 		_, err = trackerDB.Exec("PRAGMA journal_mode=WAL;")
@@ -151,7 +152,7 @@ func SendTrackerSymbols() []string {
 	openDB, err := sql.Open("sqlite", "Open.db")
 	if err != nil {
 		log.Println("No Tracker")
-		return nil
+		return nil, nil
 	}
 	for i := 0; i < 3; i++ {
 		_, err = openDB.Exec("PRAGMA journal_mode=WAL;")
@@ -168,24 +169,25 @@ func SendTrackerSymbols() []string {
 	rows, err := trackerDB.Query("SELECT id FROM Tracker")
 	if err != nil {
 		log.Println("No Tables in Tracker")
-		return nil
+		return nil, nil
 	}
 	defer rows.Close()
 
 	for rows.Next() {
 		var id string
+		var option OptionStreamRequest
 
 		err := rows.Scan(&id)
 		if err != nil {
 			log.Println("No rows to read from")
-			return nil
+			return nil, nil
 		}
 		if len(id) > 6 {
-			request, err := ParseOptionString(id)
+			option, err = ParseOptionString(id)
 			if err != nil {
 				log.Println("Failed to parse")
 			}
-			expDate, err := ParseExpirationDate(request)
+			expDate, err := ParseExpirationDate(option)
 			if err != nil {
 				log.Println("Failed to parse")
 			}
@@ -206,10 +208,11 @@ func SendTrackerSymbols() []string {
 				}
 				continue
 			}
-			symbols = append(symbols, id)
+			optionSymbols = append(optionSymbols, option)
 		} else {
-			symbols = append(symbols, id)
+			stock := StockStreamRequest{Symbol: id}
+			stockSymbols = append(stockSymbols, stock)
 		}
 	}
-	return symbols
+	return optionSymbols, stockSymbols
 }
