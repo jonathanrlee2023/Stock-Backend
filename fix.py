@@ -16,7 +16,7 @@ def find_long_db_files(root_dir: str, min_length: int = 15):
 
 PATTERN = re.compile(r'^([A-Za-z]+)[_\s]+(\d{6}[CP]\d+)$')
 
-def parse_expiration(path: Path) -> date:
+def parse_expiration(path: Path) -> date: # type: ignore
     """
     Given a Path like
       Path("GOOGL_250725C00185000.db")  or
@@ -52,8 +52,8 @@ def load_expirations(path: str) -> dict[str, Optional[datetime.date]]:
             expirations[symbol] = datetime.strptime(date_str, "%Y-%m-%d").date()
     return expirations
 
-def is_within_three_weeks(target: date | datetime, 
-                          reference: date | datetime = None) -> bool:
+def is_within_three_weeks(target: date | datetime,  # type: ignore
+                          reference: date | datetime = None) -> bool: # type: ignore
     """
     Returns True if target is between reference (default: today) 
     and 3 weeks after reference (inclusive).

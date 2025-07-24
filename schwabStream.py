@@ -91,13 +91,36 @@ async def listen_for_messages(websocket, streamer):
 
             try:
                 if "price" in data:
-                    # old option‐subscribe path…
-                    # …
-                    pass
+                    price = data["price"]
+                    day = data["day"]
+                    month = data["month"]
+                    year = data["year"]
+                    option_type = data["type"]
+                    if symbol not in streamer.subscriptions.get('LEVELONE_OPTIONS', {}):
+                        asyncio.create_task(
+                            stream_func.start_options_stream(
+                                streamer=streamer,
+                                ticker=symbol,
+                                price=price,
+                                day=day,
+                                month=month,
+                                year=year,
+                                type=option_type
+                            )
+                        )
+                        stripped_ticker = symbol.split("_", 1)[0]
+                        if stripped_ticker not in tickers:
+                            tickers.append(stripped_ticker)
                 else:
-                    # old stock‐subscribe path…
-                    # …
-                    pass
+                    if symbol not in streamer.subscriptions.get('LEVELONE_EQUITIES', {}):
+                        asyncio.create_task(
+                            stream_func.start_stock_stream(
+                                streamer=streamer,
+                                ticker=symbol,
+                            )
+                        )
+                        if symbol not in tickers:
+                            tickers.append(symbol)
 
                 await websocket.send(f"Streaming started for {symbol}")
 
@@ -229,9 +252,9 @@ async def main():
                 asyncio.create_task(write_to_db(websocket)),
             ]
 
-            # await asyncio.sleep(10) 
+            await asyncio.sleep(10) 
 
-            # tasks.append(asyncio.create_task(earnings.write_upcoming_earnings_symbols(tickers=tickers, client=client)))
+            tasks.append(asyncio.create_task(earnings.write_upcoming_earnings_symbols(tickers=tickers, client=client)))
 
             try:
                 while True:
