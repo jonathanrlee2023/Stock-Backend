@@ -8,70 +8,6 @@ import time
 from dotenv import load_dotenv
 import finnhub
 
-# def get_next_option_expiration_on_or_after(client, symbol, start_date=None, weeks_out=2):
-#     """
-#     Returns the option expiration dict whose expirationDate is the earliest date
-#     at or after the Friday that is `weeks_out` weeks from `start_date`.
-#     """
-#     # 1. Normalize start_date
-#     if start_date is None:
-#         start_date = datetime.date.today()
-#     elif isinstance(start_date, datetime.datetime):
-#         start_date = start_date.date()
-
-#     # 2. Fetch and parse JSON
-#     response = client.option_expiration_chain(symbol)
-#     response.raise_for_status()
-#     data = response.json()
-
-#     # 3. Compute target Friday
-#     days_ahead = (4 - start_date.weekday()) % 7
-#     first_friday = start_date + datetime.timedelta(days=days_ahead)
-#     target_friday = first_friday + datetime.timedelta(weeks=weeks_out - 1)
-
-#     # 4. Build list of (date, entry) tuples
-#     entries = []
-#     for entry in data.get("expirationList", []):
-#         dt = datetime.datetime.strptime(entry["expirationDate"], "%Y-%m-%d").date()
-#         entries.append((dt, entry))
-
-#     # 5. Filter to dates >= target_friday
-#     future = [(dt, ent) for dt, ent in entries if dt >= target_friday]
-
-#     # 6. If none found, optionally fallback or return None
-#     if not future:
-#         return None
-
-#     # 7. Pick the earliest date in future
-#     closest_date, closest_entry = min(future, key=lambda pair: pair[0])
-
-#     print(closest_entry)
-
-#     return closest_entry
-
-
-# def format_option_id(symbol, strike, client, option_type="C", weeks_out=2):
-#     # 1. Get the dict entry
-#     expiration_entry = get_next_option_expiration_on_or_after(
-#         client, symbol=symbol, weeks_out=weeks_out
-#     )
-
-#     if not expiration_entry:
-#         raise ValueError("No expiration found on or after target Friday")
-
-#     # 2. Pull out the date string and parse it
-#     date_str = expiration_entry["expirationDate"]
-#     expiration_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
-
-#     # 3. Format YYMMDD
-#     expiration_str = expiration_date.strftime("%y%m%d")
-
-#     # 4. Build the option ID
-#     strike_int      = int(round(strike * 1000))
-#     strike_formatted = f"{strike_int:08d}"
-
-#     return f"{symbol.upper()}_{expiration_str}{option_type.upper()}{strike_formatted}"
-
 def next_friday_after_two_weeks():
     # 1. Start from today and jump ahead two weeks
     today = datetime.datetime.now().date()
@@ -163,23 +99,19 @@ async def write_upcoming_earnings_symbols(tickers, client):
         except Exception as e:
             print(e)
 
-    print("ok")
-
     top_5 = dict(sorted(makret_cap_dict.items(), key=lambda item: item[1] or 0, reverse=True)[:5])
 
     for symbol, cap in top_5.items():
-        print("ok")
+        if cap < 10000000000:
+            continue
         conn = sqlite3.connect('Tracker.db')
         cursor = conn.cursor()
 
         # Insert the stock symbol first
         insert_table = 'INSERT OR REPLACE INTO Tracker (id) VALUES (?)'
         cursor.execute(insert_table, (symbol,))
-        print("ok")
 
         next_friday = next_friday_after_two_weeks()
-
-        print(next_friday)
 
         response = client.option_chains(symbol=symbol, strikeCount=1, fromDate=next_friday, toDate=next_friday).json()
 

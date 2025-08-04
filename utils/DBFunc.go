@@ -1,14 +1,15 @@
 package utils
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"io/fs"
 	"log"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // Retrieves all the tables for a given database
@@ -35,255 +36,248 @@ func getDateTables(db *sql.DB) ([]string, error) {
 	return tables, rows.Err()
 }
 
-// Function to make sure the EOD or Start of day table exists in option db
-func ensureOptionTable(db *sql.Tx, tableName string) error {
-	sql := fmt.Sprintf(`
-      CREATE TABLE IF NOT EXISTS %s (
-        timestamp   INTEGER PRIMARY KEY,
-        bid_price   REAL NOT NULL,
-        ask_price   REAL NOT NULL,
-        last_price  REAL NOT NULL,
-        high_price  REAL NOT NULL,
-        iv          REAL NOT NULL,
-        delta       REAL NOT NULL,
-        gamma       REAL NOT NULL,
-        theta       REAL NOT NULL,
-        vega        REAL NOT NULL
-      );`, tableName)
+const (
+	sqliteDriver  = "sqlite"
+	pragmaWAL     = "PRAGMA journal_mode = WAL;"
+	pragmaSyncOff = "PRAGMA synchronous = NORMAL;"
+)
 
-	if _, err := db.Exec(sql); err != nil {
-		return fmt.Errorf("create %s: %w", tableName, err)
-	}
-	return nil
+type Task struct {
+	Path     string
+	FileName string
 }
 
-// Function to make sure the EOD or Start of day table exists in stock db
-func ensureStockTable(db *sql.Tx, tableName string) error {
-	sql := fmt.Sprintf(`
-      CREATE TABLE IF NOT EXISTS %s (
-			timestamp INTEGER PRIMARY KEY,
-			bid_price REAL NOT NULL,
-			ask_price REAL NOT NULL,
-			last_price REAL NOT NULL,
-			bid_size INTEGER NOT NULL,
-			ask_size INTEGER NOT NULL
-		);`, tableName)
+func RunParallelDBProcessing(
+	dir string,
+	excluded map[string]struct{},
+	workers int,
+) error {
+	tasks := make(chan Task)
+	var wg sync.WaitGroup
 
-	if _, err := db.Exec(sql); err != nil {
-		return fmt.Errorf("create %s: %w", tableName, err)
-	}
-	return nil
-}
-
-// Function to insert prices into EOD or SOD table for options
-func insertOptionPrices(db *sql.Tx, tableName string, data []OptionDbData) error {
-	insertSQL := fmt.Sprintf(`
-      INSERT OR REPLACE INTO %s (
-        timestamp, bid_price, ask_price,
-        last_price, high_price, iv,
-        delta, gamma, theta, vega
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		tableName,
-	)
-
-	stmt, err := db.Prepare(insertSQL)
-	if err != nil {
-		return fmt.Errorf("prepare insert %s: %w", tableName, err)
-	}
-	defer stmt.Close()
-
-	for _, e := range data {
-		if _, err := stmt.Exec(
-			e.Timestamp, e.Bid, e.Ask,
-			e.Last, e.High, e.IV,
-			e.Delta, e.Gamma,
-			e.Theta, e.Vega,
-		); err != nil {
-			return fmt.Errorf("insert into %s %+v: %w", tableName, e, err)
-		}
-	}
-	return nil
-}
-
-// Function to insert prices into EOD or SOD table for stocks
-func insertStockPrices(db *sql.Tx, tableName string, data []StockDbData) error {
-	insertSQL := fmt.Sprintf(`
-      INSERT OR REPLACE INTO %s (
-        timestamp, bid_price, ask_price,
-        last_price, bid_size, ask_size
-      ) VALUES (?, ?, ?, ?, ?, ?)`,
-		tableName,
-	)
-
-	stmt, err := db.Prepare(insertSQL)
-	if err != nil {
-		return fmt.Errorf("prepare insert %s: %w", tableName, err)
-	}
-	defer stmt.Close()
-
-	for _, e := range data {
-		if _, err := stmt.Exec(
-			e.Timestamp, e.Bid, e.Ask,
-			e.Last, e.BidSize, e.AskSize,
-		); err != nil {
-			return fmt.Errorf("insert into %s %+v: %w", tableName, e, err)
-		}
-	}
-	return nil
-}
-
-// Walks through every db and writes the SOD and EOD data in its own table
-func WriteOpenCloseData() {
-	dir := "." // current working directory
-
-	excluded := map[string]struct{}{
-		"Open.db":    {},
-		"Close.db":   {},
-		"Tracker.db": {},
+	// start N workers
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for t := range tasks {
+				if err := processDB(t.Path, t.FileName, excluded); err != nil {
+					log.Printf("error processing %s: %v", t.Path, err)
+				}
+			}
+		}()
 	}
 
-	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+	// discover and enqueue tasks
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			log.Printf("Error accessing path %q: %v\n", path, err)
-			return nil // or return err if you want to stop walking
-		}
-
-		if info == nil {
-			log.Printf("FileInfo is nil for path: %s\n", path)
+			log.Printf("walk error %q: %v", path, err)
 			return nil
 		}
-		if strings.Contains(info.Name(), "-shm") || strings.Contains(info.Name(), "-wal") {
-			fmt.Printf("Skipping SQLite system file: %s\n", info.Name())
+		if d.IsDir() {
 			return nil
 		}
-
-		if info.IsDir() {
+		name := d.Name()
+		if strings.HasSuffix(name, "-wal") || strings.HasSuffix(name, "-shm") {
 			return nil
 		}
-
-		if !strings.HasSuffix(info.Name(), ".db") {
+		if !strings.HasSuffix(name, ".db") {
 			return nil
 		}
-
-		if _, found := excluded[info.Name()]; found {
-			fmt.Printf("Skipping excluded file: %s\n", info.Name())
+		if _, skip := excluded[name]; skip {
 			return nil
 		}
-
-		fmt.Printf("Processing database: %s\n", path)
-
-		db, err := sql.Open("sqlite", path)
-		if err != nil {
-			log.Printf("Failed to open database %s: %v\n", path, err)
-			return nil
-		}
-		defer db.Close()
-
-		fileName := filepath.Base(path)
-
-		if len(fileName) > 8 && fileName != "Balance.db" {
-			_, _, _, startData, endData, err := GetFirstAndLastEntries(db, fileName)
-			if err != nil {
-				return fmt.Errorf("fetching data: %w", err)
-			}
-
-			// Optional: group all into one transaction
-			tx, err := db.Begin()
-			if err != nil {
-				return err
-			}
-			defer tx.Rollback()
-
-			tables := []struct {
-				name string
-				data []OptionDbData
-			}{
-				{"EODPrices", endData},
-				{"SODPrices", startData},
-			}
-
-			for _, tbl := range tables {
-				if err := ensureOptionTable(tx, tbl.name); err != nil {
-					return err
-				}
-				if err := insertOptionPrices(tx, tbl.name, tbl.data); err != nil {
-					return err
-				}
-			}
-
-			return tx.Commit()
-
-		} else if fileName == "Balance.db" {
-			_, _, data, _, _, err := GetFirstAndLastEntries(db, fileName)
-			if err != nil {
-				log.Println(err)
-			}
-			fmt.Println(data)
-			createTableSQL := `
-				CREATE TABLE IF NOT EXISTS EODPrices (
-					timestamp INTEGER PRIMARY KEY,
-					balance REAL NOT NULL,
-					realBalance REAL NOT NULL
-				);`
-
-			if _, err := db.Exec(createTableSQL); err != nil {
-				return fmt.Errorf("failed to create table: %w", err)
-			}
-
-			insertSQL := `INSERT OR REPLACE INTO EODPrices (
-                            timestamp, balance, realBalance
-                        ) VALUES (?, ?, ?)`
-			stmt, err := db.Prepare(insertSQL)
-			if err != nil {
-				return fmt.Errorf("failed to prepare insert statement: %w", err)
-			}
-			defer stmt.Close()
-
-			for _, entry := range data {
-				_, err = stmt.Exec(entry.Timestamp, entry.Balance, entry.RealBalance)
-				if err != nil {
-					return fmt.Errorf("failed to insert entry %+v: %w", entry, err)
-				}
-			}
-		} else {
-			startData, endData, _, _, _, err := GetFirstAndLastEntries(db, fileName)
-			if err != nil {
-				return fmt.Errorf("fetching data: %w", err)
-			}
-
-			// Optional: group all into one transaction
-			tx, err := db.Begin()
-			if err != nil {
-				return err
-			}
-			defer tx.Rollback()
-
-			tables := []struct {
-				name string
-				data []StockDbData
-			}{
-				{"EODPrices", endData},
-				{"SODPrices", startData},
-			}
-
-			for _, tbl := range tables {
-				if err := ensureStockTable(tx, tbl.name); err != nil {
-					return err
-				}
-				if err := insertStockPrices(tx, tbl.name, tbl.data); err != nil {
-					return err
-				}
-			}
-
-			return tx.Commit()
-
-		}
+		tasks <- Task{Path: path, FileName: name}
 		return nil
 	})
+	close(tasks) // signal workers no more tasks
+	wg.Wait()    // wait for all workers to finish
+	return err
+}
 
+func processDB(path, fileName string, excluded map[string]struct{}) error {
+	db, err := sql.Open(sqliteDriver, path)
 	if err != nil {
-		log.Printf("Failed walking folder: %v", err)
+		return fmt.Errorf("open: %w", err)
 	}
+	defer db.Close()
+
+	if _, err := db.Exec(pragmaWAL); err != nil {
+		return fmt.Errorf("pragma WAL: %w", err)
+	}
+	if _, err := db.Exec(pragmaSyncOff); err != nil {
+		return fmt.Errorf("pragma sync: %w", err)
+	}
+
+	// Fetch first/last entries
+	startOpt, endOpt, startStk, endStk, balanceData, err := GetFirstAndLastEntries(db, fileName)
+	if err != nil {
+		return fmt.Errorf("fetch entries: %w", err)
+	}
+
+	ctx := context.Background()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Determine which tables + data to insert
+	var inserts []struct {
+		table string
+		rows  interface{}
+	}
+
+	switch {
+	case fileName == "Balance.db":
+		inserts = []struct {
+			table string
+			rows  interface{}
+		}{
+			{"EODPrices", balanceData},
+		}
+
+	case strings.HasSuffix(fileName, ".db") && len(fileName) > 8:
+		inserts = []struct {
+			table string
+			rows  interface{}
+		}{
+			{"EODPrices", endOpt},
+			{"SODPrices", startOpt},
+		}
+
+	default:
+		inserts = []struct {
+			table string
+			rows  interface{}
+		}{
+			{"EODPrices", endStk},
+			{"SODPrices", startStk},
+		}
+	}
+
+	for _, ins := range inserts {
+		if err := ensureTable(tx, ins.table, fileName); err != nil {
+			return err
+		}
+		if err := batchInsert(tx, ins.table, ins.rows); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+func ensureTable(tx *sql.Tx, tableName, fileName string) error {
+	var ddl string
+
+	switch {
+	case fileName == "Balance.db":
+		// Balance data → only one table (EODPrices)
+		ddl = `
+CREATE TABLE IF NOT EXISTS EODPrices (
+    timestamp   INTEGER PRIMARY KEY,
+    balance     REAL NOT NULL,
+    realBalance REAL NOT NULL
+);`
+
+	case len(fileName) > 8:
+		// Option data → EODPrices or SODPrices with Greeks
+		ddl = fmt.Sprintf(`
+CREATE TABLE IF NOT EXISTS %s (
+    timestamp   INTEGER PRIMARY KEY,
+    bid_price   REAL NOT NULL,
+    ask_price   REAL NOT NULL,
+    last_price  REAL NOT NULL,
+    high_price  REAL NOT NULL,
+    iv          REAL NOT NULL,
+    delta       REAL NOT NULL,
+    gamma       REAL NOT NULL,
+    theta       REAL NOT NULL,
+    vega        REAL NOT NULL
+);`, tableName)
+
+	default:
+		// Stock data → EODPrices or SODPrices with sizes
+		ddl = fmt.Sprintf(`
+CREATE TABLE IF NOT EXISTS %s (
+    timestamp   INTEGER PRIMARY KEY,
+    bid_price   REAL NOT NULL,
+    ask_price   REAL NOT NULL,
+    last_price  REAL NOT NULL,
+    bid_size    INTEGER NOT NULL,
+    ask_size    INTEGER NOT NULL
+);`, tableName)
+	}
+
+	if _, err := tx.Exec(ddl); err != nil {
+		return fmt.Errorf("creating table %s: %w", tableName, err)
+	}
+	return nil
+}
+
+// batchInsert switches on the data type and executes batched prepared-stmts
+func batchInsert(tx *sql.Tx, table string, data interface{}) error {
+	switch rows := data.(type) {
+
+	case []OptionDbData:
+		stmt, err := tx.Prepare(fmt.Sprintf(`
+			INSERT OR REPLACE INTO %s (
+				timestamp, bid_price, ask_price,
+				last_price, high_price, iv,
+				delta, gamma, theta, vega
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			table,
+		))
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+		for _, e := range rows {
+			if _, err := stmt.Exec(e.Timestamp, e.Bid, e.Ask,
+				e.Last, e.High, e.IV,
+				e.Delta, e.Gamma,
+				e.Theta, e.Vega); err != nil {
+				return err
+			}
+		}
+
+	case []StockDbData:
+		stmt, err := tx.Prepare(fmt.Sprintf(`
+			INSERT OR REPLACE INTO %s (
+				timestamp, bid_price, ask_price,
+				last_price, bid_size, ask_size
+			) VALUES (?, ?, ?, ?, ?, ?)`,
+			table,
+		))
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+		for _, r := range rows {
+			if _, err := stmt.Exec(r.Timestamp, r.Bid, r.Ask, r.BidSize, r.AskSize); err != nil {
+				return err
+			}
+		}
+
+	case []BalanceDbData:
+		stmt, err := tx.Prepare(
+			`INSERT OR REPLACE INTO EODPrices (timestamp, balance, realBalance) VALUES (?, ?, ?)`)
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+		for _, r := range rows {
+			if _, err := stmt.Exec(r.Timestamp, r.Balance, r.RealBalance); err != nil {
+				return err
+			}
+		}
+
+	default:
+		return fmt.Errorf("unsupported data type %T", data)
+	}
+
+	return nil
 }
 
 // Deletes all the filler data for each database

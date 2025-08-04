@@ -36,12 +36,19 @@ func main() {
 		Handler: handler,
 	}
 
+	dir := "."
+	excluded := map[string]struct{}{"foo.db": {}, "bar.db": {}}
+
 	runDailyAt(15, 0, 5, func() {
-		utils.WriteOpenCloseData()
+		utils.RunParallelDBProcessing(dir, excluded, 4)
 		utils.InitCSVData()
 		utils.DeleteUnusedData()
 		totalShutdown(server)
 	})
+
+	start := time.Now()
+
+	fmt.Println(time.Since(start))
 
 	// Run server in a goroutine
 	go func() {
@@ -102,4 +109,10 @@ func CorsMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func timeFunc(task func()) time.Duration {
+	start := time.Now()
+	task()
+	return time.Since(start)
 }

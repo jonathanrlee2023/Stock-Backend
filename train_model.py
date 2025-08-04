@@ -5,9 +5,9 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report
-import joblib  # for saving the model
+import joblib  
 
-# === CONFIG ===
+# WORK IN PROGRESS
 DATA_DIR = "."  # Folder containing your CSVs
 MODEL_OUTPUT = "option_model.pkl"
 
@@ -30,19 +30,38 @@ def load_and_combine_csvs(directory):
     
     return pd.concat(df_list, ignore_index=True)
 
-def preprocess_data(df):
-    # Drop non-feature columns
+def preprocess_data(df, selected_features=None):
+    # 1. Drop truly irrelevant columns
     df = df.drop(columns=["symbol", "timestamp", "futurePrice"], errors="ignore")
 
-    # Drop rows with missing values
+    # 2. Drop rows with missing values
     df = df.dropna()
 
+    # 3. Ensure your label is integer
     df["label"] = df["label"].astype(int)
-    # Separate features and target
-    X = df.drop(columns=["label"])
+
+    # 4. Define which features to keep (if not passed in)
+    if selected_features is None:
+        selected_features = [
+            "iv",
+            "deltaIV",
+            "accelIV",
+            "smaIV",
+            "smaIvSpike",
+            "ivZScore",
+            "theta",
+            "vega",
+            "daysToEarnings"
+        ]
+
+    # 5. Subset your DataFrame to just the features you care about
+    X = df[selected_features]
+
+    # 6. Extract the target
     y = df["label"]
 
     return X, y
+
 
 def train_model(X, y):
     # Split into train/test
