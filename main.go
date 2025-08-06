@@ -37,19 +37,18 @@ func main() {
 	}
 
 	dir := "."
-	excluded := map[string]struct{}{"foo.db": {}, "bar.db": {}}
+	excluded := map[string]struct{}{"Open.db": {}, "Close.db": {}, "Tracker.db": {}}
 
 	runDailyAt(15, 0, 5, func() {
-		utils.RunParallelDBProcessing(dir, excluded, 4)
+		utils.RunParallelDBProcessing(dir, excluded, 12, utils.ProcessDB)
 		utils.InitCSVData()
-		utils.DeleteUnusedData()
+		utils.RunParallelDBProcessing(dir, excluded, 12, utils.DeleteUnusedDataHandler)
 		totalShutdown(server)
 	})
 
-	start := time.Now()
+	now := time.Now()
 
-	fmt.Println(time.Since(start))
-
+	fmt.Println(time.Since(now))
 	// Run server in a goroutine
 	go func() {
 		fmt.Println("Server is running on port 8080...")

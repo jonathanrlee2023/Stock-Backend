@@ -51,6 +51,7 @@ func RunParallelDBProcessing(
 	dir string,
 	excluded map[string]struct{},
 	workers int,
+	handler func(Task) error,
 ) error {
 	tasks := make(chan Task)
 	var wg sync.WaitGroup
@@ -61,7 +62,7 @@ func RunParallelDBProcessing(
 		go func() {
 			defer wg.Done()
 			for t := range tasks {
-				if err := processDB(t.Path, t.FileName, excluded); err != nil {
+				if err := handler(t); err != nil {
 					log.Printf("error processing %s: %v", t.Path, err)
 				}
 			}
@@ -95,8 +96,8 @@ func RunParallelDBProcessing(
 	return err
 }
 
-func processDB(path, fileName string, excluded map[string]struct{}) error {
-	db, err := sql.Open(sqliteDriver, path)
+func ProcessDB(t Task) error {
+	db, err := sql.Open(sqliteDriver, t.Path)
 	if err != nil {
 		return fmt.Errorf("open: %w", err)
 	}
@@ -110,7 +111,7 @@ func processDB(path, fileName string, excluded map[string]struct{}) error {
 	}
 
 	// Fetch first/last entries
-	startOpt, endOpt, startStk, endStk, balanceData, err := GetFirstAndLastEntries(db, fileName)
+	startStk, endStk, balanceData, startOpt, endOpt, err := GetFirstAndLastEntries(db, t.FileName)
 	if err != nil {
 		return fmt.Errorf("fetch entries: %w", err)
 	}
@@ -129,7 +130,7 @@ func processDB(path, fileName string, excluded map[string]struct{}) error {
 	}
 
 	switch {
-	case fileName == "Balance.db":
+	case t.FileName == "Balance.db":
 		inserts = []struct {
 			table string
 			rows  interface{}
@@ -137,7 +138,7 @@ func processDB(path, fileName string, excluded map[string]struct{}) error {
 			{"EODPrices", balanceData},
 		}
 
-	case strings.HasSuffix(fileName, ".db") && len(fileName) > 8:
+	case strings.HasSuffix(t.FileName, ".db") && len(t.FileName) > 8:
 		inserts = []struct {
 			table string
 			rows  interface{}
@@ -157,7 +158,7 @@ func processDB(path, fileName string, excluded map[string]struct{}) error {
 	}
 
 	for _, ins := range inserts {
-		if err := ensureTable(tx, ins.table, fileName); err != nil {
+		if err := ensureTable(tx, ins.table, t.FileName); err != nil {
 			return err
 		}
 		if err := batchInsert(tx, ins.table, ins.rows); err != nil {
@@ -255,7 +256,7 @@ func batchInsert(tx *sql.Tx, table string, data interface{}) error {
 		}
 		defer stmt.Close()
 		for _, r := range rows {
-			if _, err := stmt.Exec(r.Timestamp, r.Bid, r.Ask, r.BidSize, r.AskSize); err != nil {
+			if _, err := stmt.Exec(r.Timestamp, r.Bid, r.Ask, r.Last, r.BidSize, r.AskSize); err != nil {
 				return err
 			}
 		}
@@ -281,77 +282,46 @@ func batchInsert(tx *sql.Tx, table string, data interface{}) error {
 }
 
 // Deletes all the filler data for each database
-func DeleteUnusedData() error {
-	dir := "."
+func DeleteUnusedDataHandler(t Task) error {
+	db, err := sql.Open("sqlite", t.Path)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", t.Path, err)
+	}
+	defer db.Close()
 
-	excluded := map[string]struct{}{
-		"Open.db":    {},
-		"Close.db":   {},
-		"Tracker.db": {},
+	tables, err := getDateTables(db)
+	if err != nil {
+		return fmt.Errorf("getDateTables(%s): %w", t.Path, err)
 	}
 
 	const deleteTpl = `
-		DELETE FROM "%[1]s"
-		WHERE timestamp NOT IN (
-			(SELECT timestamp FROM "%[1]s" ORDER BY timestamp ASC  LIMIT 1),
-			(SELECT timestamp FROM "%[1]s" ORDER BY timestamp DESC LIMIT 1)
-		);
-		`
+    DELETE FROM "%[1]s"
+      WHERE timestamp NOT IN (
+        (SELECT timestamp FROM "%[1]s" ORDER BY timestamp ASC  LIMIT 1),
+        (SELECT timestamp FROM "%[1]s" ORDER BY timestamp DESC LIMIT 1)
+      );
+    `
 
-	// WalkDir to filter out non-.db files and system files early
-	return filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil || d.IsDir() {
-			return walkErr
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	for _, tbl := range tables {
+		stmt := fmt.Sprintf(deleteTpl, tbl)
+		if _, err := tx.Exec(stmt); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("delete from %s: %w", tbl, err)
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
 
-		name := d.Name()
-		if _, skip := excluded[name]; skip ||
-			strings.HasSuffix(name, "-shm") ||
-			strings.HasSuffix(name, "-wal") ||
-			!strings.HasSuffix(name, ".db") {
-			return nil
-		}
+	if _, err := db.Exec("VACUUM;"); err != nil {
+		log.Printf("WARNING: VACUUM failed on %s: %v", t.Path, err)
+	}
 
-		log.Printf("Cleaning database: %s", path)
-		db, err := sql.Open("sqlite", path)
-		if err != nil {
-			return fmt.Errorf("open %s: %w", path, err)
-		}
-		defer db.Close()
-
-		tables, err := getDateTables(db)
-		if err != nil {
-			return fmt.Errorf("getDateTables(%s): %w", path, err)
-		}
-
-		// Begin a transaction
-		tx, err := db.Begin()
-		if err != nil {
-			return fmt.Errorf("begin tx: %w", err)
-		}
-
-		for _, tbl := range tables {
-			stmt := fmt.Sprintf(deleteTpl, tbl)
-			if _, err := tx.Exec(stmt); err != nil {
-				tx.Rollback()
-				return fmt.Errorf("delete from %s: %w", tbl, err)
-			}
-		}
-
-		// Commit the deletes as one atomic unit
-		if err = tx.Commit(); err != nil {
-			return fmt.Errorf("commit transaction: %w", err)
-		}
-
-		// VACUUM now that the deletions are complete
-		if _, err = db.Exec("VACUUM;"); err != nil {
-			log.Printf("WARNING: VACUUM failed on %s: %v", path, err)
-		}
-
-		log.Println("Finished Cleaning")
-
-		return nil
-	})
+	return nil
 }
 
 // Gets the last entries of each table
