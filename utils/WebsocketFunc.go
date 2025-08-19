@@ -84,29 +84,31 @@ func WebsocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 		var optionSymbols []OptionStreamRequest
 		var stockSymbols []StockStreamRequest
 		optionSymbols, stockSymbols = SendTrackerSymbols()
+		if optionSymbols != nil {
+			optionMsg, err := json.Marshal(optionSymbols)
+			if err != nil {
+				log.Printf("Error Marshalling: %v", err)
+				return
+			}
 
-		optionMsg, err := json.Marshal(optionSymbols)
-		if err != nil {
-			log.Printf("Error Marshalling: %v", err)
-			return
+			err = SendToClient(clients[clientID], optionMsg)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
-		err = SendToClient(clients[clientID], optionMsg)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		if stockSymbols != nil {
+			stockMsg, err := json.Marshal(stockSymbols)
+			if err != nil {
+				log.Printf("Error Marshalling: %v", err)
+				return
+			}
+			err = SendToClient(clients[clientID], stockMsg)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
-
-		stockMsg, err := json.Marshal(stockSymbols)
-		if err != nil {
-			log.Printf("Error Marshalling: %v", err)
-			return
-		}
-		err = SendToClient(clients[clientID], stockMsg)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
 	}
 
 	go HandleClientRead(newClient)

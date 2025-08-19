@@ -26,6 +26,7 @@ async def listen_for_messages(websocket, streamer):
     async for raw_msg in websocket:
         print("Received message")
         data = json.loads(raw_msg)
+        print(data)
 
         if not stream_started:
             async with stream_lock:
@@ -132,10 +133,9 @@ async def listen_for_messages(websocket, streamer):
 
 async def write_to_db(websocket):
     while True:
-        await asyncio.sleep(15 - time.time() % 15)
+        await asyncio.sleep(60 - time.time() % 60)
         timestamp = int(time.time())        
 
-        
         if len(stream_func.file_names) != 0:
             snapshot = {name: stream_func.new_data[name] for name in stream_func.file_names}
             await websocket.send(json.dumps(snapshot))
@@ -252,9 +252,9 @@ async def main():
                 asyncio.create_task(write_to_db(websocket)),
             ]
 
-            await asyncio.sleep(10) 
+            # await asyncio.sleep(10) 
 
-            tasks.append(asyncio.create_task(earnings.write_upcoming_earnings_symbols(tickers=tickers, client=client)))
+            # tasks.append(asyncio.create_task(earnings.write_upcoming_earnings_symbols(tickers=tickers, client=client)))
 
             try:
                 while True:

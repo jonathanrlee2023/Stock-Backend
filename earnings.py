@@ -2,6 +2,7 @@ import asyncio
 import datetime
 import json
 import os
+import pprint
 import re
 import sqlite3
 import time
@@ -67,14 +68,12 @@ async def write_upcoming_earnings_symbols(tickers, client):
 
 
     # Get today's date
-    today = datetime.datetime.today()
-
-    # Calculate date one week from now
-    one_week_out = today + datetime.timedelta(days=14)
+    today = datetime.datetime.today()   
+    tmrw = today + datetime.timedelta(days=1) 
 
     # Format as YYYY-MM-DD
-    _from = one_week_out.strftime('%Y-%m-%d')
-    _to = _from  # same day if you want just one day of earnings
+    _from = today.strftime('%Y-%m-%d')
+    _to = tmrw.strftime('%Y-%m-%d')  # same day if you want just one day of earnings
 
     response = finnhub_client.earnings_calendar(
         _from=_from,
@@ -86,6 +85,7 @@ async def write_upcoming_earnings_symbols(tickers, client):
     # The response is already a dict
     # You can directly parse or print it
     calendar = response.get("earningsCalendar", [])
+    pprint.pprint(calendar)
 
 
     for entry in calendar:
@@ -99,10 +99,11 @@ async def write_upcoming_earnings_symbols(tickers, client):
         except Exception as e:
             print(e)
 
-    top_5 = dict(sorted(makret_cap_dict.items(), key=lambda item: item[1] or 0, reverse=True)[:5])
+    top_10 = dict(sorted(makret_cap_dict.items(), key=lambda item: item[1] or 0, reverse=True)[:10])
 
-    for symbol, cap in top_5.items():
-        if cap < 10000000000:
+    for symbol, cap in top_10.items():
+        print(symbol, cap)
+        if cap < 10000.0:
             continue
         conn = sqlite3.connect('Tracker.db')
         cursor = conn.cursor()
