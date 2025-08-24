@@ -107,17 +107,21 @@ func InitCSVData() {
 	totalRowsAnalysis()
 }
 
+// PrepCSV takes a filename and a slice of feature rows and writes them to the file
+// in CSV format. It returns an error if the file cannot be opened or written.
 func PrepCSV(fileName string, featureRows []CSVOptionData) error {
+	// Create or open the file for writing
 	file, err := os.Create(fileName)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 
+	// Create a CSV writer for the file
 	writer := csv.NewWriter(file)
 	defer writer.Flush()
 
-	// Write headers
+	// Write the headers
 	headers := []string{
 		"symbol", "timestamp", "mark", "iv", "deltaIV", "accelIV", "smaIV",
 		"smaIvSpike", "ivZScore", "theta", "vega", "futureReturn", "futurePrice", "label", "daysToEarnings",
@@ -128,6 +132,7 @@ func PrepCSV(fileName string, featureRows []CSVOptionData) error {
 
 	// Write each feature row
 	for _, row := range featureRows {
+		// Create a slice of strings to represent the row
 		record := []string{
 			row.Symbol,
 			strconv.FormatInt(row.Timestamp, 10),
@@ -145,6 +150,7 @@ func PrepCSV(fileName string, featureRows []CSVOptionData) error {
 			strconv.Itoa(row.Label),
 			strconv.FormatInt(row.DaysToEarnings, 10),
 		}
+		// Write the record to the CSV file
 		if err := writer.Write(record); err != nil {
 			return err
 		}
@@ -392,14 +398,14 @@ func totalRowsAnalysis() {
 
 // scanAndLoadCSVs walks the directory, parses every .csv, and appends to totalRows.
 func scanAndLoadCSVs() error {
-	// 1. Find all .csv files
+	// Find all .csv files
 	pattern := filepath.Join(".", "*.csv")
 	files, err := filepath.Glob(pattern)
 	if err != nil {
 		return fmt.Errorf("glob pattern error: %w", err)
 	}
 
-	// 2. Iterate each file
+	// Iterate each file
 	for _, fname := range files {
 		f, err := os.Open(fname)
 		if err != nil {
@@ -444,13 +450,13 @@ func scanAndLoadCSVs() error {
 
 // parseRow converts a 15-string slice into a Row struct.
 func parseRow(r []string) (CSVOptionData, error) {
-	// 1) parse timestamp as Unix seconds
+	// parse timestamp as Unix seconds
 	tsInt, err := strconv.ParseInt(r[1], 10, 64)
 	if err != nil {
 		return CSVOptionData{}, fmt.Errorf("timestamp: %w", err)
 	}
 
-	// 2) helper to parse float64
+	// helper to parse float64
 	pf := func(s string) (float64, error) {
 		return strconv.ParseFloat(s, 64)
 	}
