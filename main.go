@@ -3,6 +3,7 @@ package main
 import (
 	"Go-API/utils"
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"net/http"
@@ -19,6 +20,18 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	// Check if ctrl C is pressed
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+
+	priceDB, err := initDB("./PriceData.db")
+	openDB, err := initDB("./Open.db")
+	balanceDB, err := initDB("./Balance.db")
+	closeDB, err := initDB("./Close.db")
+	trackerDB, err := initDB("./Tracker.db")
+
+	if err != nil {
+		log.Fatalf("Error initializing database: %v", err)
+	}
+
+	initSchemas(openDB, balanceDB, closeDB, trackerDB)
 
 	// Start Redis Container
 	utils.StartRedisContainer()
@@ -43,14 +56,26 @@ func main() {
 	// Endpoints for API
 	mux := http.NewServeMux()
 	mux.HandleFunc("/connect", func(w http.ResponseWriter, r *http.Request) {
-		utils.WebsocketConnectHandler(hub, w, r)
+		utils.WebsocketConnectHandler(hub, openDB, balanceDB, priceDB, trackerDB, w, r)
 	})
-	mux.HandleFunc("/startOptionStream", utils.StartOptionStream)
-	mux.HandleFunc("/startStockStream", utils.StartStockStream)
-	mux.HandleFunc("/newTracker", utils.NewTrackerHandler)
-	mux.HandleFunc("/openPosition", utils.OpenPositionHandler)
-	mux.HandleFunc("/closePosition", utils.ClosePositionHandler)
-	mux.HandleFunc("/closeTracker", utils.RemoveTrackerHandler)
+	mux.HandleFunc("/startOptionStream", func(w http.ResponseWriter, r *http.Request) {
+		utils.StartOptionStream(rdb, w, r)
+	})
+	mux.HandleFunc("/startStockStream", func(w http.ResponseWriter, r *http.Request) {
+		utils.StartStockStream(rdb, w, r)
+	})
+	mux.HandleFunc("/newTracker", func(w http.ResponseWriter, r *http.Request) {
+		utils.NewTrackerHandler(trackerDB, w, r)
+	})
+	mux.HandleFunc("/openPosition", func(w http.ResponseWriter, r *http.Request) {
+		utils.OpenPositionHandler(openDB, balanceDB, w, r)
+	})
+	mux.HandleFunc("/closePosition", func(w http.ResponseWriter, r *http.Request) {
+		utils.ClosePositionHandler(openDB, closeDB, balanceDB, w, r)
+	})
+	mux.HandleFunc("/closeTracker", func(w http.ResponseWriter, r *http.Request) {
+		utils.RemoveTrackerHandler(trackerDB, w, r)
+	})
 
 	handler := CorsMiddleware(mux)
 
@@ -59,19 +84,15 @@ func main() {
 		Handler: handler,
 	}
 
-	dir := "."
-	excluded := map[string]struct{}{"Open.db": {}, "Close.db": {}, "Tracker.db": {}}
-
 	runDailyAt(15, 0, 5, func() {
-		utils.RunParallelDBProcessing(dir, excluded, 12, utils.ProcessDB)
-		utils.InitCSVData()
-		utils.RunParallelDBProcessing(dir, excluded, 12, utils.DeleteUnusedDataHandler)
 		totalShutdown(server)
 	})
 
-	now := time.Now()
-
-	fmt.Println(time.Since(now))
+	defer openDB.Close()
+	defer balanceDB.Close()
+	defer priceDB.Close()
+	defer closeDB.Close()
+	defer trackerDB.Close()
 	// Run server in a goroutine
 	go func() {
 		fmt.Println("Server is running on port 8080...")
@@ -135,8 +156,41 @@ func CorsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func timeFunc(task func()) time.Duration {
-	start := time.Now()
-	task()
-	return time.Since(start)
+func initDB(path string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, err
+	}
+
+	// Configure for high-concurrency and reliability
+	db.SetMaxOpenConns(1) // Vital for SQLite
+	db.SetConnMaxIdleTime(30 * time.Second)
+
+	var lastErr error
+	for i := 0; i < 5; i++ {
+		_, lastErr = db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL;")
+		if lastErr == nil {
+			return db, nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return nil, fmt.Errorf("WAL/Timeout failed on %s: %v", path, lastErr)
+}
+
+func initSchemas(openDB, balanceDB, closeDB, trackerDB *sql.DB) {
+	schemas := []struct {
+		db  *sql.DB
+		sql string
+	}{
+		{openDB, `CREATE TABLE IF NOT EXISTS OpenPositions (id TEXT PRIMARY KEY, price REAL, amount INTEGER);`},
+		{balanceDB, `CREATE TABLE IF NOT EXISTS Balance (timestamp INTEGER PRIMARY KEY, balance REAL, cash REAL);`},
+		{closeDB, `CREATE TABLE IF NOT EXISTS ClosePositions (order_number INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT, price REAL, amount INTEGER, pl REAL);`},
+		{trackerDB, `CREATE TABLE IF NOT EXISTS Tracker (id TEXT PRIMARY KEY);`},
+	}
+
+	for _, s := range schemas {
+		if _, err := s.db.Exec(s.sql); err != nil {
+			log.Printf("Schema init error: %v", err)
+		}
+	}
 }

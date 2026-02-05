@@ -5,40 +5,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
 // Sends open position and previous balance
-func SendOpenPositions(clients map[string]*Client) {
+func SendOpenPositions(balanceDB, openDB, priceDB, trackerDB *sql.DB, clients map[string]*Client) {
 	openIDs := make(map[string]int64)
 	var trackerIds []string
-	prevBalance := GetMostRecentBalance()
-	openDB, err := sql.Open("sqlite", "Open.db")
-	if err != nil {
-		log.Printf("Query failed process write openDB: %v", err)
-		return
-	}
-	defer openDB.Close()
-	for i := 0; i < 3; i++ {
-		_, err = openDB.Exec("PRAGMA journal_mode=WAL;")
-		if err == nil {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if err != nil {
-		log.Printf("Failed to enable WAL after retries: %v", err)
-	}
-	createTableSQL := `
-		CREATE TABLE IF NOT EXISTS OpenPositions (
-			id STRING PRIMARY KEY,
-			price REAL NOT NULL,
-			amount INTEGER NOT NULL
-		);`
-	_, err = openDB.Exec(createTableSQL)
+	prevBalance := GetMostRecentBalance(balanceDB)
+
 	rows, err := openDB.Query("SELECT * FROM OpenPositions")
 	if err == sql.ErrNoRows {
 		fmt.Println("No Open Positions Yet")
@@ -63,29 +40,6 @@ func SendOpenPositions(clients map[string]*Client) {
 		openIDs[id] = amount
 	}
 
-	trackerDB, err := sql.Open("sqlite", "Tracker.db")
-	if err != nil {
-		log.Printf("Query failed process write openDB: %v", err)
-		return
-	}
-	defer trackerDB.Close()
-	for i := 0; i < 3; i++ {
-		_, err = openDB.Exec("PRAGMA journal_mode=WAL;")
-		if err == nil {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if err != nil {
-		log.Printf("Failed to enable WAL after retries: %v", err)
-	}
-	createTableSQL = `
-		CREATE TABLE IF NOT EXISTS Tracker (
-			id STRING PRIMARY KEY,
-			price REAL NOT NULL,
-			amount INTEGER NOT NULL
-		);`
-	_, err = trackerDB.Exec(createTableSQL)
 	rows, err = trackerDB.Query("SELECT * FROM Tracker")
 	if err == sql.ErrNoRows {
 		fmt.Println("No trackers Yet")
@@ -128,43 +82,10 @@ func SendOpenPositions(clients map[string]*Client) {
 }
 
 // Send symbols from Tracker.db to python client
-func SendTrackerSymbols() ([]OptionStreamRequest, []StockStreamRequest) {
+func SendTrackerSymbols(trackerDB, openDB *sql.DB) ([]OptionStreamRequest, []StockStreamRequest) {
 	var optionSymbols []OptionStreamRequest
 	var stockSymbols []StockStreamRequest
-	fmt.Println(os.Getwd())
-	trackerDB, err := sql.Open("sqlite", "Tracker.db")
-	if err != nil {
-		log.Println("No Tracker")
-		return nil, nil
-	}
-	for i := 0; i < 3; i++ {
-		_, err = trackerDB.Exec("PRAGMA journal_mode=WAL;")
-		if err == nil {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if err != nil {
-		log.Printf("Failed to enable WAL after retries: %v", err)
-	}
-	defer trackerDB.Close()
-
-	openDB, err := sql.Open("sqlite", "Open.db")
-	if err != nil {
-		log.Println("No Tracker")
-		return nil, nil
-	}
-	for i := 0; i < 3; i++ {
-		_, err = openDB.Exec("PRAGMA journal_mode=WAL;")
-		if err == nil {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if err != nil {
-		log.Printf("Failed to enable WAL after retries: %v", err)
-	}
-	defer openDB.Close()
+	var toDelete []string
 
 	rows, err := trackerDB.Query("SELECT id FROM Tracker")
 	if err != nil {
@@ -194,18 +115,7 @@ func SendTrackerSymbols() ([]OptionStreamRequest, []StockStreamRequest) {
 			now := time.Now().UTC()
 			if expDate.Before(now) {
 				log.Println("Ran")
-				_, err := trackerDB.Exec("DELETE FROM Tracker WHERE id = ?", id)
-				if err != nil {
-					log.Println("Failed to delete expired tracker:", err)
-				} else {
-					log.Printf("Deleted expired tracker: %s (expired on %s)", id, expDate.Format(time.RFC3339))
-				}
-				_, err = openDB.Exec("DELETE FROM OpenPositions WHERE id = ?", id)
-				if err != nil {
-					log.Println("Failed to delete expired symbol:", err)
-				} else {
-					log.Printf("Deleted expired symbol: %s (expired on %s)", id, expDate.Format(time.RFC3339))
-				}
+				toDelete = append(toDelete, id)
 				continue
 			}
 			optionSymbols = append(optionSymbols, option)
@@ -213,6 +123,11 @@ func SendTrackerSymbols() ([]OptionStreamRequest, []StockStreamRequest) {
 			stock := StockStreamRequest{Symbol: id}
 			stockSymbols = append(stockSymbols, stock)
 		}
+	}
+	for _, id := range toDelete {
+		log.Printf("Cleaning up expired option: %s", id)
+		trackerDB.Exec("DELETE FROM Tracker WHERE id = ?", id)
+		openDB.Exec("DELETE FROM OpenPositions WHERE id = ?", id)
 	}
 	return optionSymbols, stockSymbols
 }

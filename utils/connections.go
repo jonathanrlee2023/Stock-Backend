@@ -6,10 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"math"
 	"net/http"
 	"os/exec"
-	"sort"
 	"sync"
 	"time"
 
@@ -73,8 +71,15 @@ func ListenToRedis(ctx context.Context, rdb *redis.Client, hub *Hub) {
 	for msg := range ch {
 		// This sends the Python data directly to the Hub's broadcast loop
 		HandleClientRead(*msg)
-		hub.broadcast <- []byte(msg.Payload)
 	}
+}
+
+func SendToRedis(data []byte, ctx context.Context, rdb *redis.Client) error {
+	err := rdb.Publish(ctx, "Start_Stream", data).Err()
+	if err != nil {
+		return fmt.Errorf("failed to publish to redis: %v", err)
+	}
+	return nil
 }
 
 func (h *Hub) Run() {
@@ -83,10 +88,7 @@ func (h *Hub) Run() {
 		case client := <-h.register:
 			h.clients[client] = true
 		case client := <-h.unregister:
-			if _, ok := h.clients[client]; ok {
-				delete(h.clients, client)
-				// Don't close here if DisconnectClient is already closing it
-			}
+			delete(h.clients, client)
 		case message := <-h.broadcast:
 			for client := range h.clients {
 				// Use a non-blocking write or a goroutine to prevent
@@ -158,7 +160,7 @@ func StopRedisContainer() {
 }
 
 // Handles all websocket connections
-func WebsocketConnectHandler(hub *Hub, w http.ResponseWriter, r *http.Request) {
+func WebsocketConnectHandler(hub *Hub, openDB, balanceDB, priceDB, trackerDB *sql.DB, w http.ResponseWriter, r *http.Request) {
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println("Upgrade error:", err)
@@ -197,22 +199,22 @@ func WebsocketConnectHandler(hub *Hub, w http.ResponseWriter, r *http.Request) {
 
 	// Start reader and writer goroutines
 	if clientID == "PYTHON_CLIENT" {
-		SendInitialPositions(clients, clientID, w, r)
+		SendInitialPositions(openDB, trackerDB, clients, clientID, w, r)
 	}
 
 	if clientID == "STOCK_CLIENT" {
-		SendOpenPositions(clients)
-		go HandleClientWrite(newClient)
+		SendOpenPositions(balanceDB, openDB, priceDB, trackerDB, clients)
+		go HandleClientWrite(newClient, openDB, balanceDB, priceDB)
 	}
 
 	<-newClient.Done
 
 }
 
-func SendInitialPositions(clients map[string]*Client, clientID string, w http.ResponseWriter, r *http.Request) {
+func SendInitialPositions(openDB, trackerDB *sql.DB, clients map[string]*Client, clientID string, w http.ResponseWriter, r *http.Request) {
 	var optionSymbols []OptionStreamRequest
 	var stockSymbols []StockStreamRequest
-	optionSymbols, stockSymbols = SendTrackerSymbols()
+	optionSymbols, stockSymbols = SendTrackerSymbols(trackerDB, openDB)
 	if optionSymbols != nil {
 		optionMsg, err := json.Marshal(optionSymbols)
 		if err != nil {
@@ -277,6 +279,7 @@ func ShutdownAllClients() {
 func HandleClientRead(msg redis.Message) {
 	var quotes map[string]MixedQuote
 	payloadBytes := []byte(msg.Payload)
+	fmt.Println(payloadBytes)
 	if err := json.Unmarshal(payloadBytes, &quotes); err != nil {
 		// If it’s not a quotes payload, skip or handle other message types here
 		log.Printf("Invalid quotes JSON from Python Client: %v", err)
@@ -357,7 +360,7 @@ func HandleClientRead(msg redis.Message) {
 }
 
 // Incremently writes balance to the Frontend
-func HandleClientWrite(client *Client) {
+func HandleClientWrite(client *Client, openDB, balanceDB, priceDB *sql.DB) {
 	now := time.Now()
 	wait := 15*time.Second - (time.Duration(now.Second()%15)*time.Second + time.Duration(now.Nanosecond()))
 	timer := time.NewTimer(wait)
@@ -369,7 +372,7 @@ func HandleClientWrite(client *Client) {
 		timer.Stop()
 		return
 	case t := <-timer.C:
-		processWrite(t, client)
+		processWrite(t, client, balanceDB, openDB, priceDB)
 	}
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
@@ -381,13 +384,13 @@ func HandleClientWrite(client *Client) {
 			DisconnectClient(client.ID)
 			return
 		case t := <-ticker.C:
-			processWrite(t, client)
+			processWrite(t, client, balanceDB, openDB, priceDB)
 		}
 	}
 }
 
 // Sends a message to the python streamer to start a subscription to a certain option ID
-func StartOptionStream(w http.ResponseWriter, r *http.Request) {
+func StartOptionStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request) {
 	symbol := r.URL.Query().Get("symbol")
 	price := r.URL.Query().Get("price")
 	day := r.URL.Query().Get("day")
@@ -410,7 +413,7 @@ func StartOptionStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = SendToClient(clients["PYTHON_CLIENT"], msg)
+	err = SendToRedis(msg, context.Background(), rdb)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -418,7 +421,7 @@ func StartOptionStream(w http.ResponseWriter, r *http.Request) {
 }
 
 // Sends a message to the python streamer to start a subscription to a certain stock
-func StartStockStream(w http.ResponseWriter, r *http.Request) {
+func StartStockStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request) {
 	symbol := r.URL.Query().Get("symbol")
 
 	request := StockStreamRequest{
@@ -429,7 +432,7 @@ func StartStockStream(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	err = SendToClient(clients["PYTHON_CLIENT"], msg)
+	err = SendToRedis(msg, context.Background(), rdb)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -439,99 +442,27 @@ func StartStockStream(w http.ResponseWriter, r *http.Request) {
 }
 
 // Write to a specific client the most recent balance
-func processWrite(t time.Time, client *Client) {
-	openPositions := make(map[string]int)
-	var realBalance float64
+func processWrite(t time.Time, client *Client, balanceDB, openDB, priceDB *sql.DB) {
+	var cash float64
 	var balance float64
 
-	balanceDB, err := sql.Open("sqlite", "Balance.db")
-	if err != nil {
-		log.Printf("Query failed process write balanceDB: %v", err)
-		return
-	}
-	defer balanceDB.Close()
-	for i := 0; i < 3; i++ {
-		_, err = balanceDB.Exec("PRAGMA journal_mode=WAL;")
-		if err == nil {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if err != nil {
-		log.Printf("Failed to enable WAL after retries: %v", err)
-	}
 	date := TodayDate()
 
-	createTableSQL := fmt.Sprintf(`
-	CREATE TABLE IF NOT EXISTS "%s" (
-		timestamp INTEGER PRIMARY KEY,
-		balance REAL NOT NULL,
-		realBalance REAL NOT NULL	
-	);`, date)
-	_, err = balanceDB.Exec(createTableSQL)
-	if err != nil {
-		log.Printf("Failed to create today's table in Balance.db: %v", err)
+	balance = 10000.0
+	cash = 10000.0
+
+	query := `SELECT timestamp, balance, cash FROM Balance ORDER BY timestamp DESC LIMIT 1`
+	row := balanceDB.QueryRow(query)
+
+	var timestamp int64
+	err := row.Scan(&timestamp, &balance, &cash)
+	if err == sql.ErrNoRows {
+		log.Printf("No rows in Balance; using default balance 10000")
+	} else if err != nil {
+		log.Printf("Failed to query table: %v", err)
 		return
 	}
 
-	tables, err := getDateTables(balanceDB)
-	if err != nil {
-		log.Printf("Failed to get date tables in Balance.db: %v", err)
-		return
-	}
-
-	// Sort tables in descending order (newest dates first)
-	sort.Slice(tables, func(i, j int) bool {
-		return tables[i] > tables[j]
-	})
-	balance = 10000
-	realBalance = 10000 // default fallback
-
-	found := false
-	for _, tbl := range tables {
-		query := fmt.Sprintf(`SELECT timestamp, balance, realBalance FROM "%s" ORDER BY timestamp DESC LIMIT 1`, tbl)
-		row := balanceDB.QueryRow(query)
-
-		var timestamp int64
-		err := row.Scan(&timestamp, &balance, &realBalance)
-		if err == sql.ErrNoRows {
-			continue // table exists but is empty — try earlier table
-		} else if err != nil {
-			log.Printf("Failed to query table %s: %v", tbl, err)
-			continue
-		}
-
-		found = true
-		break
-	}
-
-	if !found {
-		log.Printf("No existing balances found; using default balance: %.2f", realBalance)
-	}
-
-	openDB, err := sql.Open("sqlite", "Open.db")
-	if err != nil {
-		log.Printf("Query failed process write openDB: %v", err)
-		return
-	}
-	defer openDB.Close()
-	for i := 0; i < 3; i++ {
-		_, err = openDB.Exec("PRAGMA journal_mode=WAL;")
-		if err == nil {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if err != nil {
-		log.Printf("Failed to enable WAL after retries: %v", err)
-	}
-	createTableSQL = `
-		CREATE TABLE IF NOT EXISTS OpenPositions (
-			id STRING PRIMARY KEY,
-			price REAL NOT NULL,
-			amount INTEGER NOT NULL
-		);`
-	_, err = openDB.Exec(createTableSQL)
 	rows, err := openDB.Query("SELECT * FROM OpenPositions")
 	if err == sql.ErrNoRows {
 		fmt.Println("No Open Positions Yet")
@@ -540,79 +471,58 @@ func processWrite(t time.Time, client *Client) {
 	}
 	defer rows.Close()
 
+	tempPositionValue := 0.0
+
 	for rows.Next() {
 		var id string
-		var price float64
 		var amount int64
-
-		err := rows.Scan(&id, &price, &amount)
-		if err != nil {
-			log.Println("Scan failed:", err)
+		if err := rows.Scan(&id, &amount); err != nil {
 			continue
 		}
 
-		openPositions[id] = int(amount)
-	}
+		var mark float64
+		if len(id) > 6 {
+			var ts int64
+			var sym string
+			var b, a, l, h, iv, d, g, th, v float64
+			err = priceDB.QueryRow(`SELECT * FROM Options WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1`, id).
+				Scan(&ts, &sym, &mark, &b, &a, &l, &h, &iv, &d, &g, &th, &v)
 
-	tempBalance := balance
-
-	for names, amount := range openPositions {
-		db, err := sql.Open("sqlite", fmt.Sprintf("%s.db", names))
-		if err != nil {
-			log.Printf("Query failed process write position file: %v", err)
-			return
-		}
-		defer db.Close()
-		for i := 0; i < 3; i++ {
-			_, err = db.Exec("PRAGMA journal_mode=WAL;")
 			if err == nil {
-				break
+				tempPositionValue += (mark * float64(amount) * 100)
 			}
-			time.Sleep(50 * time.Millisecond)
-		}
-		if err != nil {
-			log.Printf("Failed to enable WAL after retries: %v", err)
-		}
-		date := TodayDate()
-		query := fmt.Sprintf(`SELECT * FROM "%s" ORDER BY timestamp DESC LIMIT 1`, date)
-		row := db.QueryRow(query)
-		if len(names) > 6 {
-			var timestamp int64
-			var bid, ask, last, high, iv, delta, gamma, theta, vega float64
-
-			err = row.Scan(&timestamp, &bid, &ask, &last, &high, &iv, &delta, &gamma, &theta, &vega)
-			if err != nil {
-				log.Printf("Query failed process write position file: %v", err)
-				return
-			}
-			mark := math.Round(((ask+bid)/2)*100) / 100
-			tempBalance += (mark * float64(amount)) * 100
 		} else {
-			var timestamp, bidSize, askSize int64
-			var bidPrice, askPrice, lastPrice float64
-			err = row.Scan(&timestamp, &bidPrice, &askPrice, &lastPrice, &bidSize, &askSize)
-			if err != nil {
-				log.Printf("Query failed process write position file: %v", err)
-				return
+			var ts, bs, as int64
+			var sym string
+			var b, a, l float64
+			err = priceDB.QueryRow(`SELECT * FROM Stocks WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1`, id).
+				Scan(&ts, &sym, &mark, &b, &a, &l, &bs, &as)
+
+			if err == nil {
+				tempPositionValue += (mark * float64(amount))
 			}
-			mark := math.Round(((askPrice+bidPrice)/2)*100) / 100
-			tempBalance += (mark * float64(amount))
+		}
+
+		if err != nil && err != sql.ErrNoRows {
+			log.Printf("Price lookup failed for %s: %v", id, err)
 		}
 	}
-	realBalance = tempBalance
+
+	tempBalance := cash + tempPositionValue
+	balance = tempBalance
 	if err := rows.Err(); err != nil {
 		log.Println("Rows iteration error:", err)
 	}
 
-	insertData := fmt.Sprintf(`INSERT OR REPLACE INTO "%s" (timestamp, balance, realBalance) VALUES (?, ?, ?)`, date)
-	_, err = balanceDB.Exec(insertData, time.Now().Unix(), balance, realBalance)
+	insertData := `INSERT OR REPLACE INTO Balance (timestamp, balance, cash) VALUES (?, ?, ?)`
+	_, err = balanceDB.Exec(insertData, time.Now().Unix(), balance, cash)
 	if err != nil {
 		log.Printf("Failed to insert initial balance into table %s: %v", date, err)
 	}
 	message := StockPriceData{
 		Symbol:    "balance",
 		Timestamp: t.Unix(),
-		Mark:      realBalance,
+		Mark:      balance,
 	}
 
 	msg, err := json.Marshal(message)
