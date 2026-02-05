@@ -13,15 +13,38 @@ import (
 )
 
 var ids []string
+var ctx = context.Background()
 
 func main() {
 	stop := make(chan os.Signal, 1)
 	// Check if ctrl C is pressed
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
+	// Start Redis Container
+	utils.StartRedisContainer()
+
+	// 2. INITIALIZE CLIENT
+	rdb := utils.InitRedis()
+
+	// SAFETY CHECK: Wait for Redis to actually be ready
+	// Sometimes the container is "Up" but the database inside is still booting
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		log.Fatalf("Redis started but not responding: %v", err)
+	}
+
+	hub := utils.NewHub()
+
+	// Start Background Services
+	go hub.Run()
+	go utils.ListenToRedis(context.Background(), rdb, hub)
+
 	// Endpoints for API
 	mux := http.NewServeMux()
-	mux.HandleFunc("/connect", utils.WebsocketConnectHandler)
+	mux.HandleFunc("/connect", func(w http.ResponseWriter, r *http.Request) {
+		utils.WebsocketConnectHandler(hub, w, r)
+	})
 	mux.HandleFunc("/startOptionStream", utils.StartOptionStream)
 	mux.HandleFunc("/startStockStream", utils.StartStockStream)
 	mux.HandleFunc("/newTracker", utils.NewTrackerHandler)
@@ -59,6 +82,8 @@ func main() {
 
 	<-stop
 	totalShutdown(server)
+	utils.StopRedisContainer()
+
 }
 
 func totalShutdown(server *http.Server) {

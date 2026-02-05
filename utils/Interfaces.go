@@ -65,6 +65,7 @@ type MixedQuote struct {
 	BidPrice  float64 `json:"Bid Price"`
 	AskPrice  float64 `json:"Ask Price"`
 	LastPrice float64 `json:"Last Price"`
+	Mark      float64 `json:"Mark"`
 
 	// Equity-only
 	BidSize *int `json:"Bid Size,omitempty"`

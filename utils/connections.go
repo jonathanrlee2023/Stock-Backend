@@ -1,17 +1,20 @@
 package utils
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"math"
 	"net/http"
+	"os/exec"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/redis/go-redis/v9"
 )
 
 var upgrader = websocket.Upgrader{
@@ -24,6 +27,79 @@ var (
 	clients   = make(map[string]*Client)
 	clientsMu sync.RWMutex
 )
+
+var ctx = context.Background()
+
+type Hub struct {
+	// Registered clients.
+	clients map[*websocket.Conn]bool
+	// Inbound messages from Redis.
+	broadcast chan []byte
+	// Register requests from the HTTP handler.
+	register chan *websocket.Conn
+	// Unregister requests from clients.
+	unregister chan *websocket.Conn
+}
+
+func NewHub() *Hub {
+	return &Hub{
+		broadcast:  make(chan []byte),
+		register:   make(chan *websocket.Conn),
+		unregister: make(chan *websocket.Conn),
+		clients:    make(map[*websocket.Conn]bool),
+	}
+}
+
+func InitRedis() *redis.Client {
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379", // Default Redis port
+		Password: "",               // No password set by default
+		DB:       0,                // Use default DB
+	})
+
+	// Verify connection
+	_, err := rdb.Ping(ctx).Result()
+	if err != nil {
+		panic(fmt.Sprintf("Could not connect to Redis: %v", err))
+	}
+
+	return rdb
+}
+
+func ListenToRedis(ctx context.Context, rdb *redis.Client, hub *Hub) {
+	pubsub := rdb.Subscribe(ctx, "stock_data_channel")
+	ch := pubsub.Channel()
+
+	for msg := range ch {
+		// This sends the Python data directly to the Hub's broadcast loop
+		hub.broadcast <- []byte(msg.Payload)
+	}
+}
+
+func (h *Hub) Run() {
+	for {
+		select {
+		case client := <-h.register:
+			h.clients[client] = true
+		case client := <-h.unregister:
+			if _, ok := h.clients[client]; ok {
+				delete(h.clients, client)
+				// Don't close here if DisconnectClient is already closing it
+			}
+		case message := <-h.broadcast:
+			for client := range h.clients {
+				// Use a non-blocking write or a goroutine to prevent
+				// one slow user from stalling the entire Redis stream.
+				go func(c *websocket.Conn, msg []byte) {
+					err := c.WriteMessage(websocket.TextMessage, msg)
+					if err != nil {
+						h.unregister <- c
+					}
+				}(client, message)
+			}
+		}
+	}
+}
 
 // Takes json and sends it to client
 func SendToClient(client *Client, msg []byte) error {
@@ -44,8 +120,29 @@ func ReceiveFromClient(client *Client) ([]byte, error) {
 	return msg, nil
 }
 
+func StartRedisContainer() {
+	cmd := exec.Command("sudo", "docker", "start", "redis-server")
+	err := cmd.Run()
+	if err != nil {
+		fmt.Println("Error starting container:", err)
+	} else {
+		fmt.Println("Redis container started.")
+	}
+}
+
+// Stop the Redis container
+func StopRedisContainer() {
+	cmd := exec.Command("sudo", "docker", "stop", "redis-server")
+	err := cmd.Run()
+	if err != nil {
+		fmt.Println("Error stopping container:", err)
+	} else {
+		fmt.Println("Redis container stopped.")
+	}
+}
+
 // Handles all websocket connections
-func WebsocketConnectHandler(w http.ResponseWriter, r *http.Request) {
+func WebsocketConnectHandler(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println("Upgrade error:", err)
@@ -61,6 +158,8 @@ func WebsocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 
 	clientsMu.Lock()
 
+	hub.register <- ws
+
 	newClient := &Client{
 		Conn: ws,
 		ID:   clientID,
@@ -73,42 +172,16 @@ func WebsocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 	clients[clientID] = newClient
 	clientsMu.Unlock()
 
-	log.Printf("Client connected: %s", clientID)
-
 	defer func() {
+		hub.unregister <- ws // Unregister on disconnect
 		DisconnectClient(clientID)
 	}()
 
+	log.Printf("Client connected: %s", clientID)
+
 	// Start reader and writer goroutines
 	if clientID == "PYTHON_CLIENT" {
-		var optionSymbols []OptionStreamRequest
-		var stockSymbols []StockStreamRequest
-		optionSymbols, stockSymbols = SendTrackerSymbols()
-		if optionSymbols != nil {
-			optionMsg, err := json.Marshal(optionSymbols)
-			if err != nil {
-				log.Printf("Error Marshalling: %v", err)
-				return
-			}
-
-			err = SendToClient(clients[clientID], optionMsg)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-		}
-		if stockSymbols != nil {
-			stockMsg, err := json.Marshal(stockSymbols)
-			if err != nil {
-				log.Printf("Error Marshalling: %v", err)
-				return
-			}
-			err = SendToClient(clients[clientID], stockMsg)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-		}
+		SendInitialPositions(clients, clientID, w, r)
 	}
 
 	go HandleClientRead(newClient)
@@ -118,6 +191,38 @@ func WebsocketConnectHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	<-newClient.Done
+
+}
+
+func SendInitialPositions(clients map[string]*Client, clientID string, w http.ResponseWriter, r *http.Request) {
+	var optionSymbols []OptionStreamRequest
+	var stockSymbols []StockStreamRequest
+	optionSymbols, stockSymbols = SendTrackerSymbols()
+	if optionSymbols != nil {
+		optionMsg, err := json.Marshal(optionSymbols)
+		if err != nil {
+			log.Printf("Error Marshalling: %v", err)
+			return
+		}
+
+		err = SendToClient(clients[clientID], optionMsg)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if stockSymbols != nil {
+		stockMsg, err := json.Marshal(stockSymbols)
+		if err != nil {
+			log.Printf("Error Marshalling: %v", err)
+			return
+		}
+		err = SendToClient(clients[clientID], stockMsg)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
 }
 
 func DisconnectClient(clientID string) {
@@ -187,7 +292,7 @@ func HandleClientRead(client *Client) {
 				stock := StockPriceData{
 					Symbol:    symbol,
 					Timestamp: timestamp,
-					Mark:      math.Round(((q.AskPrice+q.BidPrice)/2)*100) / 100,
+					Mark:      q.Mark,
 				}
 
 				stockPrices = append(stockPrices, stock)
@@ -199,7 +304,7 @@ func HandleClientRead(client *Client) {
 					Timestamp: timestamp,
 					Bid:       q.BidPrice,
 					Ask:       q.AskPrice,
-					Mark:      math.Round(((q.AskPrice+q.BidPrice)/2)*100) / 100,
+					Mark:      q.Mark,
 					Last:      q.LastPrice,
 					High:      *q.HighPrice,
 					IV:        *q.IV,

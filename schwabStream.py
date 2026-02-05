@@ -1,219 +1,212 @@
 import json
 import sqlite3
 import pytz
+import redis
 import requests
 import schwabdev
 from dotenv import load_dotenv
 import os
 import time
 import stream_func
-import sys
 import datetime
-from filelock import FileLock
 import asyncio
 import websockets
-import traceback
-import earnings
 import earnings
 
 stream_started = False
 stream_lock = asyncio.Lock()
 tickers = []
+r = redis.Redis(host='localhost', port=6379, db=0)
 
-async def listen_for_messages(websocket, streamer):
+async def listen_for_messages(streamer):
     global stream_started
+    pubsub = r.pubsub()
+    pubsub.subscribe('Start_Stream')
 
-    async for raw_msg in websocket:
-        print("Received message")
-        data = json.loads(raw_msg)
-        print(data)
-
+    while True:
+        message = pubsub.get_message(ignore_subscribe_messages=True)
         if not stream_started:
             async with stream_lock:
                 if not stream_started:
                     print("Starting streamer…")
                     streamer.start(receiver=stream_func.receive_data)
                     stream_started = True
+        if message:
+            data = json.loads(message["data"])
+            if isinstance(data, list) and data:
+                first = data[0]
 
-       
-        if isinstance(data, list) and data:
-            first = data[0]
+                # OptionStreamRequest array
+                if "price" in first:
+                    for opt in data:
+                        symbol      = opt["symbol"]
+                        price       = opt["price"]
+                        day         = opt["day"]
+                        month       = opt["month"]
+                        year        = opt["year"]
+                        option_type = opt["type"]
 
-            # OptionStreamRequest array
-            if "price" in first:
-                for opt in data:
-                    symbol      = opt["symbol"]
-                    price       = opt["price"]
-                    day         = opt["day"]
-                    month       = opt["month"]
-                    year        = opt["year"]
-                    option_type = opt["type"]
-
-                    if symbol not in streamer.subscriptions.get("LEVELONE_OPTIONS", {}):
-                        asyncio.create_task(
-                            stream_func.start_options_stream(
-                                streamer=streamer,
-                                ticker=symbol,
-                                price=price,
-                                day=day,
-                                month=month,
-                                year=year,
-                                type=option_type,
+                        if symbol not in streamer.subscriptions.get("LEVELONE_OPTIONS", {}):
+                            asyncio.create_task(
+                                stream_func.start_options_stream(
+                                    streamer=streamer,
+                                    ticker=symbol,
+                                    price=price,
+                                    day=day,
+                                    month=month,
+                                    year=year,
+                                    type=option_type,
+                                )
                             )
-                        )
-                        # Track the underlying ticker (before the “_”)
-                        base = symbol.split("_", 1)[0]
-                        if base not in tickers:
-                            tickers.append(base)
+                            # Track the underlying ticker (before the “_”)
+                            base = symbol.split("_", 1)[0]
+                            if base not in tickers:
+                                tickers.append(base)
 
-                await websocket.send(f"Options streaming started for {len(data)} symbols")
+                    await r.publish("Stream_Channel", json.dumps({"Status": "Started"
+                                                                  "Symbol: {}".format(symbol)}))
 
-            # StockStreamRequest array
-            else:
-                for stk in data:
-                    symbol = stk["symbol"]
-
-                    if symbol not in streamer.subscriptions.get("LEVELONE_EQUITIES", {}):
-                        asyncio.create_task(
-                            stream_func.start_stock_stream(
-                                streamer=streamer,
-                                ticker=symbol,
-                            )
-                        )
-                        if symbol not in tickers:
-                            tickers.append(symbol)
-
-                await websocket.send(f"Equity streaming started for {len(data)} symbols")
-
-        else:
-            # Fallback for a single‐item dict (old behavior) or unexpected shape
-            symbol = data.get("symbol")
-            print("Handling single request:", data)
-
-            try:
-                if "price" in data:
-                    price = data["price"]
-                    day = data["day"]
-                    month = data["month"]
-                    year = data["year"]
-                    option_type = data["type"]
-                    if symbol not in streamer.subscriptions.get('LEVELONE_OPTIONS', {}):
-                        asyncio.create_task(
-                            stream_func.start_options_stream(
-                                streamer=streamer,
-                                ticker=symbol,
-                                price=price,
-                                day=day,
-                                month=month,
-                                year=year,
-                                type=option_type
-                            )
-                        )
-                        stripped_ticker = symbol.split("_", 1)[0]
-                        if stripped_ticker not in tickers:
-                            tickers.append(stripped_ticker)
+                # StockStreamRequest array
                 else:
-                    if symbol not in streamer.subscriptions.get('LEVELONE_EQUITIES', {}):
-                        asyncio.create_task(
-                            stream_func.start_stock_stream(
-                                streamer=streamer,
-                                ticker=symbol,
+                    for stk in data:
+                        symbol = stk["symbol"]
+
+                        if symbol not in streamer.subscriptions.get("LEVELONE_EQUITIES", {}):
+                            asyncio.create_task(
+                                stream_func.start_stock_stream(
+                                    streamer=streamer,
+                                    ticker=symbol,
+                                )
                             )
-                        )
-                        if symbol not in tickers:
-                            tickers.append(symbol)
+                            if symbol not in tickers:
+                                tickers.append(symbol)
 
-                await websocket.send(f"Streaming started for {symbol}")
+                    await r.publish("Stream_Channel", json.dumps({"Status": "Started"
+                                                                  "Symbol: {}".format(symbol)}))
 
-            except requests.exceptions.ReadTimeout:
-                print("Timeout connecting to Schwab API.")
-            except Exception as e:
-                print("Stream handling error:", e)
+            else:
+                # Fallback for a single‐item dict (old behavior) or unexpected shape
+                symbol = data.get("symbol")
+                print("Handling single request:", data)
 
+                try:
+                    if "price" in data:
+                        price = data["price"]
+                        day = data["day"]
+                        month = data["month"]
+                        year = data["year"]
+                        option_type = data["type"]
+                        if symbol not in streamer.subscriptions.get('LEVELONE_OPTIONS', {}):
+                            asyncio.create_task(
+                                stream_func.start_options_stream(
+                                    streamer=streamer,
+                                    ticker=symbol,
+                                    price=price,
+                                    day=day,
+                                    month=month,
+                                    year=year,
+                                    type=option_type
+                                )
+                            )
+                            stripped_ticker = symbol.split("_", 1)[0]
+                            if stripped_ticker not in tickers:
+                                tickers.append(stripped_ticker)
+                    else:
+                        if symbol not in streamer.subscriptions.get('LEVELONE_EQUITIES', {}):
+                            asyncio.create_task(
+                                stream_func.start_stock_stream(
+                                    streamer=streamer,
+                                    ticker=symbol,
+                                )
+                            )
+                            if symbol not in tickers:
+                                tickers.append(symbol)
 
-async def write_to_db(websocket):
+                    await r.publish("Stream_Channel", json.dumps({"Status": "Started"
+                                                                  "Symbol: {}".format(symbol)}))
+
+                except requests.exceptions.ReadTimeout:
+                    print("Timeout connecting to Schwab API.")
+                except Exception as e:
+                    print("Stream handling error:", e)
+
+async def write_to_db():
+    conn = sqlite3.connect(f'PriceData.db')
+    cursor = conn.cursor()      
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS Options (
+            timestamp INTEGER NOT NULL, symbol TEXT NOT NULL, mark REAL,
+            bid_price REAL, ask_price REAL, last_price REAL, high_price REAL,
+            iv REAL, delta REAL, gamma REAL, theta REAL, vega REAL,
+            PRIMARY KEY (timestamp, symbol)
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS Stocks (
+            timestamp INTEGER NOT NULL, symbol TEXT NOT NULL, mark REAL,
+            bid_price REAL, ask_price REAL, last_price REAL, bid_size INTEGER, ask_size INTEGER,
+            PRIMARY KEY (timestamp, symbol)
+        )
+    """)
+    conn.commit()            
+
     while True:
         await asyncio.sleep(60 - time.time() % 60)
+        timestamp = int(time.time())
+        snapshot = {name: stream_func.new_data[name] for name in stream_func.file_names}
+
+        option_records = []
+        stock_records = []
+
+        for name, data in snapshot.items():
+            try:
+                if len(name) > 8: # Option logic
+                    option_records.append((
+                        timestamp, name, data.get("Mark"), data.get("Bid Price"),
+                        data.get("Ask Price"), data.get("Last Price"), data.get("High Price"),
+                        data.get("IV"), data.get("Delta"), data.get("Gamma"),
+                        data.get("Theta"), data.get("Vega")
+                    ))
+                else: # Stock logic
+                    stock_records.append((
+                        timestamp, name, data.get("Mark"), data.get("Bid Price"),
+                        data.get("Ask Price"), data.get("Last Price"), 
+                        data.get("Bid Size"), data.get("Ask Size")
+                    ))
+            except KeyError as e:
+                print(f"Skipping {name}: Missing key {e}")
+
+        if option_records:
+            cursor.executemany(
+                "INSERT OR REPLACE INTO Options VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", 
+                option_records
+            )
+        
+        if stock_records:
+            cursor.executemany(
+                "INSERT OR REPLACE INTO Stocks VALUES (?,?,?,?,?,?,?,?)", 
+                stock_records
+            )
+
+        conn.commit()
+        print(f"Snapshot saved at {timestamp}")
+
+    # conn.close()  # Ideally handled via a shutdown signal
+async def broadcast_to_redis():
+    while True:
+        await asyncio.sleep(15 - time.time() % 15)
         timestamp = int(time.time())        
 
-        if len(stream_func.file_names) != 0:
+        if stream_func.file_names:
             snapshot = {name: stream_func.new_data[name] for name in stream_func.file_names}
-            await websocket.send(json.dumps(snapshot))
-
-            for name in stream_func.file_names:
-                conn = sqlite3.connect(f'{name}.db')
-                cursor = conn.cursor()
-                data = snapshot[name]                  
-
-                today_str = datetime.date.today().strftime("%Y_%m_%d")
-
-                if len(name) > 8:
-                    create_table_sql = f"""
-                        CREATE TABLE IF NOT EXISTS "{today_str}" (
-                            timestamp INTEGER PRIMARY KEY,
-                            bid_price REAL NOT NULL,
-                            ask_price REAL NOT NULL,
-                            last_price REAL NOT NULL,
-                            high_price REAL NOT NULL,
-                            iv REAL NOT NULL,
-                            delta REAL NOT NULL,
-                            gamma REAL NOT NULL,
-                            theta REAL NOT NULL,
-                            vega REAL NOT NULL
-                        );
-                    """
-                    cursor.execute(create_table_sql)
-                    conn.commit()
-                    insert_table = f"""
-                        INSERT OR REPLACE INTO "{today_str}" (
-                            timestamp, bid_price, ask_price, last_price, high_price, iv, delta, gamma, theta, vega
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """
-                    cursor.execute(insert_table, (
-                        timestamp,
-                        data["Bid Price"],
-                        data["Ask Price"],
-                        data["Last Price"],
-                        data["High Price"],
-                        data["IV"],
-                        data["Delta"],
-                        data["Gamma"],
-                        data["Theta"],
-                        data["Vega"]
-                    ))
-                else:
-                    create_table_sql = f"""
-                        CREATE TABLE IF NOT EXISTS "{today_str}" (
-                            timestamp INTEGER PRIMARY KEY AUTOINCREMENT,
-                            bid_price REAL NOT NULL,
-                            ask_price REAL NOT NULL,
-                            last_price REAL NOT NULL,
-                            bid_size INTEGER NOT NULL,
-                            ask_size INTEGER NOT NULL
-                        );
-                    """
-                    cursor.execute(create_table_sql)
-                    insert_table = f"""
-                        INSERT OR REPLACE INTO "{today_str}" (
-                            timestamp, bid_price, ask_price, last_price, bid_size, ask_size
-                        ) VALUES (?, ?, ?, ?, ?, ?)
-                    """
-                    cursor.execute(insert_table, (
-                        timestamp,
-                        data["Bid Price"],
-                        data["Ask Price"],
-                        data["Last Price"],
-                        data["Bid Size"],
-                        data["Ask Size"]
-                    ))
-                conn.commit()
-                conn.close()
+            # Publish to Go!
+            r.publish("Stream_Channel", json.dumps(snapshot))
         else:
             continue
 
-def is_weekday_business_hours_central(now=None):
-    if now is None:   
-        now = datetime.datetime.now(datetime.timezone.utc)
+def is_weekday_business_hours_central():
+    now = datetime.datetime.now(datetime.timezone.utc)
 
     central = pytz.timezone('US/Central')
     now_central = now.astimezone(central)
@@ -232,42 +225,36 @@ async def main():
     appKey = os.getenv("appKey")
     appSecret = os.getenv("appSecret")
 
-    while is_weekday_business_hours_central(None) is False:
-        time.sleep(5)
-        print("Not in trading hours")
 
     client = schwabdev.Client(app_key=appKey, app_secret=appSecret)
 
     streamer = client.stream
 
-    uri = "ws://localhost:8080/connect?id=PYTHON_CLIENT"
-
-
     try:
-        async with websockets.connect(uri) as websocket:
-            print("Connected to Websocket")
-            # Start background tasks
-            tasks = [
-                asyncio.create_task(listen_for_messages(websocket, streamer)),
-                asyncio.create_task(write_to_db(websocket)),
-            ]
+        
+        # Start background tasks
+        tasks = [
+            asyncio.create_task(listen_for_messages(streamer)),
+            asyncio.create_task(write_to_db()),
+        ]
 
-            # await asyncio.sleep(10) 
+        # await asyncio.sleep(10) 
 
-            # tasks.append(asyncio.create_task(earnings.write_upcoming_earnings_symbols(tickers=tickers, client=client)))
+        # tasks.append(asyncio.create_task(earnings.write_upcoming_earnings_symbols(tickers=tickers, client=client)))
 
-            try:
-                while True:
-                    if not is_weekday_business_hours_central():
-                        print("Shutting down: after 3PM Central.")
-                        for task in tasks:
-                            task.cancel()
-                        break
-                    await asyncio.sleep(60)
-            except asyncio.CancelledError:
-                print("Tasks were cancelled.")
-    except (ConnectionRefusedError, websockets.exceptions.InvalidURI) as e:
-        print(f"Failed to connect to WebSocket: {e}")
+        # try:
+        #     while True:
+        #         if not is_weekday_business_hours_central() or is_weekday_business_hours_central(None):
+        #             print("Not in trading hours")
+        #             print("Shutting down: after 3PM Central.")
+        #             for task in tasks:
+        #                 task.cancel()
+        #             break
+        #         await asyncio.sleep(300)
+        # except asyncio.CancelledError:
+        #     print("Tasks were cancelled.")
+    except Exception as e:
+        print(f"Failed to connect: {e}")
         return
 
 asyncio.run(main())

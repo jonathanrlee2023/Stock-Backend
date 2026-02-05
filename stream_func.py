@@ -1,7 +1,5 @@
 import json
-import os
 import re
-from filelock import FileLock
 
 option_labels = {
     '1': 'Description',
@@ -13,7 +11,8 @@ option_labels = {
     '28': 'Delta',
     '29': 'Gamma',
     '30': 'Theta',
-    '31': 'Vega'
+    '31': 'Vega',
+    '37': 'Mark'
 }
 
 stock_labels = {
@@ -21,7 +20,8 @@ stock_labels = {
     '2': 'Ask Price',
     '3': 'Last Price',
     '4': 'Bid Size',
-    '5': 'Ask Size'
+    '5': 'Ask Size',
+    '33': 'Mark'
 }
 ticker = None
 option_price = None
@@ -38,7 +38,7 @@ async def start_options_stream(streamer, ticker, price, day, month, year, type):
     option_id = f'{year}{month_filled}{day}{type.upper()}{strike_str}'
     request = streamer.level_one_options(
         f"{ticker.ljust(6)}{option_id}",
-        "1,2,3,4,5,10,28,29,30,31",
+        "1,2,3,4,5,10,28,29,30,31,37",
         command='ADD'
     )
 
@@ -48,7 +48,7 @@ async def start_stock_stream(streamer, ticker):
     caps_ticker = ticker.upper()
     request = streamer.level_one_equities(
         caps_ticker,
-        "0,1,2,3,4,5",
+        "0,1,2,3,4,5,33",
         command="ADD"
     )
 
