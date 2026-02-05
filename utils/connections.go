@@ -67,11 +67,12 @@ func InitRedis() *redis.Client {
 }
 
 func ListenToRedis(ctx context.Context, rdb *redis.Client, hub *Hub) {
-	pubsub := rdb.Subscribe(ctx, "stock_data_channel")
+	pubsub := rdb.Subscribe(ctx, "Stream_Channel")
 	ch := pubsub.Channel()
 
 	for msg := range ch {
 		// This sends the Python data directly to the Hub's broadcast loop
+		HandleClientRead(*msg)
 		hub.broadcast <- []byte(msg.Payload)
 	}
 }
@@ -121,18 +122,33 @@ func ReceiveFromClient(client *Client) ([]byte, error) {
 }
 
 func StartRedisContainer() {
-	cmd := exec.Command("sudo", "docker", "start", "redis-server")
-	err := cmd.Run()
+	path, err := exec.LookPath("docker")
 	if err != nil {
-		fmt.Println("Error starting container:", err)
+		fmt.Println("Error: Docker executable not found in your system PATH.")
+		fmt.Println("Check: Is Docker installed and is the terminal session refreshed?")
+		return
+	}
+	fmt.Printf("Using Docker found at: %s\n", path)
+	cmd := exec.Command(path, "start", "redis-server")
+
+	if err := cmd.Run(); err != nil {
+		fmt.Println("Container not running. Attempting to create/run...")
+
+		// 3. Try to run (this works for both Windows and Linux)
+		runCmd := exec.Command(path, "run", "-d", "--name", "redis-server", "-p", "6379:6379", "redis")
+		if err := runCmd.Run(); err != nil {
+			fmt.Printf("Critical Error: %v\n", err)
+		} else {
+			fmt.Println("Redis container is up!")
+		}
 	} else {
-		fmt.Println("Redis container started.")
+		fmt.Println("Redis container started!")
 	}
 }
 
 // Stop the Redis container
 func StopRedisContainer() {
-	cmd := exec.Command("sudo", "docker", "stop", "redis-server")
+	cmd := exec.Command("docker", "stop", "redis-server")
 	err := cmd.Run()
 	if err != nil {
 		fmt.Println("Error stopping container:", err)
@@ -184,7 +200,6 @@ func WebsocketConnectHandler(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		SendInitialPositions(clients, clientID, w, r)
 	}
 
-	go HandleClientRead(newClient)
 	if clientID == "STOCK_CLIENT" {
 		SendOpenPositions(clients)
 		go HandleClientWrite(newClient)
@@ -259,93 +274,85 @@ func ShutdownAllClients() {
 }
 
 // Receives and handles a websocket message from python client and sends data to frontend
-func HandleClientRead(client *Client) {
-	for {
-		msg, err := ReceiveFromClient(client)
-		if err != nil {
-			log.Printf("Receive error for client %s: %v", client.ID, err)
-			DisconnectClient(client.ID)
-			return
-		}
+func HandleClientRead(msg redis.Message) {
+	var quotes map[string]MixedQuote
+	payloadBytes := []byte(msg.Payload)
+	if err := json.Unmarshal(payloadBytes, &quotes); err != nil {
+		// If it’s not a quotes payload, skip or handle other message types here
+		log.Printf("Invalid quotes JSON from Python Client: %v", err)
+		return
+	}
+	optionPrices := make([]OptionPriceData, 0, len(quotes))
+	stockPrices := make([]StockPriceData, 0, len(quotes))
+	timestamp := time.Now().Unix()
+	// Process each symbol
+	for symbol, q := range quotes {
+		switch {
+		// Equity quote if BidSize/AskSize are present
+		case q.BidSize != nil && q.AskSize != nil:
+			stock := StockPriceData{
+				Symbol:    symbol,
+				Timestamp: timestamp,
+				Mark:      q.Mark,
+				BidPrice:  q.BidPrice,
+				AskPrice:  q.AskPrice,
+				LastPrice: q.LastPrice,
+				BidSize:   *q.BidSize,
+				AskSize:   *q.AskSize,
+			}
 
-		select {
-		case <-client.Done:
-			log.Printf("handleClientRead exiting for client %s", client.ID)
-			return
+			stockPrices = append(stockPrices, stock)
+
+		// Option quote if IV or Greeks are present
+		case q.IV != nil:
+			option := OptionPriceData{
+				Symbol:    symbol,
+				Timestamp: timestamp,
+				Bid:       q.BidPrice,
+				Ask:       q.AskPrice,
+				Mark:      q.Mark,
+				Last:      q.LastPrice,
+				High:      *q.HighPrice,
+				IV:        *q.IV,
+				Delta:     *q.Delta,
+				Gamma:     *q.Gamma,
+				Theta:     *q.Theta,
+				Vega:      *q.Vega,
+			}
+			optionPrices = append(optionPrices, option)
+
 		default:
+			log.Printf("Unrecognized quote type for %s: %+v", symbol, q)
 		}
+	}
+	fmt.Println("Received", stockPrices)
+	fmt.Println("Received", optionPrices)
+	// Send both payloads as two JSON arrays
+	client := clients["STOCK_CLIENT"]
+	if client == nil {
+		log.Println("Stock Client is not connected")
+		return
+	}
 
-		var quotes map[string]MixedQuote
-		if err := json.Unmarshal(msg, &quotes); err != nil {
-			// If it’s not a quotes payload, skip or handle other message types here
-			log.Printf("Invalid quotes JSON from %s: %v", client.ID, err)
-			continue
+	// Helper to marshal & send JSON
+	send := func(v interface{}) error {
+		msg, err := json.Marshal(v)
+		if err != nil {
+			return err
 		}
-		optionPrices := make([]OptionPriceData, 0, len(quotes))
-		stockPrices := make([]StockPriceData, 0, len(quotes))
-		timestamp := time.Now().Unix()
-		// Process each symbol
-		for symbol, q := range quotes {
-			switch {
-			// Equity quote if BidSize/AskSize are present
-			case q.BidSize != nil && q.AskSize != nil:
-				stock := StockPriceData{
-					Symbol:    symbol,
-					Timestamp: timestamp,
-					Mark:      q.Mark,
-				}
+		return SendToClient(client, msg)
+	}
 
-				stockPrices = append(stockPrices, stock)
+	if err := send(optionPrices); err != nil {
+		errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
+		_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
+		return
+	}
 
-			// Option quote if IV or Greeks are present
-			case q.IV != nil:
-				option := OptionPriceData{
-					Symbol:    symbol,
-					Timestamp: timestamp,
-					Bid:       q.BidPrice,
-					Ask:       q.AskPrice,
-					Mark:      q.Mark,
-					Last:      q.LastPrice,
-					High:      *q.HighPrice,
-					IV:        *q.IV,
-					Delta:     *q.Delta,
-					Gamma:     *q.Gamma,
-					Theta:     *q.Theta,
-					Vega:      *q.Vega,
-				}
-				optionPrices = append(optionPrices, option)
-
-			default:
-				log.Printf("Unrecognized quote type for %s: %+v", symbol, q)
-			}
-		}
-		// Send both payloads as two JSON arrays
-		client := clients["STOCK_CLIENT"]
-		if client == nil {
-			log.Println("Stock Client is not connected")
-			continue
-		}
-
-		// Helper to marshal & send JSON
-		send := func(v interface{}) error {
-			msg, err := json.Marshal(v)
-			if err != nil {
-				return err
-			}
-			return SendToClient(client, msg)
-		}
-
-		if err := send(optionPrices); err != nil {
-			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-			_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
-			return
-		}
-
-		if err := send(stockPrices); err != nil {
-			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-			_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
-			return
-		}
+	if err := send(stockPrices); err != nil {
+		errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
+		_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
+		return
 	}
 }
 

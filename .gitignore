@@ -1,4 +1,15 @@
+# Python virtual environment
+bot-env/
+.venv/
+__pycache__/
+*.pyc
+
+# Sensitive data
+tokens.json
 .env
+
+# Go binaries
+main.env
 tokens.json
 *.db
 *.json

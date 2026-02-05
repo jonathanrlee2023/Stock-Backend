@@ -66,6 +66,7 @@ type MixedQuote struct {
 	AskPrice  float64 `json:"Ask Price"`
 	LastPrice float64 `json:"Last Price"`
 	Mark      float64 `json:"Mark"`
+	Symbol    string  `json:"Symbol"`
 
 	// Equity-only
 	BidSize *int `json:"Bid Size,omitempty"`
@@ -106,9 +107,16 @@ type CSVOptionData struct {
 }
 
 type StockPriceData struct {
-	Symbol    string  `json:"symbol"`
+	BidPrice  float64 `json:"Bid Price"`
+	AskPrice  float64 `json:"Ask Price"`
+	LastPrice float64 `json:"Last Price"`
+	Mark      float64 `json:"Mark"`
+	Symbol    string  `json:"Symbol"`
 	Timestamp int64   `json:"timestamp"`
-	Mark      float64 `json:"mark"`
+
+	// Equity-only
+	BidSize int `json:"Bid Size,omitempty"`
+	AskSize int `json:"Ask Size,omitempty"`
 }
 
 type StockDbData struct {

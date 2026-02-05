@@ -11,7 +11,6 @@ import stream_func
 import datetime
 import asyncio
 import websockets
-import earnings
 
 stream_started = False
 stream_lock = asyncio.Lock()
@@ -22,6 +21,11 @@ async def listen_for_messages(streamer):
     global stream_started
     pubsub = r.pubsub()
     pubsub.subscribe('Start_Stream')
+    try:
+        if r.ping():
+            print("✅ Redis Connection Successful!")
+    except redis.ConnectionError:
+        print("❌ Redis Connection Failed. Is the Docker container running?")
 
     while True:
         message = pubsub.get_message(ignore_subscribe_messages=True)
@@ -194,6 +198,38 @@ async def write_to_db():
 
     # conn.close()  # Ideally handled via a shutdown signal
 async def broadcast_to_redis():
+    new_data = {
+    "NVDA": {
+        "Symbol": "NVDA",
+        "Bid Price": 135.22,
+        "Ask Price": 135.25,
+        "Last Price": 135.24,
+        "Bid Size": 1200,
+        "Ask Size": 800,
+        "Mark": 135.23
+    },
+    "NVDA_250221C00130000": {
+        "Symbol": "NVDA_250221C00130000",
+        "Bid Price": 8.45,
+        "Ask Price": 8.60,
+        "Last Price": 8.55,
+        "High Price": 9.10,
+        "IV": 42.5,
+        "Delta": 0.6521,
+        "Gamma": 0.012,
+        "Theta": -0.045,
+        "Vega": 0.12,
+        "Mark": 8.52
+    }
+}
+    try:
+        if r.ping():
+            print("✅ Redis Connection Successful!")
+    except redis.ConnectionError:
+        print("❌ Redis Connection Failed. Is the Docker container running?")
+    if not is_weekday_business_hours_central():
+        print("Stream is closed.")
+        r.publish("Stream_Channel", json.dumps(new_data))
     while True:
         await asyncio.sleep(15 - time.time() % 15)
         timestamp = int(time.time())        
@@ -233,7 +269,9 @@ async def main():
     try:
         
         # Start background tasks
+        print("Starting background tasks...")
         tasks = [
+            asyncio.create_task(broadcast_to_redis()),
             asyncio.create_task(listen_for_messages(streamer)),
             asyncio.create_task(write_to_db()),
         ]
