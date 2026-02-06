@@ -132,19 +132,22 @@ func StartRedisContainer() {
 	}
 	fmt.Printf("Using Docker found at: %s\n", path)
 	cmd := exec.Command(path, "start", "redis-server")
-
-	if err := cmd.Run(); err != nil {
-		fmt.Println("Container not running. Attempting to create/run...")
-
-		// 3. Try to run (this works for both Windows and Linux)
-		runCmd := exec.Command(path, "run", "-d", "--name", "redis-server", "-p", "6379:6379", "redis")
-		if err := runCmd.Run(); err != nil {
-			fmt.Printf("Critical Error: %v\n", err)
-		} else {
-			fmt.Println("Redis container is up!")
-		}
-	} else {
+	if err := cmd.Run(); err == nil {
 		fmt.Println("Redis container started!")
+		return
+	}
+
+	fmt.Println("Container not starting. Cleaning up and recreating...")
+	exec.Command(path, "rm", "-f", "redis-server").Run()
+
+	// 3. Now try to run a fresh one
+	runCmd := exec.Command(path, "run", "-d", "--name", "redis-server", "-p", "6379:6379", "redis")
+	if err := runCmd.Run(); err != nil {
+		// If it STILL fails, it's almost certainly a port conflict on 6379
+		fmt.Printf("Critical Error: %v\n", err)
+		fmt.Println("Check if port 6379 is already used by a local Redis installation.")
+	} else {
+		fmt.Println("Redis container is up and running!")
 	}
 }
 
