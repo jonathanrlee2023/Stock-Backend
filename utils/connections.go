@@ -173,19 +173,37 @@ func WebsocketConnectHandler(hub *Hub, openDB, balanceDB, priceDB, trackerDB *sq
 		ws.Close()
 		return
 	}
+	select {
+	case hub.register <- ws:
+		log.Println("Hub registration successful")
+	default:
+		log.Println("Hub registration busy, retrying in background...")
+		go func() { hub.register <- ws }()
+	}
 
 	clientsMu.Lock()
+	if oldClient, exists := clients[clientID]; exists {
+		log.Printf("Client %s already connected — replacing connection", clientID)
+		// 1. Trigger the close
+		oldClient.Conn.Close()
+		select {
+		case <-oldClient.Done:
+		default:
+			close(oldClient.Done)
+		}
+		delete(clients, clientID)
+		clientsMu.Unlock()
 
-	hub.register <- ws
+		// 2. SMALL PAUSE: allow the old goroutine to exit the select loop
+		time.Sleep(50 * time.Millisecond)
+
+		clientsMu.Lock()
+	}
 
 	newClient := &Client{
 		Conn: ws,
 		ID:   clientID,
 		Done: make(chan struct{}),
-	}
-	if _, exists := clients[clientID]; exists {
-		log.Printf("Client %s already connected — replacing connection", clientID)
-		DisconnectClient(clientID)
 	}
 	clients[clientID] = newClient
 	clientsMu.Unlock()
@@ -279,7 +297,6 @@ func ShutdownAllClients() {
 func HandleClientRead(msg redis.Message) {
 	var quotes map[string]MixedQuote
 	payloadBytes := []byte(msg.Payload)
-	fmt.Println(payloadBytes)
 	if err := json.Unmarshal(payloadBytes, &quotes); err != nil {
 		// If it’s not a quotes payload, skip or handle other message types here
 		log.Printf("Invalid quotes JSON from Python Client: %v", err)
@@ -446,8 +463,6 @@ func processWrite(t time.Time, client *Client, balanceDB, openDB, priceDB *sql.D
 	var cash float64
 	var balance float64
 
-	date := TodayDate()
-
 	balance = 10000.0
 	cash = 10000.0
 
@@ -517,7 +532,7 @@ func processWrite(t time.Time, client *Client, balanceDB, openDB, priceDB *sql.D
 	insertData := `INSERT OR REPLACE INTO Balance (timestamp, balance, cash) VALUES (?, ?, ?)`
 	_, err = balanceDB.Exec(insertData, time.Now().Unix(), balance, cash)
 	if err != nil {
-		log.Printf("Failed to insert initial balance into table %s: %v", date, err)
+		log.Printf("Failed to insert initial balance into table: %v", err)
 	}
 	message := StockPriceData{
 		Symbol:    "balance",

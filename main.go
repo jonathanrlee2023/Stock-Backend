@@ -17,9 +17,9 @@ var ids []string
 var ctx = context.Background()
 
 func main() {
-	stop := make(chan os.Signal, 1)
-	// Check if ctrl C is pressed
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	// cancels on ctrl c
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
 
 	priceDB, err := initDB("./PriceData.db")
 	openDB, err := initDB("./Open.db")
@@ -41,9 +41,9 @@ func main() {
 
 	// SAFETY CHECK: Wait for Redis to actually be ready
 	// Sometimes the container is "Up" but the database inside is still booting
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := rdb.Ping(ctx).Err(); err != nil {
+	pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer pingCancel()
+	if err := rdb.Ping(pingCtx).Err(); err != nil {
 		log.Fatalf("Redis started but not responding: %v", err)
 	}
 
@@ -88,11 +88,6 @@ func main() {
 		totalShutdown(server)
 	})
 
-	defer openDB.Close()
-	defer balanceDB.Close()
-	defer priceDB.Close()
-	defer closeDB.Close()
-	defer trackerDB.Close()
 	// Run server in a goroutine
 	go func() {
 		fmt.Println("Server is running on port 8080...")
@@ -101,10 +96,16 @@ func main() {
 		}
 	}()
 
-	<-stop
+	<-ctx.Done()
+
+	defer openDB.Close()
+	defer balanceDB.Close()
+	defer priceDB.Close()
+	defer closeDB.Close()
+	defer trackerDB.Close()
+
 	totalShutdown(server)
 	utils.StopRedisContainer()
-
 }
 
 func totalShutdown(server *http.Server) {
@@ -115,10 +116,9 @@ func totalShutdown(server *http.Server) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {
-		log.Fatalf("Server Shutdown Failed:%+v", err)
+		log.Printf("Server Shutdown Failed:%+v", err)
 	}
 	log.Println("Server exited")
-	os.Exit(0)
 }
 
 // Runs a function daily at a specified time
