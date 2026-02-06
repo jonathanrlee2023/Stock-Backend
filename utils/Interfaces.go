@@ -8,11 +8,12 @@ import (
 )
 
 type Client struct {
-	Conn *websocket.Conn
-	ID   string // unique identifier for this client (e.g., user ID, session ID)
-	Mu   sync.Mutex
-	Done chan struct{}
-	once sync.Once
+	Conn      *websocket.Conn
+	ID        string // unique identifier for this client (e.g., user ID, session ID)
+	Mu        sync.Mutex
+	Done      chan struct{}
+	once      sync.Once
+	IsWriting bool
 }
 
 func (c *Client) Close() {

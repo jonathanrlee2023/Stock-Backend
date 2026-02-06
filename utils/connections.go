@@ -70,6 +70,7 @@ func ListenToRedis(ctx context.Context, rdb *redis.Client, hub *Hub) {
 
 	for msg := range ch {
 		// This sends the Python data directly to the Hub's broadcast loop
+		fmt.Println("Called")
 		HandleClientRead(*msg)
 	}
 }
@@ -218,49 +219,15 @@ func WebsocketConnectHandler(hub *Hub, openDB, balanceDB, priceDB, trackerDB *sq
 
 	log.Printf("Client connected: %s", clientID)
 
-	// Start reader and writer goroutines
-	if clientID == "PYTHON_CLIENT" {
-		SendInitialPositions(openDB, trackerDB, clients, clientID, w, r)
-	}
-
 	if clientID == "STOCK_CLIENT" {
+		fmt.Println(priceDB == nil)
+		clients[clientID].IsWriting = false
 		SendOpenPositions(balanceDB, openDB, priceDB, trackerDB, clients)
 		go HandleClientWrite(newClient, openDB, balanceDB, priceDB)
 	}
 
 	<-newClient.Done
 
-}
-
-func SendInitialPositions(openDB, trackerDB *sql.DB, clients map[string]*Client, clientID string, w http.ResponseWriter, r *http.Request) {
-	var optionSymbols []OptionStreamRequest
-	var stockSymbols []StockStreamRequest
-	optionSymbols, stockSymbols = SendTrackerSymbols(trackerDB, openDB)
-	if optionSymbols != nil {
-		optionMsg, err := json.Marshal(optionSymbols)
-		if err != nil {
-			log.Printf("Error Marshalling: %v", err)
-			return
-		}
-
-		err = SendToClient(clients[clientID], optionMsg)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
-	if stockSymbols != nil {
-		stockMsg, err := json.Marshal(stockSymbols)
-		if err != nil {
-			log.Printf("Error Marshalling: %v", err)
-			return
-		}
-		err = SendToClient(clients[clientID], stockMsg)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
 }
 
 func DisconnectClient(clientID string) {
@@ -348,8 +315,7 @@ func HandleClientRead(msg redis.Message) {
 			log.Printf("Unrecognized quote type for %s: %+v", symbol, q)
 		}
 	}
-	fmt.Println("Received", stockPrices)
-	fmt.Println("Received", optionPrices)
+
 	// Send both payloads as two JSON arrays
 	client := clients["STOCK_CLIENT"]
 	if client == nil {
@@ -365,22 +331,40 @@ func HandleClientRead(msg redis.Message) {
 		}
 		return SendToClient(client, msg)
 	}
-
-	if err := send(optionPrices); err != nil {
-		errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-		_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
-		return
+	if len(optionPrices) > 0 {
+		if err := send(optionPrices); err != nil {
+			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
+			_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
+			return
+		}
 	}
-
-	if err := send(stockPrices); err != nil {
-		errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-		_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
-		return
+	if len(stockPrices) > 0 {
+		if err := send(stockPrices); err != nil {
+			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
+			_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
+			return
+		}
 	}
 }
 
 // Incremently writes balance to the Frontend
 func HandleClientWrite(client *Client, openDB, balanceDB, priceDB *sql.DB) {
+	fmt.Println(priceDB == nil)
+	client.Mu.Lock()
+	// If already writing, just unlock and leave
+	if client.IsWriting {
+		client.Mu.Unlock()
+		return
+	}
+
+	// Otherwise, set the flag and start the loop
+	client.IsWriting = true
+	client.Mu.Unlock()
+	defer func() {
+		client.Mu.Lock()
+		client.IsWriting = false
+		client.Mu.Unlock()
+	}()
 	now := time.Now()
 	wait := 15*time.Second - (time.Duration(now.Second()%15)*time.Second + time.Duration(now.Nanosecond()))
 	timer := time.NewTimer(wait)
@@ -463,6 +447,11 @@ func StartStockStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request)
 
 // Write to a specific client the most recent balance
 func processWrite(t time.Time, client *Client, balanceDB, openDB, priceDB *sql.DB) {
+	priceDB.SetConnMaxLifetime(0)
+	if priceDB == nil {
+		log.Println("Error: Pricedb isnil")
+		return
+	}
 	var cash float64
 	var balance float64
 
@@ -481,6 +470,8 @@ func processWrite(t time.Time, client *Client, balanceDB, openDB, priceDB *sql.D
 		return
 	}
 
+	fmt.Println("Timestamp:", timestamp, "Balance:", balance, "Cash:", cash)
+
 	rows, err := openDB.Query("SELECT * FROM OpenPositions")
 	if err == sql.ErrNoRows {
 		fmt.Println("No Open Positions Yet")
@@ -492,14 +483,18 @@ func processWrite(t time.Time, client *Client, balanceDB, openDB, priceDB *sql.D
 	tempPositionValue := 0.0
 
 	for rows.Next() {
+		fmt.Println("Processing Open Position")
 		var id string
+		var price float64
 		var amount int64
-		if err := rows.Scan(&id, &amount); err != nil {
+		if err := rows.Scan(&id, &price, &amount); err != nil {
+			fmt.Println("Scan failed:", err)
 			continue
 		}
 
 		var mark float64
 		if len(id) > 6 {
+			fmt.Println("Option ID:", id)
 			var ts int64
 			var sym string
 			var b, a, l, h, iv, d, g, th, v float64
@@ -510,27 +505,33 @@ func processWrite(t time.Time, client *Client, balanceDB, openDB, priceDB *sql.D
 				tempPositionValue += (mark * float64(amount) * 100)
 			}
 		} else {
-			var ts, bs, as int64
-			var sym string
-			var b, a, l float64
-			err = priceDB.QueryRow(`SELECT * FROM Stocks WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1`, id).
-				Scan(&ts, &sym, &mark, &b, &a, &l, &bs, &as)
+			fmt.Println("Stock ID:", id)
+
+			err = priceDB.QueryRow(`SELECT mark FROM Stocks WHERE symbol = ? ORDER BY rowid DESC LIMIT 1`, id).Scan(&mark)
+
+			if err != nil {
+				log.Printf("Price lookup failed for %s: %v", id, err)
+			}
 
 			if err == nil {
 				tempPositionValue += (mark * float64(amount))
 			}
 		}
+		log.Printf("ID: %s | Amount: %d | Mark: %f", id, amount, mark)
 
 		if err != nil && err != sql.ErrNoRows {
 			log.Printf("Price lookup failed for %s: %v", id, err)
 		}
 	}
+	fmt.Println("Temp Position Value:", tempPositionValue)
 
 	tempBalance := cash + tempPositionValue
 	balance = tempBalance
 	if err := rows.Err(); err != nil {
 		log.Println("Rows iteration error:", err)
 	}
+
+	fmt.Println("Balance:", balance, "Cash:", cash)
 
 	insertData := `INSERT OR REPLACE INTO Balance (timestamp, balance, cash) VALUES (?, ?, ?)`
 	_, err = balanceDB.Exec(insertData, time.Now().Unix(), balance, cash)

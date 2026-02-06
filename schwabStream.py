@@ -12,7 +12,9 @@ import stream_func
 import datetime
 import asyncio
 import websockets
+from stream_func import parse_option
 
+tasks_started = False
 stream_started = False
 stream_lock = asyncio.Lock()
 tickers = []
@@ -173,8 +175,10 @@ async def write_to_db():
         await db.commit()
 
         while True:
-            await asyncio.sleep(60 - time.time() % 60)
-            timestamp = int(time.time())
+            wait_time = 15 - (time.time() % 15)
+            if wait_time < 0.1: wait_time = 15
+            await asyncio.sleep(wait_time)
+            timestamp = int(time.time())    
             
             snapshot = {name: stream_func.new_data[name] for name in stream_func.file_names}
 
@@ -213,9 +217,11 @@ async def write_to_db():
                 )
 
             await db.commit()
+            print("Wrote to DB")
     
     
 async def broadcast_to_redis():
+    print("Called")
     new_data = {
     "NVDA": {
         "Symbol": "NVDA",
@@ -239,7 +245,7 @@ async def broadcast_to_redis():
         "Vega": 0.12,
         "Mark": 8.52
     }
-}
+    }
     try:
         if await r.ping():
             print("✅ Redis Connection Successful!")
@@ -249,15 +255,50 @@ async def broadcast_to_redis():
         print("Stream is closed.")
         await r.publish("Stream_Channel", json.dumps(new_data))
     while True:
-        await asyncio.sleep(15 - time.time() % 15)
-        timestamp = int(time.time())        
+        wait_time = 15 - (time.time() % 15)
+        if wait_time < 0.1: wait_time = 15
+        await asyncio.sleep(wait_time)
 
         if stream_func.file_names:
             snapshot = {name: stream_func.new_data[name] for name in stream_func.file_names}
-            # Publish to Go!
             await r.publish("Stream_Channel", json.dumps(snapshot))
-        else:
-            continue
+
+async def update_tickers_from_db(streamer):
+    async with aiosqlite.connect("Tracker.db") as db:
+        async with db.execute("SELECT id FROM tracker") as cursor:
+            rows = await cursor.fetchall()
+            ticker_list = [row[0] for row in rows]
+            
+    if ticker_list:
+        for ticker in ticker_list:
+            if len(ticker) > 8: # Option logic
+                parsed = parse_option(ticker)
+                if parsed:
+                    asyncio.create_task(
+                                stream_func.start_options_stream(
+                                    streamer=streamer,
+                                    ticker=parsed["ticker"],
+                                    price=parsed["price"],
+                                    day=parsed["day"],
+                                    month=parsed["month"],
+                                    year=parsed["year"],
+                                    type=parsed["type"],
+                                )
+                            )
+            else: # Stock logic
+                asyncio.create_task(
+                            stream_func.start_stock_stream(
+                                streamer=streamer,
+                                ticker=ticker
+                            )
+                        )
+
+        print(f"Subscribing to: {ticker_list}")
+        
+    else:
+        print("No tickers found in tracker.db")
+
+
 
 def is_weekday_business_hours_central():
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -274,6 +315,10 @@ def is_weekday_business_hours_central():
     return start <= now_central <= end
 
 async def main():
+    global tasks_started
+    if tasks_started:
+        return
+    tasks_started = True
     load_dotenv()
     appKey = os.getenv("appKey")
     appSecret = os.getenv("appSecret")
@@ -283,6 +328,7 @@ async def main():
 
     print("Starting background tasks...")
     tasks = [
+        asyncio.create_task(update_tickers_from_db(streamer)),
         asyncio.create_task(broadcast_to_redis()),
         asyncio.create_task(listen_for_messages(streamer)),
         asyncio.create_task(write_to_db()),

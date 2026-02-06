@@ -81,3 +81,26 @@ def receive_data(response):
                 if symbol not in file_names:
                     file_names.append(symbol)
                 new_data[symbol].update(labeled_data[symbol]) 
+
+def parse_option(symbol):
+    # Pattern: (Ticker)_(YY)(MM)(DD)(Type)(Strike)
+    pattern = r"([A-Z]+)_(\d{2})(\d{2})(\d{2})([CP])(\d{8})"
+    match = re.match(pattern, symbol)
+    
+    if match:
+        ticker, year, month, day, option_type, strike_raw = match.groups()
+        
+        # Format the values
+        full_year = f"20{year}"
+        price = float(strike_raw) / 1000.0
+        readable_type = "Call" if option_type == "C" else "Put"
+        
+        return {
+            "ticker": ticker,
+            "year": full_year,
+            "month": month,
+            "day": day,
+            "type": readable_type,
+            "price": price
+        }
+    return None

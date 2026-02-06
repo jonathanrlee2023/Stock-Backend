@@ -22,9 +22,21 @@ func main() {
 	defer cancel()
 
 	priceDB, err := initDB("./PriceData.db")
+	if err != nil {
+		log.Fatalf("Error initializing database: %v", err)
+	}
 	openDB, err := initDB("./Open.db")
+	if err != nil {
+		log.Fatalf("Error initializing database: %v", err)
+	}
 	balanceDB, err := initDB("./Balance.db")
+	if err != nil {
+		log.Fatalf("Error initializing database: %v", err)
+	}
 	closeDB, err := initDB("./Close.db")
+	if err != nil {
+		log.Fatalf("Error initializing database: %v", err)
+	}
 	trackerDB, err := initDB("./Tracker.db")
 
 	if err != nil {
@@ -163,7 +175,8 @@ func initDB(path string) (*sql.DB, error) {
 	}
 
 	// Configure for high-concurrency and reliability
-	db.SetMaxOpenConns(1) // Vital for SQLite
+	db.SetMaxOpenConns(10) // Allow multiple readers
+	db.SetMaxIdleConns(5)  // Keep a few connections ready
 	db.SetConnMaxIdleTime(30 * time.Second)
 
 	var lastErr error

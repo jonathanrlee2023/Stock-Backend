@@ -103,16 +103,7 @@ func OpenPositionHandler(openDB, balanceDB *sql.DB, w http.ResponseWriter, r *ht
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
-	createTableSQL := `
-		CREATE TABLE IF NOT EXISTS OpenPositions (
-			id STRING PRIMARY KEY,
-			price REAL NOT NULL,
-			amount INTEGER NOT NULL
-		);`
-	_, err = openDB.Exec(createTableSQL)
-	if err != nil {
-		log.Printf("Failed to create table: %v", err)
-	}
+
 	err = openDB.QueryRow("SELECT price, amount FROM OpenPositions WHERE id = ?", newPosition.ID).Scan(&extPrice, &extAmount)
 	updatedAmount := newPosition.Amount
 	updatedPrice := newPosition.Price
@@ -143,8 +134,12 @@ func OpenPositionHandler(openDB, balanceDB *sql.DB, w http.ResponseWriter, r *ht
 	if len(newPosition.ID) > 6 {
 		tradeCost *= 100 // Options contract multiplier
 	}
+	fmt.Println("Balance:", balance, "Cash:", cash)
+
 	newCash := cash - tradeCost
 	newBalance := balance
+
+	fmt.Println("New Balance:", newBalance, "New Cash:", newCash)
 
 	insertData := `INSERT INTO Balance (timestamp, balance, cash) VALUES (?, ?, ?)`
 	_, err = balanceDB.Exec(insertData, time.Now().Unix(), newBalance, newCash)
