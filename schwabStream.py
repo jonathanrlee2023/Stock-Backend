@@ -20,6 +20,7 @@ r = aioredis.Redis(host='localhost', port=6380, db=0)
 
 async def listen_for_messages(streamer):
     global stream_started
+    print("Listening for messages…")
     pubsub = r.pubsub()
     await pubsub.subscribe('Start_Stream')
     try:
