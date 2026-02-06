@@ -16,7 +16,7 @@ import websockets
 stream_started = False
 stream_lock = asyncio.Lock()
 tickers = []
-r = aioredis.Redis(host='localhost', port=6379, db=0)
+r = aioredis.Redis(host='localhost', port=6380, db=0)
 
 async def listen_for_messages(streamer):
     global stream_started

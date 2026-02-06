@@ -50,7 +50,7 @@ func NewHub() *Hub {
 
 func InitRedis() *redis.Client {
 	rdb := redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379", // Default Redis port
+		Addr:     "localhost:6380", // Default Redis port
 		Password: "",               // No password set by default
 		DB:       0,                // Use default DB
 	})
@@ -141,7 +141,7 @@ func StartRedisContainer() {
 	exec.Command(path, "rm", "-f", "redis-server").Run()
 
 	// 3. Now try to run a fresh one
-	runCmd := exec.Command(path, "run", "-d", "--name", "redis-server", "-p", "6379:6379", "redis")
+	runCmd := exec.Command(path, "run", "-d", "--name", "redis-server", "-p", "6380:6379", "redis")
 	if err := runCmd.Run(); err != nil {
 		// If it STILL fails, it's almost certainly a port conflict on 6379
 		fmt.Printf("Critical Error: %v\n", err)
