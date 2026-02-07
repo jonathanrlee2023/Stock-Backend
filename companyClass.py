@@ -47,6 +47,14 @@ class Company:
         self.api_key = api_key
         self.rate_api_key = rate_api_key
         self.streamer = streamer
+
+        self.data = {
+            "income": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
+            "balance": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
+            "cash": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
+            "earnings": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
+            "overview": pd.DataFrame() # Overviews are usually 1 row
+        }
         
         # Placeholders for data that will be loaded asynchronously
         self.income_df = None
@@ -58,35 +66,65 @@ class Company:
     async def create(cls, ticker, api_key, rate_api_key, streamer):
         """Asynchronous factory to create and fully initialize the instance."""
         self = cls(ticker, api_key, rate_api_key, streamer)
+        await self.load_all_from_dbs()
         
         # 2. Run async I/O tasks
         # These will check the DBs, fetch if missing, and load into DataFrames
-        await asyncio.gather(
-            self.get_fundamentals(),
-            self.get_company_overviews()
-        )
+        if self.data["overview"].empty:
+            await asyncio.gather(
+                self.get_fundamentals(),
+                self.get_company_overviews()
+            )
+
+        await self.replace_with_usd()
+        self.reorder_df()
         
         # Load the specific annual data needed for DCF calculations
-        await self._load_data_from_dbs()
         self.price_at_report = await self.get_current_price()
-
+        self.income_df = self.data["income"]["annual"]
+        self.balance_df = self.data["balance"]["annual"]
+        self.cash_df = self.data["cash"]["annual"]
+        self.company_overview = self.data["overview"]
 
         # 3. Perform the Math (Sync tasks)
-        self.calc_fcf()
+        self.fcf, self.fcff, self.nwc = self.calc_fcf()
         self.wacc = self.calc_wacc()
         self.calc_forecast_metrics()
 
+        self.market_cap = self.company_overview["MarketCapitalization"].values[0]
         self.intrinsic_price, self.dividend_price = self.fcff_forecast()
         self.return_on_invested_capital = self.roic()
         self.peg = self.peg_ratio()
         self.sloan = self.sloan_ratio()
+        self.hist_growth, self.forecasted_growth, self.trailing_peg, self.forward_peg = self.analyze_peg()
 
 
         # Extract values from the loaded overview
-        await self._setup_analyst_ratings()
-        
-        # Save results back to DB if necessary
-        await self.save_values()
+        self._setup_analyst_ratings()
+        self.final_report = {
+            "market_cap": self.market_cap,
+            "peg": self.peg,
+            "sloan": self.sloan,
+            "roic": self.return_on_invested_capital,
+            "hist_growth": self.hist_growth,
+            "forecasted_growth": self.forecasted_growth,
+            "trailing_peg": self.trailing_peg,
+            "forward_peg": self.forward_peg,
+            "intrinsic_price": self.intrinsic_price,
+            "dividend_price": self.dividend_price,
+            "price_at_report": self.price_at_report,
+            "wacc": self.wacc,
+            "fcff": self.fcff,
+            "fcf": self.fcf,
+            "nwc": self.nwc,
+            "price_target": self.price_target,
+            "strong_buy": self.strong_buy,
+            "buy": self.buy,
+            "hold": self.hold,
+            "strong_sell": self.strong_sell,
+            "sell": self.sell
+        }
+
         
         return self
 
@@ -104,26 +142,20 @@ class Company:
         self.percent_buy = (self.buy + self.strong_buy) / self.total_ratings
         self.percent_hold = self.hold / self.total_ratings
         self.percent_sell = (self.sell + self.strong_sell) / self.total_ratings
-    async def _load_data_from_dbs(self):
-        """Helper to pull specifically 'annual' reports into the class attributes."""
-        # We use a helper function to read SQL into Pandas async
-        self.income_df = await self._read_sql_to_df("income_statement.db", "annual")
-        self.balance_df = await self._read_sql_to_df("balance_sheet.db", "annual")
-        self.cash_df = await self._read_sql_to_df("cash_flow.db", "annual")
 
-    async def _read_sql_to_df(self, db_file, report_type):
+    async def _read_sql_to_df(self, table_name, db_file, report_type):
         """Reads data from a specific fundamental DB."""
         local_engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}")
         async with local_engine.connect() as conn:
             result = await conn.execute(
-                text("SELECT * FROM data WHERE ticker = :t AND report_type = :r"),
+                text(f"SELECT * FROM {table_name} WHERE ticker = :t AND report_type = :r"),
                 {"t": self.ticker, "r": report_type}
             )
             df = pd.DataFrame(result.fetchall(), columns=result.keys())
         await local_engine.dispose()
         return df
 
-    async def get_current_price(self):
+    async def get_current_price(self) -> float:
         """Asynchronously fetches price data using the DataLoader."""
         self.unix_timestamp() # Sets self.timestamp
         
@@ -153,7 +185,7 @@ class Company:
             The Unix timestamp of the latest fiscal date ending
         """
         income_df = self.income_df
-        timestamp = str(income_df["fiscalDateEnding"].values[-1]).split(' ')[0]        
+        timestamp = str(income_df["date"].values[-1]).split(' ')[0]        
         self.timestamp =  int(time.mktime(time.strptime(timestamp, '%Y-%m-%d')))
 
     async def get_fundamentals(self):
@@ -164,13 +196,17 @@ class Company:
 
         async with httpx.AsyncClient() as client:
             for category in categories:
+                if category == "INCOME_STATEMENT": table_name = "income"
+                elif category == "BALANCE_SHEET": table_name = "balance"
+                elif category == "CASH_FLOW": table_name = "cash"
+                elif category == "EARNINGS": table_name = "earnings"
                 # 1. Define the specific DB for this category
                 db_name = f"{category.lower()}.db"
                 engine = create_async_engine(f"sqlite+aiosqlite:///{db_name}")
 
                 # 2. Check if this ticker already has data in this specific DB
                 # Note: We check a table named 'data' inside that specific DB
-                already_exists = await self._check_db_for_ticker(engine, ticker)
+                already_exists = await self._check_db_for_ticker(table_name,engine, ticker)
                 
                 if not already_exists:
                     print(f"Fetching {category} for {ticker}...")
@@ -231,18 +267,69 @@ class Company:
                         return False
                 
                 await engine.dispose() # Clean up connection for this specific DB file
-
-        if is_new_data_added:
-            self.replace_with_usd()
-            self.reorder_df()
-
+            else:
+                await self.load_all_from_dbs()
         return True
+    async def load_all_from_dbs(self):
+        """
+        Checks all 5 databases and loads existing data into self.data structure.
+        Separates quarterly and annual data for financials.
+        """
+        ticker = self.ticker
+        
+        # Map dictionary keys to their specific database filenames
+        db_map = {
+            "income": "income_statement.db",
+            "balance": "balance_sheet.db",
+            "cash": "cash_flow.db",
+            "earnings": "earnings.db"
+        }
 
-    async def _check_db_for_ticker(self, engine, ticker):
+        # 1. Load the 4 Financial/Time-Series Databases
+        for cat_key, db_file in db_map.items():
+            if not os.path.exists(db_file):
+                continue
+                
+            engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}")
+            async with engine.connect() as conn:
+                try:
+                    result = await conn.execute(
+                        text(f"SELECT * FROM {cat_key} WHERE ticker = :t"), {"t": ticker}
+                    )
+                    df = pd.DataFrame(result.fetchall(), columns=result.keys())
+                    
+                    if not df.empty:
+                        # Separate Quarterly and Annual into the internal dict
+                        # Use .copy() to ensure they are independent DataFrames in memory
+                        self.data[cat_key]["annual"] = df[df["report_type"] == "annual"].copy()
+                        self.data[cat_key]["quarterly"] = df[df["report_type"] == "quarterly"].copy()
+                        print(f"Loaded {cat_key} data from DB for {ticker}")
+                except Exception as e:
+                    print(f"Database table check failed for {db_file}: {e}")
+            await engine.dispose()
+
+        # 2. Load the Company Overview (The 5th Database)
+        overview_db = "company_overviews.db"
+        if os.path.exists(overview_db):
+            engine = create_async_engine(f"sqlite+aiosqlite:///{overview_db}")
+            async with engine.connect() as conn:
+                try:
+                    # Note: Overview uses 'Symbol' instead of 'ticker' per your current schema
+                    result = await conn.execute(
+                        text(f"SELECT * FROM Overview WHERE Symbol = :t"), {"t": ticker}
+                    )
+                    overview_df = pd.DataFrame(result.fetchall(), columns=result.keys())
+                    if not overview_df.empty:
+                        self.data["overview"] = overview_df
+                        print(f"Loaded Overview from DB for {ticker}")
+                except Exception:
+                    pass
+            await engine.dispose()
+    async def _check_db_for_ticker(self, table_name, engine, ticker):
         async with engine.connect() as conn:
             try:
                 result = await conn.execute(
-                    text("SELECT 1 FROM data WHERE ticker = :ticker LIMIT 1"),
+                    text(f"SELECT 1 FROM {table_name} WHERE ticker = :ticker LIMIT 1"),
                     {"ticker": ticker}
                 )
                 return result.fetchone() is not None
@@ -332,14 +419,14 @@ class Company:
         """Helper to populate self.company_overview from the DB"""
         async with overview_engine.connect() as conn:
             result = await conn.execute(
-                text("SELECT * FROM data WHERE Symbol = :symbol"),
+                text("SELECT * FROM Overview WHERE Symbol = :symbol"),
                 {"symbol": self.ticker}
             )
             row = result.fetchone()
             if row:
                 self.company_overview = pd.DataFrame([row._asdict()])
 
-    def calc_fcf(self):
+    def calc_fcf(self) -> tuple[float, float, float]:
         """
         Calculate the Free Cash Flow (FCF) and Free Cash Flow to the Firm (FCFF) for a given ticker.
 
@@ -357,10 +444,7 @@ class Company:
         None
         """
         ticker = self.ticker
-        api_key = self.api_key
-        if not os.path.exists(f"{ticker}_annual_CASH_FLOW.csv"):
-            self.get_fundamentals(ticker, api_key)
-            self.reorder_df(ticker)
+        
         cash_df = self.cash_df
         income_df = self.income_df
         cash_df["FCF"] = (cash_df["operatingCashflow"] - cash_df["capitalExpenditures"]).round(2)
@@ -370,7 +454,7 @@ class Company:
             * 100
         ).round(2)
 
-        balance_df = pd.read_csv(f"{ticker}_annual_BALANCE_SHEET.csv")
+        balance_df = self.balance_df
         cash_df["FCF_Per_Share"] = (cash_df["FCF"] / balance_df["commonStockSharesOutstanding"]).round(2)
 
         income_df["effectiveTaxRate"] = (
@@ -417,45 +501,39 @@ class Company:
             f"ΔNWC: {balance_df['deltaNWC'].iloc[-1]}"
         )
 
+
         self.cash_df = cash_df
         self.income_df = income_df
         self.balance_df = balance_df
 
-        return
+        return cash_df['FCF'].iloc[-1], cash_df['FCFF'].iloc[-1], balance_df['deltaNWC'].iloc[-1]
 
-    def reorder_df(self):
+    def reorder_data(self):
         """
-        Reorders the annual and quarterly financial dataframes for a given ticker.
-
-        Parameters
-        ----------
-        ticker : str
-            The ticker symbol of the company.
-
-        Returns
-        -------
-        None
+        Sorts all DataFrames in the memory dictionary by date.
+        Calculations like DCF and ROIC rely on chronological order.
         """
-
-        ticker = self.ticker
-        categories = ["INCOME_STATEMENT", "BALANCE_SHEET", "CASH_FLOW", "EARNINGS"]
+        # Categories mapped to our dictionary keys
+        categories = ["income", "balance", "cash", "earnings"]
+        
         for category in categories:
-            df = pd.read_csv(f"{ticker}_annual_{category}.csv")
-            df["fiscalDateEnding"] = pd.to_datetime(
-                df["fiscalDateEnding"],
-                errors="coerce"
-            )
-            df = df.sort_values("fiscalDateEnding", ascending=True)
-            df.to_csv(f"{ticker}_annual_{category}.csv", index=False)
-        for category in categories:
-            df = pd.read_csv(f"{ticker}_quarterly_{category}.csv")
-            df["fiscalDateEnding"] = pd.to_datetime(
-                df["fiscalDateEnding"],
-                errors="coerce"
-            )
-            df = df.sort_values("fiscalDateEnding", ascending=True)
-            df.to_csv(f"{ticker}_quarterly_{category}.csv", index=False)
-        return
+            # Check both annual and quarterly frequencies
+            for freq in ["annual", "quarterly"]:
+                df = self.data.get(category, {}).get(freq)
+                
+                if df is not None and not df.empty:
+                    # 1. Ensure the date column is in datetime format
+                    # We use 'date' because we standardized it during fetch
+                    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+                    
+                    # 2. Sort ascending (Oldest to Newest)
+                    # This ensures iloc[-1] is the most recent period for calculations
+                    df.sort_values("date", ascending=True, inplace=True)
+                    
+                    # 3. Reset index to keep iloc clean
+                    df.reset_index(drop=True, inplace=True)
+                    
+        print(f"Data reordered chronologically for {self.ticker}")
 
     def calc_wacc(self) -> float:
         """
@@ -485,10 +563,6 @@ class Company:
         None
         """
         ticker = self.ticker
-        api_key = self.api_key
-        if not os.path.exists(f"{ticker}_annual_CASH_FLOW.csv"):
-            self.get_fundamentals(ticker, api_key)
-            self.reorder_df(ticker)
         
         income_df = self.income_df
         balance_df = self.balance_df
@@ -854,7 +928,7 @@ class Company:
         return sloan_ratio
 
 
-    def analyze_peg(self):
+    def analyze_peg(self) -> tuple[float, float, float | None, float | None]:
         company_overview = self.company_overview
         income_df = self.income_df
         cash_df = self.cash_df
@@ -900,76 +974,101 @@ class Company:
             forward_peg = None
             print("--- Forward PEG Analysis Failed: Projected Growth is less than 0% ---")
 
-        # 4. Print Diagnosis
-        print(f"\n--- PEG Analysis for {ticker} ---")
-        if trailing_peg:
-            print(f"Trailing PEG: {trailing_peg:.2f} (Based on {hist_g_int:.1f}% Hist Growth)")
+        return historical_growth, projected_growth, trailing_peg, forward_peg
+
+    async def replace_with_usd(self):
+        # API key for the exchange rate service
+        rate_url = f"https://v6.exchangerate-api.com/v6/{self.rate_api_key}/latest/USD"
         
-        if forward_peg:
-            print(f"Forward PEG:  {forward_peg:.2f} (Based on {proj_g_int:.1f}% Proj Growth)")
-            
-            # The Interpretation Logic
-            if trailing_peg and forward_peg < trailing_peg:
-                print(">> SIGNAL: Bullish Acceleration (Future looks cheaper than Past)")
-            elif trailing_peg and forward_peg > trailing_peg * 1.5:
-                print(">> SIGNAL: Deceleration Warning (Growth is slowing fast)")
-            elif forward_peg < 1.0:
-                print(">> SIGNAL: Undervalued Growth Stock")
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(rate_url)
+            rates_dict = resp.json().get("conversion_rates", {})
 
-    def replace_with_usd(self):
-        ticker = self.ticker
-        api_key = self.rate_api_key
-        rates = requests.get(f'https://v6.exchangerate-api.com/v6/{api_key}/latest/USD').json()
+        # We iterate through our memory dictionary
+        for category in ["income", "balance", "cash"]:
+            for freq in ["annual", "quarterly"]:
+                df = self.data[category][freq]
+                if df.empty: continue
 
-        rates_dict = rates['conversion_rates']
+                # Create conversion factors: 1.0 for USD, specific rate for others
+                # This handles companies like Toyota (JPY) or ASML (EUR)
+                conversion_factors = df['reportedCurrency'].map(rates_dict).fillna(1)
 
-        files = glob.glob(f"{ticker}*.db")
+                # Identify numeric columns only
+                protected_cols = ['ticker', 'report_type', 'date', 'reportedCurrency']
+                numeric_cols = df.select_dtypes(include=['number']).columns
+                cols_to_convert = [c for c in numeric_cols if c not in protected_cols]
 
-        protected_cols = [
-            'ebitMargin', 'profitMargin', 'taxRate', 'revenueGrowth', 
-            'currentRatio', 'inventoryTurnover', 'daPctRevenue', 'nwcRatio'
-        ]
-        for file in files:
-            if file == "company_overviews.csv":
-                continue
-            df = pd.read_csv(file)
-            if 'reportedCurrency' not in df.columns:
-                continue
-            # IMPROVEMENT: Warn on unknown currencies
-            unique_currencies = df['reportedCurrency'].unique()
-            for curr in unique_currencies:
-                if curr != 'USD' and curr not in rates_dict:
-                    print(f"WARNING: Currency '{curr}' not found in API. Treating as USD (1:1). Result will be WRONG.")
-            conversion_factors = df['reportedCurrency'].map(rates_dict).fillna(1)
-
-            # 3. Identify only the columns that should be converted (numeric columns)
-            # We exclude the 'reportedCurrency' and 'date' columns
-            all_numeric = df.select_dtypes(include=['number']).columns
-            cols_to_convert = [c for c in all_numeric if c not in protected_cols]
-
-            df[cols_to_convert] = df[cols_to_convert].div(conversion_factors, axis=0).round(4)
-
-            # 5. Standardize and save
-            df['reportedCurrency'] = 'USD'
-            df.to_csv(file, index=False)
-            print(f"Standardized {file} to USD")
-        return
-
-            
-    def save_values(self):
-        overview_df = pd.read_csv("company_overviews.csv")
-    
-        # Use .loc to ensure you are targeting the specific row in the main DataFrame
-        mask = overview_df["Symbol"] == self.ticker
-        if not overview_df[mask].empty:
-            # Update the columns using your self.company_overview data
-            for col in self.company_overview.columns:
-                overview_df.loc[mask, col] = self.company_overview[col].values[0]
+                # Vectorized conversion (Fast)
+                df[cols_to_convert] = df[cols_to_convert].div(conversion_factors, axis=0).round(4)
+                df['reportedCurrency'] = 'USD'
                 
-        overview_df.to_csv("company_overviews.csv", index=False)
+        print(f"Currency standardization complete for {self.ticker}")
 
-        self.income_df.to_csv(f"{self.ticker}_annual_INCOME_STATEMENT.csv", index=False)
-        self.balance_df.to_csv(f"{self.ticker}_annual_BALANCE_SHEET.csv", index=False)
-        self.cash_df.to_csv(f"{self.ticker}_annual_CASH_FLOW.csv", index=False)
+    
+    async def save_all_to_db(self):
+        """
+        Final Flush: Persists data from the memory dictionary into 5 separate DB files.
+        Handles 'Extra Columns' in annual data via automatic schema migration.
+        """
+        # Map dictionary keys to their specific database filenames
+        db_map = {
+            "income": "income_statement.db",
+            "balance": "balance_sheet.db",
+            "cash": "cash_flow.db",
+            "earnings": "earnings.db"
+        }
 
-        return
+        # 1. Save the 4 Financial Databases
+        for cat_key, db_file in db_map.items():
+            annual_df = self.data[cat_key]["annual"]
+            quarterly_df = self.data[cat_key]["quarterly"]
+            
+            # Combine into one DF for storage
+            df_to_save = pd.concat([annual_df, quarterly_df], ignore_index=True)
+            if df_to_save.empty:
+                continue
+
+            engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}")
+            await self._upsert_to_database(engine, df_to_save, cat_key)
+            await engine.dispose()
+
+        # 2. Save the Company Overview Database (The 5th DB)
+        # This includes your final target price, WACC, and other calculated metrics
+        if not self.data["overview"].empty:
+            # Update overview DF with the final calculated class attributes
+            self.data["overview"]["intrinsic_price"] = self.intrinsic_price
+            self.data["overview"]["wacc"] = self.wacc
+            self.data["overview"]["roic"] = self.return_on_invested_capital
+            self.data["overview"]["timestamp"] = self.timestamp
+            
+            overview_engine = create_async_engine("sqlite+aiosqlite:///company_overviews.db")
+            # For overviews, the PK is 'Symbol' (Capitalized)
+            await self._upsert_to_database(overview_engine, self.data["overview"], "Overview", pk_col="Symbol")
+            await overview_engine.dispose()
+
+    async def _upsert_to_database(self, engine, df, table_name, pk_col="ticker"):
+        """Helper to handle Schema Evolution and prevent duplicates."""
+        async with engine.begin() as conn:
+            # A. Schema Migration: Check for new columns (e.g., your annual calc columns)
+            existing_cols_res = await conn.execute(text(f"PRAGMA table_info({table_name})"))
+            existing_cols = [row[1] for row in existing_cols_res.fetchall()]
+            
+            if existing_cols:
+                for col in df.columns:
+                    if col not in existing_cols:
+                        if col == "reportedCurrency" or col == "report_type" or col == "reportedCurrency":
+                            await conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {col} TEXT"))
+                        # SQLite doesn't support multiple columns in one ALTER, so we loop
+                        else: 
+                            await conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {col} REAL"))
+
+            # B. Clean Slate: Remove old data for this ticker before appending the new 'Enriched' version
+            # This prevents duplicate rows when you re-run the same stock.
+            await conn.execute(text(f"DELETE FROM {table_name} WHERE {pk_col} = :t"), {"t": self.ticker})
+            
+            # C. Save
+            def sync_save(sync_conn):
+                df.to_sql(table_name, sync_conn, if_exists="append", index=False)
+            
+            await conn.run_sync(sync_save)

@@ -73,19 +73,26 @@ func InitRedis() *redis.Client {
 	return rdb
 }
 
-func ListenToRedis(ctx context.Context, rdb *redis.Client, hub *Hub) {
-	pubsub := rdb.Subscribe(ctx, "Stream_Channel")
+func ListenToRedis(ctx context.Context, rdb *redis.Client, hub *Hub, channel string) {
+	pubsub := rdb.Subscribe(ctx, channel)
 	ch := pubsub.Channel()
-
-	for msg := range ch {
-		// This sends the Python data directly to the Hub's broadcast loop
-		fmt.Println("Called")
-		HandleClientRead(*msg)
+	if channel == "Stream_Channel" {
+		for msg := range ch {
+			// This sends the Python data directly to the Hub's broadcast loop
+			fmt.Println("Called")
+			HandleClientRead(*msg)
+		}
+	} else if channel == "Company_Channel" {
+		for msg := range ch {
+			// This sends the Python data directly to the Hub's broadcast loop
+			fmt.Println("Called")
+			HandleCompanyRead(*msg)
+		}
 	}
 }
 
-func SendToRedis(data []byte, ctx context.Context, rdb *redis.Client) error {
-	err := rdb.Publish(ctx, "Start_Stream", data).Err()
+func SendToRedis(data []byte, ctx context.Context, rdb *redis.Client, channel string) error {
+	err := rdb.Publish(ctx, channel, data).Err()
 	if err != nil {
 		return fmt.Errorf("failed to publish to redis: %v", err)
 	}
@@ -272,6 +279,43 @@ func ShutdownAllClients() {
 	}
 }
 
+func CompanyHandler(rdb *redis.Client, w http.ResponseWriter, r *http.Request) {
+	ticker := r.URL.Query().Get("ticker")
+	company_request := Company_Request{Symbol: ticker}
+	msg, err := json.Marshal(company_request)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	SendToRedis(msg, context.Background(), rdb, "Company_Stream")
+}
+
+func HandleCompanyRead(msg redis.Message) {
+	var company Company_Stats
+	payloadBytes := []byte(msg.Payload)
+	if err := json.Unmarshal(payloadBytes, &company); err != nil {
+		// If it’s not a quotes payload, skip or handle other message types here
+		log.Printf("Invalid quotes JSON from Python Client: %v", err)
+		return
+	}
+	client := "STOCK_CLIENT"
+	if clients[client] == nil {
+		return
+	}
+	send := func(v interface{}) error {
+		msg, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		return SendToClient(clients[client], msg)
+	}
+	if err := send(company); err != nil {
+		errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
+		_ = clients[client].Conn.WriteMessage(websocket.TextMessage, errMsg)
+		return
+	}
+}
+
 // Receives and handles a websocket message from python client and sends data to frontend
 func HandleClientRead(msg redis.Message) {
 	var quotes map[string]MixedQuote
@@ -361,7 +405,7 @@ func StartOptionStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	err = SendToRedis(msg, context.Background(), rdb)
+	err = SendToRedis(msg, context.Background(), rdb, "Start_Stream")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -380,7 +424,7 @@ func StartStockStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		return
 	}
-	err = SendToRedis(msg, context.Background(), rdb)
+	err = SendToRedis(msg, context.Background(), rdb, "Start_Stream")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

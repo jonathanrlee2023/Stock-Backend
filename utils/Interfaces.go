@@ -40,6 +40,36 @@ type OptionStreamRequest struct {
 type StockStreamRequest struct {
 	Symbol string `json:"symbol"`
 }
+
+type Company_Stats struct {
+	MarketCap        float64  `json:"market_cap"`
+	PEG              *float64 `json:"peg"`
+	Sloan            *float64 `json:"sloan"`
+	ROIC             *float64 `json:"roic"`
+	HistGrowth       *float64 `json:"hist_growth"`
+	ForecastedGrowth *float64 `json:"forecasted_growth"`
+	// Using pointers (*float64) for PEG fields because your Python code
+	// specifically returns 'None' if growth is negative.
+	TrailingPEG    *float64 `json:"trailing_peg"`
+	ForwardPEG     *float64 `json:"forward_peg"`
+	IntrinsicPrice *float64 `json:"intrinsic_price"`
+	// DividendPrice can also be None if the company has no dividend history.
+	DividendPrice *float64 `json:"dividend_price"`
+	PriceAtReport *float64 `json:"price_at_report"`
+	WACC          *float64 `json:"wacc"`
+	FCFF          *float64 `json:"fcff"`
+	FCF           *float64 `json:"fcf"`
+	NWC           *float64 `json:"nwc"`
+	PriceTarget   *float64 `json:"price_target"`
+	StrongBuy     *float64 `json:"strong_buy"`
+	Buy           *float64 `json:"buy"`
+	Hold          *float64 `json:"hold"`
+	StrongSell    *float64 `json:"strong_sell"`
+	Sell          *float64 `json:"sell"`
+}
+type Company_Request struct {
+	Symbol string `json:"symbol"`
+}
 type OpenPositionsMessage struct {
 	PrevBalance float64          `json:"prevBalance"`
 	OpenIDs     map[string]int64 `json:"openIdList"`

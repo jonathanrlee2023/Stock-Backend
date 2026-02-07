@@ -8,6 +8,7 @@ import schwabdev
 from dotenv import load_dotenv
 import os
 import time
+from companyClass import Company
 import stream_func
 import datetime
 import asyncio
@@ -273,6 +274,16 @@ async def update_tickers_from_db(streamer):
     else:
         print("No tickers found in tracker.db")
 
+async def handleCompany(streamer):
+    pubsub = r.pubsub()
+    await pubsub.subscribe('Company_Channel')
+    while True:
+        message = await pubsub.get_message(ignore_subscribe_messages=True)
+        if message is not None:
+            data = json.loads(message["data"])
+            company = Company(ticker=data["ticker"], streamer=streamer)
+            await r.publish("Start_Stream", json.dumps(company.final_report))
+            
 
 
 def is_weekday_business_hours_central():

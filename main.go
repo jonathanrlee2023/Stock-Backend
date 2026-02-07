@@ -63,7 +63,8 @@ func main() {
 
 	// Start Background Services
 	go hub.Run()
-	go utils.ListenToRedis(context.Background(), rdb, hub)
+	go utils.ListenToRedis(context.Background(), rdb, hub, "Stream_Channel")
+	go utils.ListenToRedis(context.Background(), rdb, hub, "Company_Channel")
 
 	// Endpoints for API
 	mux := http.NewServeMux()
@@ -87,6 +88,9 @@ func main() {
 	})
 	mux.HandleFunc("/closeTracker", func(w http.ResponseWriter, r *http.Request) {
 		utils.RemoveTrackerHandler(trackerDB, w, r)
+	})
+	mux.HandleFunc("/companyStats", func(w http.ResponseWriter, r *http.Request) {
+		utils.CompanyHandler(rdb, w, r)
 	})
 
 	handler := CorsMiddleware(mux)
