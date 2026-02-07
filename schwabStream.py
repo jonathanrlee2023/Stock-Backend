@@ -222,30 +222,6 @@ async def write_to_db():
     
 async def broadcast_to_redis():
     print("Called")
-    new_data = {
-    "NVDA": {
-        "Symbol": "NVDA",
-        "Bid Price": 135.22,
-        "Ask Price": 135.25,
-        "Last Price": 135.24,
-        "Bid Size": 1200,
-        "Ask Size": 800,
-        "Mark": 135.23
-    },
-    "NVDA_250221C00130000": {
-        "Symbol": "NVDA_250221C00130000",
-        "Bid Price": 8.45,
-        "Ask Price": 8.60,
-        "Last Price": 8.55,
-        "High Price": 9.10,
-        "IV": 42.5,
-        "Delta": 0.6521,
-        "Gamma": 0.012,
-        "Theta": -0.045,
-        "Vega": 0.12,
-        "Mark": 8.52
-    }
-    }
     try:
         if await r.ping():
             print("✅ Redis Connection Successful!")
@@ -253,7 +229,6 @@ async def broadcast_to_redis():
         print("❌ Redis Connection Failed. Is the Docker container running?")
     if not is_weekday_business_hours_central():
         print("Stream is closed.")
-        await r.publish("Stream_Channel", json.dumps(new_data))
     while True:
         wait_time = 15 - (time.time() % 15)
         if wait_time < 0.1: wait_time = 15

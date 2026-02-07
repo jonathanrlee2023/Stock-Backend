@@ -15,6 +15,15 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+type LivePrices struct {
+	sync.RWMutex
+	Prices map[string]MixedQuote
+}
+
+var GlobalPrices = &LivePrices{
+	Prices: make(map[string]MixedQuote),
+}
+
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		return true // allow all connections; adjust for production!
@@ -272,79 +281,14 @@ func HandleClientRead(msg redis.Message) {
 		log.Printf("Invalid quotes JSON from Python Client: %v", err)
 		return
 	}
-	optionPrices := make([]OptionPriceData, 0, len(quotes))
-	stockPrices := make([]StockPriceData, 0, len(quotes))
-	timestamp := time.Now().Unix()
-	// Process each symbol
-	for symbol, q := range quotes {
-		switch {
-		// Equity quote if BidSize/AskSize are present
-		case q.BidSize != nil && q.AskSize != nil:
-			stock := StockPriceData{
-				Symbol:    symbol,
-				Timestamp: timestamp,
-				Mark:      q.Mark,
-				BidPrice:  q.BidPrice,
-				AskPrice:  q.AskPrice,
-				LastPrice: q.LastPrice,
-				BidSize:   *q.BidSize,
-				AskSize:   *q.AskSize,
-			}
-
-			stockPrices = append(stockPrices, stock)
-
-		// Option quote if IV or Greeks are present
-		case q.IV != nil:
-			option := OptionPriceData{
-				Symbol:    symbol,
-				Timestamp: timestamp,
-				Bid:       q.BidPrice,
-				Ask:       q.AskPrice,
-				Mark:      q.Mark,
-				Last:      q.LastPrice,
-				High:      *q.HighPrice,
-				IV:        *q.IV,
-				Delta:     *q.Delta,
-				Gamma:     *q.Gamma,
-				Theta:     *q.Theta,
-				Vega:      *q.Vega,
-			}
-			optionPrices = append(optionPrices, option)
-
-		default:
-			log.Printf("Unrecognized quote type for %s: %+v", symbol, q)
-		}
+	GlobalPrices.Lock()
+	// Instead of replacing the whole map, we update existing keys
+	// This preserves data if one broadcast only contains a subset of symbols
+	for symbol, quote := range quotes {
+		GlobalPrices.Prices[symbol] = quote
 	}
-
-	// Send both payloads as two JSON arrays
-	client := clients["STOCK_CLIENT"]
-	if client == nil {
-		log.Println("Stock Client is not connected")
-		return
-	}
-
-	// Helper to marshal & send JSON
-	send := func(v interface{}) error {
-		msg, err := json.Marshal(v)
-		if err != nil {
-			return err
-		}
-		return SendToClient(client, msg)
-	}
-	if len(optionPrices) > 0 {
-		if err := send(optionPrices); err != nil {
-			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-			_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
-			return
-		}
-	}
-	if len(stockPrices) > 0 {
-		if err := send(stockPrices); err != nil {
-			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-			_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
-			return
-		}
-	}
+	GlobalPrices.Unlock()
+	fmt.Println("Updated GlobalPrices:", GlobalPrices.Prices)
 }
 
 // Incremently writes balance to the Frontend
@@ -376,7 +320,7 @@ func HandleClientWrite(client *Client, openDB, balanceDB, priceDB *sql.DB) {
 		timer.Stop()
 		return
 	case t := <-timer.C:
-		processWrite(t, client, balanceDB, openDB, priceDB)
+		processWrite(t, client, balanceDB, openDB)
 	}
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
@@ -388,7 +332,7 @@ func HandleClientWrite(client *Client, openDB, balanceDB, priceDB *sql.DB) {
 			DisconnectClient(client.ID)
 			return
 		case t := <-ticker.C:
-			processWrite(t, client, balanceDB, openDB, priceDB)
+			processWrite(t, client, balanceDB, openDB)
 		}
 	}
 }
@@ -446,113 +390,149 @@ func StartStockStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request)
 }
 
 // Write to a specific client the most recent balance
-func processWrite(t time.Time, client *Client, balanceDB, openDB, priceDB *sql.DB) {
-	priceDB.SetConnMaxLifetime(0)
-	if priceDB == nil {
-		log.Println("Error: Pricedb isnil")
-		return
-	}
-	var cash float64
-	var balance float64
+func processWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
+	// Don't write if we don't have any data
+	if len(GlobalPrices.Prices) > 0 {
+		var cash float64
+		var balance float64
 
-	balance = 10000.0
-	cash = 10000.0
+		balance = 10000.0
+		cash = 10000.0
 
-	query := `SELECT timestamp, balance, cash FROM Balance ORDER BY timestamp DESC LIMIT 1`
-	row := balanceDB.QueryRow(query)
+		query := `SELECT timestamp, balance, cash FROM Balance ORDER BY timestamp DESC LIMIT 1`
+		row := balanceDB.QueryRow(query)
 
-	var timestamp int64
-	err := row.Scan(&timestamp, &balance, &cash)
-	if err == sql.ErrNoRows {
-		log.Printf("No rows in Balance; using default balance 10000")
-	} else if err != nil {
-		log.Printf("Failed to query table: %v", err)
-		return
-	}
-
-	fmt.Println("Timestamp:", timestamp, "Balance:", balance, "Cash:", cash)
-
-	rows, err := openDB.Query("SELECT * FROM OpenPositions")
-	if err == sql.ErrNoRows {
-		fmt.Println("No Open Positions Yet")
-	} else if err != nil {
-		log.Printf("Query failed process write openDB: %v", err)
-	}
-	defer rows.Close()
-
-	tempPositionValue := 0.0
-
-	for rows.Next() {
-		fmt.Println("Processing Open Position")
-		var id string
-		var price float64
-		var amount int64
-		if err := rows.Scan(&id, &price, &amount); err != nil {
-			fmt.Println("Scan failed:", err)
-			continue
+		var timestamp int64
+		err := row.Scan(&timestamp, &balance, &cash)
+		if err == sql.ErrNoRows {
+			log.Printf("No rows in Balance; using default balance 10000")
+		} else if err != nil {
+			log.Printf("Failed to query table: %v", err)
+			return
 		}
 
-		var mark float64
-		if len(id) > 6 {
-			fmt.Println("Option ID:", id)
-			var ts int64
-			var sym string
-			var b, a, l, h, iv, d, g, th, v float64
-			err = priceDB.QueryRow(`SELECT * FROM Options WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1`, id).
-				Scan(&ts, &sym, &mark, &b, &a, &l, &h, &iv, &d, &g, &th, &v)
+		fmt.Println("Timestamp:", timestamp, "Balance:", balance, "Cash:", cash)
+		rows, err := openDB.Query("SELECT * FROM OpenPositions")
+		if err == sql.ErrNoRows {
+			fmt.Println("No Open Positions Yet")
+		} else if err != nil {
+			log.Printf("Query failed process write openDB: %v", err)
+		}
+		defer rows.Close()
 
-			if err == nil {
+		tempPositionValue := 0.0
+
+		for rows.Next() {
+			fmt.Println("Processing Open Position")
+			var id string
+			var price float64
+			var amount int64
+			if err := rows.Scan(&id, &price, &amount); err != nil {
+				fmt.Println("Scan failed:", err)
+				continue
+			}
+			GlobalPrices.RLock() // Lock for reading
+			q, exists := GlobalPrices.Prices[id]
+			GlobalPrices.RUnlock()
+			var mark float64
+			if exists {
+				mark = q.Mark
+			}
+			if len(id) > 6 {
 				tempPositionValue += (mark * float64(amount) * 100)
-			}
-		} else {
-			fmt.Println("Stock ID:", id)
-
-			err = priceDB.QueryRow(`SELECT mark FROM Stocks WHERE symbol = ? ORDER BY rowid DESC LIMIT 1`, id).Scan(&mark)
-
-			if err != nil {
-				log.Printf("Price lookup failed for %s: %v", id, err)
-			}
-
-			if err == nil {
+			} else {
 				tempPositionValue += (mark * float64(amount))
 			}
+			log.Printf("ID: %s | Amount: %d | Mark: %f", id, amount, mark)
 		}
-		log.Printf("ID: %s | Amount: %d | Mark: %f", id, amount, mark)
 
-		if err != nil && err != sql.ErrNoRows {
-			log.Printf("Price lookup failed for %s: %v", id, err)
+		fmt.Println("Temp Position Value:", tempPositionValue)
+
+		tempBalance := cash + tempPositionValue
+		balance = tempBalance
+		if err := rows.Err(); err != nil {
+			log.Println("Rows iteration error:", err)
 		}
-	}
-	fmt.Println("Temp Position Value:", tempPositionValue)
 
-	tempBalance := cash + tempPositionValue
-	balance = tempBalance
-	if err := rows.Err(); err != nil {
-		log.Println("Rows iteration error:", err)
-	}
+		fmt.Println("Balance:", balance, "Cash:", cash)
 
-	fmt.Println("Balance:", balance, "Cash:", cash)
+		insertData := `INSERT OR REPLACE INTO Balance (timestamp, balance, cash) VALUES (?, ?, ?)`
+		_, err = balanceDB.Exec(insertData, time.Now().Unix(), balance, cash)
+		if err != nil {
+			log.Printf("Failed to insert initial balance into table: %v", err)
+		}
+		stockPrices := make([]StockPriceData, 0, len(GlobalPrices.Prices))
+		optionPrices := make([]OptionPriceData, 0, len(GlobalPrices.Prices))
 
-	insertData := `INSERT OR REPLACE INTO Balance (timestamp, balance, cash) VALUES (?, ?, ?)`
-	_, err = balanceDB.Exec(insertData, time.Now().Unix(), balance, cash)
-	if err != nil {
-		log.Printf("Failed to insert initial balance into table: %v", err)
-	}
-	message := StockPriceData{
-		Symbol:    "balance",
-		Timestamp: t.Unix(),
-		Mark:      balance,
-	}
+		for symbol, q := range GlobalPrices.Prices {
+			switch {
+			// Equity quote if BidSize/AskSize are present
+			case q.BidSize != nil && q.AskSize != nil:
+				stock := StockPriceData{
+					Symbol:    symbol,
+					Timestamp: timestamp,
+					Mark:      q.Mark,
+					BidPrice:  q.BidPrice,
+					AskPrice:  q.AskPrice,
+					LastPrice: q.LastPrice,
+					BidSize:   *q.BidSize,
+					AskSize:   *q.AskSize,
+				}
 
-	msg, err := json.Marshal(message)
-	if err != nil {
-		return
-	}
-	err = SendToClient(clients["STOCK_CLIENT"], msg)
-	if err != nil {
-		errMsg := map[string]string{"error": err.Error()}
-		msg, _ := json.Marshal(errMsg)
-		_ = client.SafeWrite(websocket.TextMessage, msg)
-		return
+				stockPrices = append(stockPrices, stock)
+
+			// Option quote if IV or Greeks are present
+			case q.IV != nil:
+				option := OptionPriceData{
+					Symbol:    symbol,
+					Timestamp: timestamp,
+					Bid:       q.BidPrice,
+					Ask:       q.AskPrice,
+					Mark:      q.Mark,
+					Last:      q.LastPrice,
+					High:      *q.HighPrice,
+					IV:        *q.IV,
+					Delta:     *q.Delta,
+					Gamma:     *q.Gamma,
+					Theta:     *q.Theta,
+					Vega:      *q.Vega,
+				}
+				optionPrices = append(optionPrices, option)
+
+			default:
+				log.Printf("Unrecognized quote type for %s: %+v", symbol, q)
+			}
+		}
+		message := StockPriceData{
+			Symbol:    "balance",
+			Timestamp: t.Unix(),
+			Mark:      balance,
+		}
+
+		stockPrices = append(stockPrices, message)
+
+		send := func(v interface{}) error {
+			msg, err := json.Marshal(v)
+			if err != nil {
+				return err
+			}
+			return SendToClient(client, msg)
+		}
+		if len(optionPrices) > 0 {
+			if err := send(optionPrices); err != nil {
+				errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
+				_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
+				return
+			}
+		}
+		if len(stockPrices) > 0 {
+			if err := send(stockPrices); err != nil {
+				errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
+				_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
+				return
+			}
+		}
+	} else {
+		log.Printf("No data yet")
 	}
 }
