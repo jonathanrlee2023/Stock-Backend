@@ -62,6 +62,7 @@ class Company:
         self.cash_df = None
         self.company_overview = None
 
+
     @classmethod
     async def create(cls, ticker, api_key, rate_api_key, streamer):
         """Asynchronous factory to create and fully initialize the instance."""
@@ -75,16 +76,21 @@ class Company:
                 self.get_fundamentals(),
                 self.get_company_overviews()
             )
+            if self.data["income"]["annual"].empty:
+                print(f"--- Initialization Aborted for {ticker}: No data available ---")
+                return None # Or handle as an error
+        
 
         await self.replace_with_usd()
-        self.reorder_df()
+        self.reorder_data()
         
         # Load the specific annual data needed for DCF calculations
-        self.price_at_report = await self.get_current_price()
         self.income_df = self.data["income"]["annual"]
         self.balance_df = self.data["balance"]["annual"]
         self.cash_df = self.data["cash"]["annual"]
         self.company_overview = self.data["overview"]
+        self.price_at_report = await self.get_current_price()
+
 
         # 3. Perform the Math (Sync tasks)
         self.fcf, self.fcff, self.nwc = self.calc_fcf()
@@ -255,12 +261,8 @@ class Company:
                         # Ensure 'fiscalDateEnding' is renamed to 'date' if not already done
                         if 'fiscalDateEnding' in combined_df.columns:
                             combined_df = combined_df.rename(columns={'fiscalDateEnding': 'date'})
-
-                        # 5. Save to the specific Database file
-                        await self._save_df_to_sql(engine, combined_df, "data")
                         
-                        is_new_data_added = True
-                        await asyncio.sleep(1.01) # Alpha Vantage Rate Limit
+                        await asyncio.sleep(1.05) # Alpha Vantage Rate Limit
 
                     except Exception as e:
                         print(f"Error processing {category} for {ticker}: {e}")
@@ -367,14 +369,14 @@ class Company:
         overview_engine = create_async_engine(OVERVIEW_DB_URL)
         ticker = self.ticker
         api_key = self.api_key
-        table_name = "data"
+
 
         # 1. Check if the ticker already exists in the database
         async with overview_engine.connect() as conn:
             try:
                 # Alpha Vantage uses 'Symbol' (Capitalized) in the JSON response
                 result = await conn.execute(
-                    text(f"SELECT 1 FROM {table_name} WHERE Symbol = :symbol LIMIT 1"),
+                    text(f"SELECT 1 FROM Overview WHERE Symbol = :symbol LIMIT 1"),
                     {"symbol": ticker}
                 )
                 if result.fetchone():
@@ -406,7 +408,7 @@ class Company:
         # 4. Save to SQL (Asynchronously)
         def sync_save(sync_conn):
                 # Using append because this is a master list of all tickers searched
-                new_df.to_sql(table_name, sync_conn, if_exists="append", index=False)
+                new_df.to_sql("Overview", sync_conn, if_exists="append", index=False)
 
         async with overview_engine.begin() as conn:
             await conn.run_sync(sync_save)

@@ -274,19 +274,26 @@ async def update_tickers_from_db(streamer):
     else:
         print("No tickers found in tracker.db")
 
-async def handleCompany(streamer):
+async def handleCompany(streamer, api_key, rate_key):
     pubsub = r.pubsub()
     await pubsub.subscribe('Company_Channel')
     while True:
         message = await pubsub.get_message(ignore_subscribe_messages=True)
         if message is not None:
             data = json.loads(message["data"])
-            company = Company(ticker=data["ticker"], streamer=streamer)
-            await r.publish("Start_Stream", json.dumps(company.final_report))
+            print(f"Received message: {data}")
+
+            company = await Company.create(ticker=data["symbol"], api_key=api_key, rate_api_key=rate_key, streamer=streamer)
+            await r.publish("Company_Channel", json.dumps(company.final_report))
             
 
 
 def is_weekday_business_hours_central():
+    """
+    Checks if the current time in the US/Central timezone is within regular business hours (8:30am-3:00pm CST, Monday-Friday).
+
+    Returns a boolean indicating whether the current time is within business hours or not.
+    """
     now = datetime.datetime.now(datetime.timezone.utc)
 
     central = pytz.timezone('US/Central')
@@ -308,6 +315,8 @@ async def main():
     load_dotenv()
     appKey = os.getenv("appKey")
     appSecret = os.getenv("appSecret")
+    alpha_vantage_api_key = os.getenv("AlphaVantageKey")
+    rate_api_key = os.getenv("ExchangeRateKey")
 
     client = schwabdev.Client(app_key=appKey, app_secret=appSecret)
     streamer = client.stream
@@ -318,6 +327,7 @@ async def main():
         asyncio.create_task(broadcast_to_redis()),
         asyncio.create_task(listen_for_messages(streamer)),
         asyncio.create_task(write_to_db()),
+        asyncio.create_task(handleCompany(streamer, alpha_vantage_api_key, rate_api_key))
     ]
 
     # CRITICAL: This keeps the script alive and running all tasks

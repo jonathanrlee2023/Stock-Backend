@@ -76,13 +76,14 @@ func InitRedis() *redis.Client {
 func ListenToRedis(ctx context.Context, rdb *redis.Client, hub *Hub, channel string) {
 	pubsub := rdb.Subscribe(ctx, channel)
 	ch := pubsub.Channel()
-	if channel == "Stream_Channel" {
+	switch channel {
+	case "Stream_Channel":
 		for msg := range ch {
 			// This sends the Python data directly to the Hub's broadcast loop
 			fmt.Println("Called")
 			HandleClientRead(*msg)
 		}
-	} else if channel == "Company_Channel" {
+	case "Company_Channel":
 		for msg := range ch {
 			// This sends the Python data directly to the Hub's broadcast loop
 			fmt.Println("Called")
@@ -95,6 +96,8 @@ func SendToRedis(data []byte, ctx context.Context, rdb *redis.Client, channel st
 	err := rdb.Publish(ctx, channel, data).Err()
 	if err != nil {
 		return fmt.Errorf("failed to publish to redis: %v", err)
+	} else {
+		fmt.Println("Successfully published to redis")
 	}
 	return nil
 }
@@ -281,13 +284,15 @@ func ShutdownAllClients() {
 
 func CompanyHandler(rdb *redis.Client, w http.ResponseWriter, r *http.Request) {
 	ticker := r.URL.Query().Get("ticker")
+	fmt.Println("Received ticker:", ticker)
 	company_request := Company_Request{Symbol: ticker}
+	fmt.Println("Sending to Redis:", company_request)
 	msg, err := json.Marshal(company_request)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	SendToRedis(msg, context.Background(), rdb, "Company_Stream")
+	SendToRedis(msg, context.Background(), rdb, "Company_Channel")
 }
 
 func HandleCompanyRead(msg redis.Message) {
