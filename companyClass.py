@@ -71,7 +71,7 @@ class Company:
         
         # 2. Run async I/O tasks
         # These will check the DBs, fetch if missing, and load into DataFrames
-        if self.data["overview"].empty:
+        if self.data["overview"].empty or self.data["income"]["annual"].empty or self.data["balance"]["annual"].empty or self.data["cash"]["annual"].empty:
             await asyncio.gather(
                 self.get_fundamentals(),
                 self.get_company_overviews()
@@ -83,12 +83,18 @@ class Company:
 
         await self.replace_with_usd()
         self.reorder_data()
-        
+
+        await asyncio.sleep(3)
+        print(f"YES")
         # Load the specific annual data needed for DCF calculations
         self.income_df = self.data["income"]["annual"]
         self.balance_df = self.data["balance"]["annual"]
         self.cash_df = self.data["cash"]["annual"]
         self.company_overview = self.data["overview"]
+
+        if self.income_df.empty or self.balance_df.empty or self.cash_df.empty or self.company_overview.empty:
+            print(f"--- Initialization Aborted for {ticker}: No data available ---")
+            return None # Or handle as an error
         self.price_at_report = await self.get_current_price()
 
 
@@ -295,17 +301,20 @@ class Company:
             engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}")
             async with engine.connect() as conn:
                 try:
-                    result = await conn.execute(
-                        text(f"SELECT * FROM {cat_key} WHERE ticker = :t"), {"t": ticker}
-                    )
-                    df = pd.DataFrame(result.fetchall(), columns=result.keys())
-                    
-                    if not df.empty:
-                        # Separate Quarterly and Annual into the internal dict
-                        # Use .copy() to ensure they are independent DataFrames in memory
-                        self.data[cat_key]["annual"] = df[df["report_type"] == "annual"].copy()
-                        self.data[cat_key]["quarterly"] = df[df["report_type"] == "quarterly"].copy()
-                        print(f"Loaded {cat_key} data from DB for {ticker}")
+                    check_sql = f"SELECT name FROM sqlite_master WHERE type='table' AND name='{cat_key}'"
+                    table_check = await conn.execute(text(check_sql))
+                    if table_check.fetchone():
+                        result = await conn.execute(
+                            text(f"SELECT * FROM {cat_key} WHERE ticker = :t"), {"t": ticker}
+                        )
+                        df = pd.DataFrame(result.fetchall(), columns=result.keys())
+                        
+                        if not df.empty:
+                            # Separate Quarterly and Annual into the internal dict
+                            # Use .copy() to ensure they are independent DataFrames in memory
+                            self.data[cat_key]["annual"] = df[df["report_type"] == "annual"].copy()
+                            self.data[cat_key]["quarterly"] = df[df["report_type"] == "quarterly"].copy()
+                            print(f"Loaded {cat_key} data from DB for {ticker}")
                 except Exception as e:
                     print(f"Database table check failed for {db_file}: {e}")
             await engine.dispose()
@@ -330,6 +339,10 @@ class Company:
     async def _check_db_for_ticker(self, table_name, engine, ticker):
         async with engine.connect() as conn:
             try:
+                check_sql = f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'"
+                table_check = await conn.execute(text(check_sql))
+                if table_check.fetchone() is None:
+                    return False
                 result = await conn.execute(
                     text(f"SELECT 1 FROM {table_name} WHERE ticker = :ticker LIMIT 1"),
                     {"ticker": ticker}

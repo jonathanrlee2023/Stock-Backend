@@ -284,6 +284,9 @@ async def handleCompany(streamer, api_key, rate_key):
             print(f"Received message: {data}")
 
             company = await Company.create(ticker=data["symbol"], api_key=api_key, rate_api_key=rate_key, streamer=streamer)
+            if company is None:
+                print("Company data not fetched properly")
+                continue
             await r.publish("Company_Channel", json.dumps(company.final_report))
             
 
