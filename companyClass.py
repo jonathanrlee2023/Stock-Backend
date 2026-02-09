@@ -76,9 +76,6 @@ class Company:
                 self.get_fundamentals(),
                 self.get_company_overviews()
             )
-            if self.data["income"]["annual"].empty:
-                print(f"--- Initialization Aborted for {ticker}: No data available ---")
-                return None # Or handle as an error
         
 
         await self.replace_with_usd()
@@ -91,6 +88,8 @@ class Company:
         self.balance_df = self.data["balance"]["annual"]
         self.cash_df = self.data["cash"]["annual"]
         self.company_overview = self.data["overview"]
+
+        print(self.data["cash"])
 
         if self.income_df.empty or self.balance_df.empty or self.cash_df.empty or self.company_overview.empty:
             print(f"--- Initialization Aborted for {ticker}: No data available ---")
@@ -201,10 +200,23 @@ class Company:
         self.timestamp =  int(time.mktime(time.strptime(timestamp, '%Y-%m-%d')))
 
     async def get_fundamentals(self):
-        # We define the 4 categories as requested
+        """
+        Asynchronously fetches the annual and quarterly financial data for a given ticker,
+        which includes the income statement, balance sheet, cash flow, and earnings.
+        The data is fetched from Alpha Vantage's API and stored in the instance's data dictionary.
+        The function will return True if all data is fetched successfully, and False otherwise.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        bool
+            True if all data is fetched successfully, False otherwise
+        """
         categories = ["INCOME_STATEMENT", "BALANCE_SHEET", "CASH_FLOW", "EARNINGS"]
         ticker = self.ticker
-        is_new_data_added = False
 
         async with httpx.AsyncClient() as client:
             for category in categories:
@@ -236,38 +248,36 @@ class Company:
                             annual_df = pd.DataFrame(data["annualReports"])
                             quarterly_df = pd.DataFrame(data["quarterlyReports"])
                             
-                            # Add our Primary Key columns
-                            annual_df['ticker'] = ticker
-                            annual_df['report_type'] = 'annual'
-                            
-                            quarterly_df['ticker'] = ticker
-                            quarterly_df['report_type'] = 'quarterly'
+                            annual_df = annual_df.rename(columns={'fiscalDateEnding': 'date'})
+                            quarterly_df = quarterly_df.rename(columns={'fiscalDateEnding': 'date'})
                             
                             # Clean and Scale (passing the correct date column name)
-                            annual_df = self._clean_financial_df(annual_df, date_col='fiscalDateEnding', scale=1_000_000)
-                            quarterly_df = self._clean_financial_df(quarterly_df, date_col='fiscalDateEnding', scale=1_000_000)
+                            annual_df = self._clean_financial_df(annual_df, date_col='date', scale=1_000_000)
+                            quarterly_df = self._clean_financial_df(quarterly_df, date_col='date', scale=1_000_000)
+                            
                         else:
                             annual_df = pd.DataFrame(data["annualEarnings"])
                             quarterly_df = pd.DataFrame(data["quarterlyEarnings"])
-                            
-                            annual_df['ticker'] = ticker
-                            annual_df['report_type'] = 'annual'
-                            quarterly_df['ticker'] = ticker
-                            quarterly_df['report_type'] = 'quarterly'
-                            
-                            # Earnings uses 'fiscalDateEnding' for annual and 'reportedDate' for quarterly
-                            # Let's standardize the column name to 'date' to match your PK requirement
+
                             annual_df = annual_df.rename(columns={'fiscalDateEnding': 'date'})
-                            quarterly_df = quarterly_df.rename(columns={'reportedDate': 'date'})
+                            quarterly_df = quarterly_df.rename(columns={'fiscalDateEnding': 'date'})
+                            
 
                         # 4. Merge Annual and Quarterly into one DataFrame for the DB
                         # We standardized the columns so they stack perfectly
-                        combined_df = pd.concat([annual_df, quarterly_df], ignore_index=True)
+
+                        for df, r_type in [(annual_df, 'annual'), (quarterly_df, 'quarterly')]:
+                            df['ticker'] = ticker
+                            df['report_type'] = r_type
+                        combined_df = pd.concat([annual_df, quarterly_df], ignore_index=True, sort=False)
                         
                         # Ensure 'fiscalDateEnding' is renamed to 'date' if not already done
                         if 'fiscalDateEnding' in combined_df.columns:
                             combined_df = combined_df.rename(columns={'fiscalDateEnding': 'date'})
                         
+                        print(f"Combined DF: {combined_df}")
+                        self.data[table_name]["annual"] = annual_df
+                        self.data[table_name]["quarterly"] = quarterly_df
                         await asyncio.sleep(1.05) # Alpha Vantage Rate Limit
 
                     except Exception as e:
