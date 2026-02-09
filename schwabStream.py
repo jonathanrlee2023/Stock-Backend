@@ -21,11 +21,11 @@ stream_lock = asyncio.Lock()
 tickers = []
 r = aioredis.Redis(host='localhost', port=6380, db=0)
 
-async def listen_for_messages(streamer):
+async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key):
     global stream_started
     print("Listening for messages…")
     pubsub = r.pubsub()
-    await pubsub.subscribe('Start_Stream')
+    await pubsub.subscribe('Request_Channel')
     try:
         if await r.ping():
             print("✅ Redis Connection Successful!")
@@ -76,8 +76,9 @@ async def listen_for_messages(streamer):
                             if base not in tickers:
                                 tickers.append(base)
 
-                    await r.publish("Start_Stream", json.dumps({"Status": "Started",
-                                                                  "Symbol": symbol}))
+                            print(f"Started Option Stream Request for: {symbol} {option_type} at ${price} on {month}/{day}/{year}")
+                        else:
+                            print(f"Stream for {symbol} {option_type} at ${price} on {month}/{day}/{year} already started.")
 
                 # StockStreamRequest array
                 else:
@@ -101,9 +102,10 @@ async def listen_for_messages(streamer):
                             if symbol not in tickers:
                                 tickers.append(symbol)
 
-                    # Added a comma after "Started" and made "Symbol" its own key
-                    await r.publish("Start_Stream", json.dumps({"Status": "Started",
-                                                                "Symbol": symbol}))
+                            print(f"Started Stock Stream Request for: {symbol}") 
+                            await handleCompany(streamer, alpha_vantage_api_key, rate_api_key, symbol)
+                        else:
+                            print(f"Stream for {symbol} already started.")                       
 
             else:
                 # Fallback for a single‐item dict (old behavior) or unexpected shape
@@ -132,6 +134,9 @@ async def listen_for_messages(streamer):
                             stripped_ticker = symbol.split("_", 1)[0]
                             if stripped_ticker not in tickers:
                                 tickers.append(stripped_ticker)
+                            print(f"Started Option Stream Request for: {symbol} {option_type} at ${price} on {month}/{day}/{year}")
+                        else: 
+                            print(f"Stream for {symbol} {option_type} at ${price} on {month}/{day}/{year} already started.")
                     else:
                         if symbol not in streamer.subscriptions.get('LEVELONE_EQUITIES', {}):
                             asyncio.create_task(
@@ -142,9 +147,11 @@ async def listen_for_messages(streamer):
                             )
                             if symbol not in tickers:
                                 tickers.append(symbol)
+                            await handleCompany(streamer, alpha_vantage_api_key, rate_api_key, symbol)
 
-                    await r.publish("Start_Stream", json.dumps({"Status": "Started",
-                                                                  "Symbol": symbol}))
+                            print(f"Started Stream Request for: {symbol}")
+                        else:
+                            print(f"Stream for {symbol} already started.")
 
                 except requests.exceptions.ReadTimeout:
                     print("Timeout connecting to Schwab API.")
@@ -274,21 +281,13 @@ async def update_tickers_from_db(streamer):
     else:
         print("No tickers found in tracker.db")
 
-async def handleCompany(streamer, api_key, rate_key):
-    pubsub = r.pubsub()
-    await pubsub.subscribe('Company_Channel')
-    while True:
-        message = await pubsub.get_message(ignore_subscribe_messages=True)
-        if message is not None:
-            data = json.loads(message["data"])
-            print(f"Received message: {data}")
-
-            company = await Company.create(ticker=data["symbol"], api_key=api_key, rate_api_key=rate_key, streamer=streamer)
-            if company is None:
-                print("Company data not fetched properly")
-                continue
-            await r.publish("Company_Channel", json.dumps(company.final_report))
-            
+async def handleCompany(streamer, api_key, rate_key, ticker):
+    company = await Company.create(ticker=ticker, api_key=api_key, rate_api_key=rate_key, streamer=streamer)
+    if company is None:
+        print("Company data not fetched properly")
+        return
+    await r.publish("Company_Channel", json.dumps(company.final_report))
+    
 
 
 def is_weekday_business_hours_central():
@@ -328,9 +327,8 @@ async def main():
     tasks = [
         asyncio.create_task(update_tickers_from_db(streamer)),
         asyncio.create_task(broadcast_to_redis()),
-        asyncio.create_task(listen_for_messages(streamer)),
+        asyncio.create_task(listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key)),
         asyncio.create_task(write_to_db()),
-        asyncio.create_task(handleCompany(streamer, alpha_vantage_api_key, rate_api_key))
     ]
 
     # CRITICAL: This keeps the script alive and running all tasks

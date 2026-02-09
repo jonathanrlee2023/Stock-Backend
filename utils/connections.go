@@ -410,7 +410,7 @@ func StartOptionStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	err = SendToRedis(msg, context.Background(), rdb, "Start_Stream")
+	err = SendToRedis(msg, context.Background(), rdb, "Request_Channel")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -429,7 +429,7 @@ func StartStockStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		return
 	}
-	err = SendToRedis(msg, context.Background(), rdb, "Start_Stream")
+	err = SendToRedis(msg, context.Background(), rdb, "Request_Channel")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

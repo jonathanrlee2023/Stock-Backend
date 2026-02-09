@@ -42,30 +42,31 @@ type StockStreamRequest struct {
 }
 
 type Company_Stats struct {
-	MarketCap        float64  `json:"market_cap"`
-	PEG              *float64 `json:"peg"`
-	Sloan            *float64 `json:"sloan"`
-	ROIC             *float64 `json:"roic"`
-	HistGrowth       *float64 `json:"hist_growth"`
-	ForecastedGrowth *float64 `json:"forecasted_growth"`
+	Symbol           string   `json:"Symbol"`
+	MarketCap        float64  `json:"MarketCap"`
+	PEG              *float64 `json:"PEG"`
+	Sloan            *float64 `json:"Sloan"`
+	ROIC             *float64 `json:"ROIC"`
+	HistGrowth       *float64 `json:"HistGrowth"`
+	ForecastedGrowth *float64 `json:"ForecastedGrowth"`
 	// Using pointers (*float64) for PEG fields because your Python code
 	// specifically returns 'None' if growth is negative.
-	TrailingPEG    *float64 `json:"trailing_peg"`
-	ForwardPEG     *float64 `json:"forward_peg"`
-	IntrinsicPrice *float64 `json:"intrinsic_price"`
+	TrailingPEG    *float64 `json:"TrailingPEG"`
+	ForwardPEG     *float64 `json:"ForwardPEG"`
+	IntrinsicPrice *float64 `json:"IntrinsicPrice"`
 	// DividendPrice can also be None if the company has no dividend history.
-	DividendPrice *float64 `json:"dividend_price"`
-	PriceAtReport *float64 `json:"price_at_report"`
-	WACC          *float64 `json:"wacc"`
-	FCFF          *float64 `json:"fcff"`
-	FCF           *float64 `json:"fcf"`
-	NWC           *float64 `json:"nwc"`
-	PriceTarget   *float64 `json:"price_target"`
-	StrongBuy     *float64 `json:"strong_buy"`
-	Buy           *float64 `json:"buy"`
-	Hold          *float64 `json:"hold"`
-	StrongSell    *float64 `json:"strong_sell"`
-	Sell          *float64 `json:"sell"`
+	DividendPrice *float64 `json:"DividendPrice"`
+	PriceAtReport *float64 `json:"PriceAtReport"`
+	WACC          *float64 `json:"WACC"`
+	FCFF          *float64 `json:"FCFF"`
+	FCF           *float64 `json:"FCF"`
+	NWC           *float64 `json:"NWC"`
+	PriceTarget   *float64 `json:"PriceTarget"`
+	StrongBuy     *int     `json:"StrongBuy"`
+	Buy           *int     `json:"Buy"`
+	Hold          *int     `json:"Hold"`
+	StrongSell    *int     `json:"StrongSell"`
+	Sell          *int     `json:"Sell"`
 }
 type Company_Request struct {
 	Symbol string `json:"symbol"`
@@ -76,18 +77,18 @@ type OpenPositionsMessage struct {
 	TrackerIDs  []string         `json:"trackerIdList"`
 }
 type OptionPriceData struct {
-	Symbol    string  `json:"symbol"`
+	Symbol    string  `json:"Symbol"`
 	Timestamp int64   `json:"timestamp"`
-	Bid       float64 `json:"bid"`
-	Ask       float64 `json:"ask"`
-	Mark      float64 `json:"mark"`
-	Last      float64 `json:"last"`
-	High      float64 `json:"high"`
-	IV        float64 `json:"iv"`
-	Delta     float64 `json:"delta"`
-	Gamma     float64 `json:"gamma"`
-	Theta     float64 `json:"theta"`
-	Vega      float64 `json:"vega"`
+	Bid       float64 `json:"Bid"`
+	Ask       float64 `json:"Ask"`
+	Mark      float64 `json:"Mark"`
+	Last      float64 `json:"Last"`
+	High      float64 `json:"High"`
+	IV        float64 `json:"IV"`
+	Delta     float64 `json:"Delta"`
+	Gamma     float64 `json:"Damma"`
+	Theta     float64 `json:"Theta"`
+	Vega      float64 `json:"Vega"`
 }
 
 // MixedQuote represents either an equity quote (with Bid/Ask Size)

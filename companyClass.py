@@ -113,27 +113,28 @@ class Company:
         # Extract values from the loaded overview
         self._setup_analyst_ratings()
         self.final_report = {
-            "market_cap": self.market_cap,
-            "peg": self.peg,
-            "sloan": self.sloan,
-            "roic": self.return_on_invested_capital,
-            "hist_growth": self.hist_growth,
-            "forecasted_growth": self.forecasted_growth,
-            "trailing_peg": self.trailing_peg,
-            "forward_peg": self.forward_peg,
-            "intrinsic_price": self.intrinsic_price,
-            "dividend_price": self.dividend_price,
-            "price_at_report": self.price_at_report,
-            "wacc": self.wacc,
-            "fcff": self.fcff,
-            "fcf": self.fcf,
-            "nwc": self.nwc,
-            "price_target": self.price_target,
-            "strong_buy": self.strong_buy,
-            "buy": self.buy,
-            "hold": self.hold,
-            "strong_sell": self.strong_sell,
-            "sell": self.sell
+            "Symbol": self.ticker,
+            "MarketCap": self.market_cap,
+            "PEG": self.peg,
+            "Sloan": self.sloan,
+            "ROIC": self.return_on_invested_capital,
+            "HistGrowth": self.hist_growth,
+            "ForecastedGrowth": self.forecasted_growth,
+            "TrailingPEG": self.trailing_peg,
+            "ForwardPEG": self.forward_peg,
+            "IntrinsicPrice": self.intrinsic_price,
+            "DividendPrice": self.dividend_price,
+            "PriceAtReport": self.price_at_report,
+            "WACC": self.wacc,
+            "FCFF": self.fcff,
+            "FCF": self.fcf,
+            "NWC": self.nwc,
+            "PriceTarget": self.price_target,
+            "StrongBuy": self.strong_buy,
+            "Buy": self.buy,
+            "Hold": self.hold,
+            "StrongSell": self.strong_sell,
+            "Sell": self.sell
         }
 
         
@@ -615,7 +616,7 @@ class Company:
             interest_expense = recent_income["ebit"] - recent_income["incomeBeforeTax"]
         print(f"Interest Expense: {interest_expense} for {ticker}", interest_expense)
 
-        average_debt = recent_balance["shortLongTermDebtTotal"].mean()
+        average_debt = recent_balance["shortLongTermDebtTotal"].mean(skipna=True)
         print(f"Average Debt: {average_debt} for {ticker}", average_debt)
         
         effective_tax_rate = recent_income["effectiveTaxRate"]
@@ -718,6 +719,21 @@ class Company:
         return growth_path
 
     def fcff_forecast(self): 
+        """
+        Run the 10-year projection for a given ticker, using the Free Cash Flow to Firm (FCFF) method.
+
+        Parameters
+        ----------
+        ticker : str
+            Ticker symbol
+
+        Returns
+        -------
+        intrinsic_price : float
+            The intrinsic price of the stock
+        dividend_price : float
+            The dividend price of the stock if applicable
+        """
         ticker = self.ticker
         dividend_price = None
         # 1. LOAD DATA
@@ -733,12 +749,12 @@ class Company:
         years = 15 if market_cap > 1_000_000_000 else 10
 
         # 3. CALCULATE HISTORICAL AVERAGES (The "Means")
-        avg_ebit_margin = income_df["ebitMargin"].tail(5).mean()
-        avg_revenue = income_df["totalRevenue"].tail(5).mean()
-        avg_rev_growth = income_df["revGrowth"].tail(5).mean()
-        avg_long_term_rev_growth = income_df["revGrowth"].tail(15).mean()
-        avg_tax_rate = income_df["effectiveTaxRate"].tail(5).mean()
-        avg_nwc_ratio = balance_df["nwcRatio"].tail(5).mean()
+        avg_ebit_margin = income_df["ebitMargin"].tail(5).mean(skipna=True)
+        avg_revenue = income_df["totalRevenue"].tail(5).mean(skipna=True)
+        avg_rev_growth = income_df["revGrowth"].tail(5).mean(skipna=True)
+        avg_long_term_rev_growth = income_df["revGrowth"].tail(15).mean(skipna=True)
+        avg_tax_rate = income_df["effectiveTaxRate"].tail(5).mean(skipna=True)
+        avg_nwc_ratio = balance_df["nwcRatio"].tail(5).mean(skipna=True)
 
         std_rev_growth = income_df["revGrowth"].tail(5).std()
         print(f"--- Standard Deviation of Revenue Growth: {std_rev_growth:.4f} ---")
@@ -763,7 +779,7 @@ class Company:
             if 'ebitGrowth' not in income_df.columns:
                 income_df["ebitGrowth"] = income_df["ebit"].pct_change().fillna(0).replace([np.inf, -np.inf], 0)
             
-            ebit_growth_avg = income_df["ebitGrowth"].tail(5).mean()
+            ebit_growth_avg = income_df["ebitGrowth"].tail(5).mean(skipna=True)
             actual_growth = (avg_rev_growth * 0.7) + (ebit_growth_avg * 0.3)
             actual_growth = min(actual_growth, avg_rev_growth)
             
@@ -772,7 +788,7 @@ class Company:
 
         print(f"--- Starting Growth: {start_growth:.1%}")
         self.start_growth = start_growth
-        avg_ebit_growth_long_term = income_df["ebitGrowth"].tail(15).mean()
+        avg_ebit_growth_long_term = income_df["ebitGrowth"].tail(15).mean(skipna=True)
         print(f"--- Average Long-Term EBIT Growth: {avg_ebit_growth_long_term:.3%}")
         print(f"--- Average Long-Term Revenue Growth: {avg_long_term_rev_growth:.3%}")
         
@@ -885,6 +901,25 @@ class Company:
         return intrinsic_price, dividend_price
 
     def roic(self):
+        """
+        Calculate the Return on Invested Capital (ROIC) for a given ticker.
+
+        The ROIC is calculated as the Net Operating Profit After Tax (NOPAT) divided by the Invested Capital.
+
+        The Invested Capital is calculated as the Debt + Equity - Cash.
+
+        The NOPAT is calculated as the EBIT times (1 - effective tax rate).
+
+        Parameters
+        ----------
+        ticker : str
+            Ticker symbol
+
+        Returns
+        -------
+        float
+            ROIC value
+        """
         ticker = self.ticker
         balance_df = self.balance_df
         income_df = self.income_df
@@ -954,6 +989,24 @@ class Company:
 
 
     def analyze_peg(self) -> tuple[float, float, float | None, float | None]:
+        """
+        Analyze the PEG ratio for a given ticker.
+
+        The PEG ratio is a measure of the value of a company in terms of earnings growth. It is calculated as the price/earnings ratio divided by the earnings growth rate.
+
+        This method will calculate the historical growth rate, projected growth rate, trailing PEG, and forward PEG for the given ticker.
+
+        Parameters
+        ----------
+        ticker : str
+            The ticker symbol of the company.
+
+        Returns
+        -------
+        tuple[float, float, float | None, float | None]
+            A tuple containing the historical growth rate, projected growth rate, trailing PEG, and forward PEG. If the projected growth rate is less than 0%, the forward PEG will be None.
+
+        """
         company_overview = self.company_overview
         income_df = self.income_df
         cash_df = self.cash_df
@@ -961,7 +1014,7 @@ class Company:
 
         # 0. Get the Growth Ratios
         try:
-            historical_growth = income_df["revGrowth"].tail(10).mean()
+            historical_growth = income_df["revGrowth"].tail(10).mean(skipna=True)
             if np.isnan(cash_df["dividendPayout"].iloc[-1]):
                 retention_ratio = 1
             else:
