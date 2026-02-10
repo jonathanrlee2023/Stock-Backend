@@ -21,7 +21,7 @@ stream_lock = asyncio.Lock()
 tickers = []
 r = aioredis.Redis(host='localhost', port=6380, db=0)
 
-async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key):
+async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, client):
     global stream_started
     print("Listening for messages…")
     pubsub = r.pubsub()
@@ -103,7 +103,7 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key):
                                 tickers.append(symbol)
 
                             print(f"Started Stock Stream Request for: {symbol}") 
-                            await handleCompany(streamer, alpha_vantage_api_key, rate_api_key, symbol)
+                            await handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol)
                         else:
                             print(f"Stream for {symbol} already started.")                       
 
@@ -147,7 +147,7 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key):
                             )
                             if symbol not in tickers:
                                 tickers.append(symbol)
-                            await handleCompany(streamer, alpha_vantage_api_key, rate_api_key, symbol)
+                            await handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol)
 
                             print(f"Started Stream Request for: {symbol}")
                         else:
@@ -281,8 +281,8 @@ async def update_tickers_from_db(streamer):
     else:
         print("No tickers found in tracker.db")
 
-async def handleCompany(streamer, api_key, rate_key, ticker):
-    company = await Company.create(ticker=ticker, api_key=api_key, rate_api_key=rate_key, streamer=streamer)
+async def handleCompany(client, api_key, rate_key, ticker):
+    company = await Company.create(ticker=ticker, api_key=api_key, rate_api_key=rate_key, client=client)
     if company is None:
         print("Company data not fetched properly")
         return
@@ -327,7 +327,7 @@ async def main():
     tasks = [
         asyncio.create_task(update_tickers_from_db(streamer)),
         asyncio.create_task(broadcast_to_redis()),
-        asyncio.create_task(listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key)),
+        asyncio.create_task(listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, client)),
         asyncio.create_task(write_to_db()),
     ]
 

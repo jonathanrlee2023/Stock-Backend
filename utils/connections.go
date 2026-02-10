@@ -292,7 +292,7 @@ func CompanyHandler(rdb *redis.Client, w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	SendToRedis(msg, context.Background(), rdb, "Company_Channel")
+	SendToRedis(msg, context.Background(), rdb, "Request_Channel")
 }
 
 func HandleCompanyRead(msg redis.Message) {
@@ -303,6 +303,7 @@ func HandleCompanyRead(msg redis.Message) {
 		log.Printf("Invalid quotes JSON from Python Client: %v", err)
 		return
 	}
+	fmt.Println("Received from Redis:", company.Symbol)
 	client := "STOCK_CLIENT"
 	if clients[client] == nil {
 		return

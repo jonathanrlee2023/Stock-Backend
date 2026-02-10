@@ -41,12 +41,12 @@ DEFENSIVE = ["HEALTHCARE", "CONSUMER DEFENSIVE", "UTILITIES"]
 SENSITIVE = ["TECHNOLOGY", "COMMUNICATION SERVICES", "INDUSTRIALS", "ENERGY"]
 CYCLICAL = ["CONSUMER CYCLICAL", "FINANCIAL SERVICES", "BASIC MATERIALS", "REAL ESTATE"]
 class Company:
-    def __init__(self, ticker, api_key, rate_api_key, streamer):
+    def __init__(self, ticker, api_key, rate_api_key, client):
         # 1. Minimal setup: only assign non-I/O variables
         self.ticker = ticker
         self.api_key = api_key
         self.rate_api_key = rate_api_key
-        self.streamer = streamer
+        self.client = client
 
         self.data = {
             "income": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
@@ -64,9 +64,9 @@ class Company:
 
 
     @classmethod
-    async def create(cls, ticker, api_key, rate_api_key, streamer):
+    async def create(cls, ticker, api_key, rate_api_key, client):
         """Asynchronous factory to create and fully initialize the instance."""
-        self = cls(ticker, api_key, rate_api_key, streamer)
+        self = cls(ticker, api_key, rate_api_key, client)
         await self.load_all_from_dbs()
         
         # 2. Run async I/O tasks
@@ -89,7 +89,9 @@ class Company:
         self.cash_df = self.data["cash"]["annual"]
         self.company_overview = self.data["overview"]
 
-        print(self.data["cash"])
+        print(self.data["income"]["annual"])
+
+        print(self.data["overview"])
 
         if self.income_df.empty or self.balance_df.empty or self.cash_df.empty or self.company_overview.empty:
             print(f"--- Initialization Aborted for {ticker}: No data available ---")
@@ -112,32 +114,51 @@ class Company:
 
         # Extract values from the loaded overview
         self._setup_analyst_ratings()
+        def safe_float(val):
+            try:
+                if val is None or pd.isna(val):
+                    return None # Or None, if your frontend prefers null over 0
+                return float(val)
+            except:
+                return None
+
+        # Helper to safely convert numpy/none to int
+        def safe_int(val):
+            try:
+                if val is None or pd.isna(val):
+                    return None
+                return int(val)
+            except:
+                return None
+
         self.final_report = {
-            "Symbol": self.ticker,
-            "MarketCap": self.market_cap,
-            "PEG": self.peg,
-            "Sloan": self.sloan,
-            "ROIC": self.return_on_invested_capital,
-            "HistGrowth": self.hist_growth,
-            "ForecastedGrowth": self.forecasted_growth,
-            "TrailingPEG": self.trailing_peg,
-            "ForwardPEG": self.forward_peg,
-            "IntrinsicPrice": self.intrinsic_price,
-            "DividendPrice": self.dividend_price,
-            "PriceAtReport": self.price_at_report,
-            "WACC": self.wacc,
-            "FCFF": self.fcff,
-            "FCF": self.fcf,
-            "NWC": self.nwc,
-            "PriceTarget": self.price_target,
-            "StrongBuy": self.strong_buy,
-            "Buy": self.buy,
-            "Hold": self.hold,
-            "StrongSell": self.strong_sell,
-            "Sell": self.sell
+            "Symbol": str(self.ticker),
+            "MarketCap": safe_int(self.market_cap),
+            "PEG": safe_float(self.peg),
+            "Sloan": safe_float(self.sloan),
+            "ROIC": safe_float(self.return_on_invested_capital),
+            "HistGrowth": safe_float(self.hist_growth),
+            "ForecastedGrowth": safe_float(self.forecasted_growth),
+            "TrailingPEG": safe_float(self.trailing_peg),
+            "ForwardPEG": safe_float(self.forward_peg),
+            "IntrinsicPrice": safe_float(self.intrinsic_price),
+            "DividendPrice": safe_float(self.dividend_price),
+            "PriceAtReport": safe_float(self.price_at_report),
+            "WACC": safe_float(self.wacc),
+            "FCFF": safe_float(self.fcff),
+            "FCF": safe_float(self.fcf),
+            "NWC": safe_float(self.nwc),
+            "PriceTarget": safe_float(self.price_target),
+            "StrongBuy": safe_int(self.strong_buy),
+            "Buy": safe_int(self.buy),
+            "Hold": safe_int(self.hold),
+            "StrongSell": safe_int(self.strong_sell),
+            "Sell": safe_int(self.sell)
         }
 
-        
+        print("Reached")
+
+        await self.save_all_to_db()
         return self
 
 
@@ -155,16 +176,15 @@ class Company:
         self.percent_hold = self.hold / self.total_ratings
         self.percent_sell = (self.sell + self.strong_sell) / self.total_ratings
 
-    async def _read_sql_to_df(self, table_name, db_file, report_type):
+    async def _read_sql_to_df(self, table_name, engine, report_type):
         """Reads data from a specific fundamental DB."""
-        local_engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}")
-        async with local_engine.connect() as conn:
+        async with engine.connect() as conn:
             result = await conn.execute(
                 text(f"SELECT * FROM {table_name} WHERE ticker = :t AND report_type = :r"),
                 {"t": self.ticker, "r": report_type}
             )
             df = pd.DataFrame(result.fetchall(), columns=result.keys())
-        await local_engine.dispose()
+        await engine.dispose()
         return df
 
     async def get_current_price(self) -> float:
@@ -176,7 +196,7 @@ class Company:
             loader = DataLoader(
                 ticker=self.ticker, 
                 fiscalDate=self.timestamp, 
-                connection=self.streamer
+                connection=self.client
             )
             return loader.quote
 
@@ -231,59 +251,79 @@ class Company:
 
                 # 2. Check if this ticker already has data in this specific DB
                 # Note: We check a table named 'data' inside that specific DB
-                already_exists = await self._check_db_for_ticker(table_name,engine, ticker)
+                already_exists = await self._check_db_for_ticker(table_name, engine, ticker)
+                engine = create_async_engine(f"sqlite+aiosqlite:///RAW_{category}.db")
+                raw_exists = await self._check_db_for_ticker(table_name, engine, ticker)
                 
                 if not already_exists:
-                    print(f"Fetching {category} for {ticker}...")
-                    url = f"https://www.alphavantage.co/query?function={category}&symbol={ticker}&apikey={self.api_key}"
-                    response = await client.get(url)
-                    data = response.json()
+                    if not raw_exists:
+                        print(f"Fetching {category} for {ticker}...")
 
-                    if "Error Message" in data or "Information" in data:
-                        print(f"API Limit/Error for {ticker}: {data.get('Information', 'Unknown Error')}")
-                        return False
+                        url = f"https://www.alphavantage.co/query?function={category}&symbol={ticker}&apikey={self.api_key}"
+                        response = await client.get(url)
+                        data = response.json()
 
-                    try:
-                        # 3. Process Data
-                        if category != "EARNINGS":
-                            annual_df = pd.DataFrame(data["annualReports"])
-                            quarterly_df = pd.DataFrame(data["quarterlyReports"])
+                        if "Error Message" in data or "Information" in data:
+                            print(f"API Limit/Error for {ticker}: {data.get('Information', 'Unknown Error')}")
+                            return False
+
+                        try:
+                            # 3. Process Data
+                            if category != "EARNINGS":
+                                annual_df = pd.DataFrame(data["annualReports"])
+                                quarterly_df = pd.DataFrame(data["quarterlyReports"])
+                                
+                                annual_df = annual_df.rename(columns={'fiscalDateEnding': 'date'})
+                                quarterly_df = quarterly_df.rename(columns={'fiscalDateEnding': 'date'})
+                                
+                                # Clean and Scale (passing the correct date column name)
+                                annual_df = self._clean_financial_df(annual_df, date_col='date', scale=1_000_000)
+                                quarterly_df = self._clean_financial_df(quarterly_df, date_col='date', scale=1_000_000)
+                                
+                            else:
+                                annual_df = pd.DataFrame(data["annualEarnings"])
+                                quarterly_df = pd.DataFrame(data["quarterlyEarnings"])
+
+                                annual_df = annual_df.rename(columns={'fiscalDateEnding': 'date'})
+                                quarterly_df = quarterly_df.rename(columns={'fiscalDateEnding': 'date'})
+                                
+                            self.data[table_name]["annual"] = annual_df
+                            self.data[table_name]["quarterly"] = quarterly_df
+                            # 4. Merge Annual and Quarterly into one DataFrame for the DB
+                            # We standardized the columns so they stack perfectly
+
+                            for df, r_type in [(annual_df, 'annual'), (quarterly_df, 'quarterly')]:
+                                df['ticker'] = ticker
+                                df['report_type'] = r_type
+                            combined_df = pd.concat([annual_df, quarterly_df], ignore_index=True, sort=False)
                             
-                            annual_df = annual_df.rename(columns={'fiscalDateEnding': 'date'})
-                            quarterly_df = quarterly_df.rename(columns={'fiscalDateEnding': 'date'})
+                            # Ensure 'fiscalDateEnding' is renamed to 'date' if not already done
+                            if 'fiscalDateEnding' in combined_df.columns:
+                                combined_df = combined_df.rename(columns={'fiscalDateEnding': 'date'})
                             
-                            # Clean and Scale (passing the correct date column name)
-                            annual_df = self._clean_financial_df(annual_df, date_col='date', scale=1_000_000)
-                            quarterly_df = self._clean_financial_df(quarterly_df, date_col='date', scale=1_000_000)
+                            print(f"Combined DF: {combined_df}")
+
+                            engine = create_async_engine(f"sqlite+aiosqlite:///RAW_{category}.db")
+                            async with engine.connect() as conn:
+                                try:
+                                    await self._upsert_to_database(engine, combined_df, table_name=table_name)
+                                    await engine.dispose()
+
+                                except Exception as e:
+                                    print(f"Database table check failed for RAW_{category}.db: {e}")
+                                await conn.execute(text(f"DELETE FROM {table_name} WHERE ticker = :t"), {"t": self.ticker})
+                            await asyncio.sleep(1.05) # Alpha Vantage Rate Limit
                             
-                        else:
-                            annual_df = pd.DataFrame(data["annualEarnings"])
-                            quarterly_df = pd.DataFrame(data["quarterlyEarnings"])
+                        except Exception as e:
+                            print(f"Error processing {category} for {ticker}: {e}")
+                            return False
 
-                            annual_df = annual_df.rename(columns={'fiscalDateEnding': 'date'})
-                            quarterly_df = quarterly_df.rename(columns={'fiscalDateEnding': 'date'})
-                            
-
-                        # 4. Merge Annual and Quarterly into one DataFrame for the DB
-                        # We standardized the columns so they stack perfectly
-
-                        for df, r_type in [(annual_df, 'annual'), (quarterly_df, 'quarterly')]:
-                            df['ticker'] = ticker
-                            df['report_type'] = r_type
-                        combined_df = pd.concat([annual_df, quarterly_df], ignore_index=True, sort=False)
-                        
-                        # Ensure 'fiscalDateEnding' is renamed to 'date' if not already done
-                        if 'fiscalDateEnding' in combined_df.columns:
-                            combined_df = combined_df.rename(columns={'fiscalDateEnding': 'date'})
-                        
-                        print(f"Combined DF: {combined_df}")
+                    else:
+                        print(f"Loading {category} for {ticker} from RAW_{category}.db...")
+                        quarterly_df = await self._read_sql_to_df(table_name, engine=engine, report_type="quarterly")
+                        annual_df = await self._read_sql_to_df(table_name, engine=engine, report_type="annual")
                         self.data[table_name]["annual"] = annual_df
                         self.data[table_name]["quarterly"] = quarterly_df
-                        await asyncio.sleep(1.05) # Alpha Vantage Rate Limit
-
-                    except Exception as e:
-                        print(f"Error processing {category} for {ticker}: {e}")
-                        return False
                 
                 await engine.dispose() # Clean up connection for this specific DB file
             else:
@@ -428,6 +468,14 @@ class Company:
 
             # 3. Process into DataFrame
             new_df = pd.DataFrame([data])
+            start_idx = new_df.columns.get_loc("LatestQuarter") + 1
+
+            # 2. Get the list of columns that need to be numeric
+            cols_to_fix = new_df.columns[start_idx:]
+
+            # 3. Batch convert using to_numeric with 'coerce'
+            # 'coerce' turns non-numeric strings (like "None") into NaN so the float conversion works
+            new_df[cols_to_fix] = new_df[cols_to_fix].apply(pd.to_numeric, errors='coerce')
             
         # 4. Save to SQL (Asynchronously)
         def sync_save(sync_conn):
@@ -438,7 +486,7 @@ class Company:
             await conn.run_sync(sync_save)
         
         # Load the newly saved data into the class attribute
-        self.company_overview = new_df
+        self.data["overview"] = new_df
         return True
 
     async def _load_overview_from_db(self, overview_engine):
@@ -450,7 +498,16 @@ class Company:
             )
             row = result.fetchone()
             if row:
-                self.company_overview = pd.DataFrame([row._asdict()])
+                df = pd.DataFrame([row._asdict()])
+                start_idx = df.columns.get_loc("LatestQuarter") + 1
+
+                # 2. Get the list of columns that need to be numeric
+                cols_to_fix = df.columns[start_idx:]
+
+                # 3. Batch convert using to_numeric with 'coerce'
+                # 'coerce' turns non-numeric strings (like "None") into NaN so the float conversion works
+                df[cols_to_fix] = df[cols_to_fix].apply(pd.to_numeric, errors='coerce')
+                self.company_overview = df
 
     def calc_fcf(self) -> tuple[float, float, float]:
         """
@@ -550,7 +607,7 @@ class Company:
                 if df is not None and not df.empty:
                     # 1. Ensure the date column is in datetime format
                     # We use 'date' because we standardized it during fetch
-                    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+                    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
                     
                     # 2. Sort ascending (Oldest to Newest)
                     # This ensures iloc[-1] is the most recent period for calculations
@@ -602,6 +659,7 @@ class Company:
         beta = company_overview["Beta"].values[0]
         sector = company_overview["Sector"].values[0]
         print(f"Sector: {sector} for {ticker}")
+        print(f"Beta type: {type(beta)} for {ticker}")
         if abs(SECTOR_BETAS[sector] - beta) > 0.4:
             beta = (SECTOR_BETAS[sector] + beta) / 2.0
             # beta = SECTOR_BETAS[sector]
@@ -943,11 +1001,11 @@ class Company:
         # ROIC
         income_df["ROIC"] = (nopat / invested_capital).round(4)
         self.income_df = income_df
-
         return income_df["ROIC"].iloc[-1]
 
     def peg_ratio(self):        
         peg_ratio = self.company_overview["PEGRatio"].iloc[0]
+        print(f"PEG Ratio for {self.ticker}: {peg_ratio}")
         return peg_ratio
 
     def sloan_ratio(self):
@@ -969,10 +1027,11 @@ class Company:
         ticker = self.ticker
         company_overview = self.company_overview
         if "sloanRatio" in company_overview.columns:
-            if company_overview["sloanRatio"].iloc[0] > 0:
-                print(f"Sloan Ratio for {ticker} already calculated")
-                sloan_ratio = company_overview["sloanRatio"].iloc[0]
-                return sloan_ratio
+            val = company_overview["sloanRatio"].iloc[0]
+            if pd.notna(val): # This handles None, NaN, and Null
+                if val > 0:
+                    print(f"Sloan Ratio for {ticker} already calculated: {val}")
+                    return val
         income_df = self.income_df
         balance_df = self.balance_df
         cash_df = self.cash_df
@@ -985,6 +1044,7 @@ class Company:
 
         company_overview["sloanRatio"] = sloan_ratio.round(4)
         self.company_overview = company_overview
+        print(f"Sloan Ratio for {ticker}: {sloan_ratio}")
         return sloan_ratio
 
 
@@ -1128,22 +1188,33 @@ class Company:
     async def _upsert_to_database(self, engine, df, table_name, pk_col="ticker"):
         """Helper to handle Schema Evolution and prevent duplicates."""
         async with engine.begin() as conn:
-            # A. Schema Migration: Check for new columns (e.g., your annual calc columns)
-            existing_cols_res = await conn.execute(text(f"PRAGMA table_info({table_name})"))
-            existing_cols = [row[1] for row in existing_cols_res.fetchall()]
-            
-            if existing_cols:
-                for col in df.columns:
-                    if col not in existing_cols:
-                        if col == "reportedCurrency" or col == "report_type" or col == "reportedCurrency":
-                            await conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {col} TEXT"))
-                        # SQLite doesn't support multiple columns in one ALTER, so we loop
-                        else: 
-                            await conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {col} REAL"))
+            table_exists_res = await conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table' AND name=:t"), 
+                {"t": table_name}
+            )
+            table_exists = table_exists_res.fetchone() is not None
+            if table_exists:
+                # A. Schema Migration: Check for new columns (e.g., your annual calc columns)
+                existing_cols_res = await conn.execute(text(f"PRAGMA table_info({table_name})"))
+                existing_cols = [row[1] for row in existing_cols_res.fetchall()]
+                
+                if existing_cols:
+                    existing_cols_res = await conn.execute(text(f"PRAGMA table_info({table_name})"))
+                    existing_cols_lower = [row[1].lower() for row in existing_cols_res.fetchall()]
 
-            # B. Clean Slate: Remove old data for this ticker before appending the new 'Enriched' version
-            # This prevents duplicate rows when you re-run the same stock.
-            await conn.execute(text(f"DELETE FROM {table_name} WHERE {pk_col} = :t"), {"t": self.ticker})
+
+                    for col in df.columns:
+                        # 3. ONLY add if the column doesn't exist in ANY case format
+                        if col.lower() not in existing_cols_lower:
+                            dtype = "TEXT" if col.lower() in ["reportedcurrency", "report_type", "ticker", "symbol"] else "REAL"
+                            try:
+                                await conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {col} {dtype}"))
+                            except Exception as e:
+                                print(f"Column {col} add failed (likely case conflict): {e}")
+
+                    # B. Clean Slate (Only if table exists)
+                    await conn.execute(text(f"DELETE FROM {table_name} WHERE {pk_col} = :t"), {"t": self.ticker})
+            
             
             # C. Save
             def sync_save(sync_conn):
