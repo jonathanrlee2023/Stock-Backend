@@ -131,3 +131,43 @@ func SendTrackerSymbols(trackerDB, openDB *sql.DB) ([]OptionStreamRequest, []Sto
 	}
 	return optionSymbols, stockSymbols
 }
+
+func InitDB(path string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, err
+	}
+
+	// Configure for high-concurrency and reliability
+	db.SetMaxOpenConns(10) // Allow multiple readers
+	db.SetMaxIdleConns(5)  // Keep a few connections ready
+	db.SetConnMaxIdleTime(30 * time.Second)
+
+	var lastErr error
+	for i := 0; i < 5; i++ {
+		_, lastErr = db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL;")
+		if lastErr == nil {
+			return db, nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return nil, fmt.Errorf("WAL/Timeout failed on %s: %v", path, lastErr)
+}
+
+func InitSchemas(openDB, balanceDB, closeDB, trackerDB *sql.DB) {
+	schemas := []struct {
+		db  *sql.DB
+		sql string
+	}{
+		{openDB, `CREATE TABLE IF NOT EXISTS OpenPositions (id TEXT PRIMARY KEY, price REAL, amount INTEGER);`},
+		{balanceDB, `CREATE TABLE IF NOT EXISTS Balance (timestamp INTEGER PRIMARY KEY, balance REAL, cash REAL);`},
+		{closeDB, `CREATE TABLE IF NOT EXISTS ClosePositions (order_number INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT, price REAL, amount INTEGER, pl REAL);`},
+		{trackerDB, `CREATE TABLE IF NOT EXISTS Tracker (id TEXT PRIMARY KEY);`},
+	}
+
+	for _, s := range schemas {
+		if _, err := s.db.Exec(s.sql); err != nil {
+			log.Printf("Schema init error: %v", err)
+		}
+	}
+}

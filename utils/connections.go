@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"net/http"
 	"os/exec"
 	"sync"
@@ -304,18 +305,13 @@ func HandleCompanyRead(msg redis.Message) {
 		return
 	}
 	fmt.Println("Received from Redis:", company.Symbol)
+	fmt.Println("First Quote:", company.PriceHistory[len(company.PriceHistory)-1])
 	client := "STOCK_CLIENT"
 	if clients[client] == nil {
 		return
 	}
-	send := func(v interface{}) error {
-		msg, err := json.Marshal(v)
-		if err != nil {
-			return err
-		}
-		return SendToClient(clients[client], msg)
-	}
-	if err := send(company); err != nil {
+
+	if err := send(clients[client], company); err != nil {
 		errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
 		_ = clients[client].Conn.WriteMessage(websocket.TextMessage, errMsg)
 		return
@@ -334,9 +330,7 @@ func HandleClientRead(msg redis.Message) {
 	GlobalPrices.Lock()
 	// Instead of replacing the whole map, we update existing keys
 	// This preserves data if one broadcast only contains a subset of symbols
-	for symbol, quote := range quotes {
-		GlobalPrices.Prices[symbol] = quote
-	}
+	maps.Copy(GlobalPrices.Prices, quotes)
 	GlobalPrices.Unlock()
 	fmt.Println("Updated GlobalPrices:", GlobalPrices.Prices)
 }
@@ -561,22 +555,15 @@ func processWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 
 		stockPrices = append(stockPrices, message)
 
-		send := func(v interface{}) error {
-			msg, err := json.Marshal(v)
-			if err != nil {
-				return err
-			}
-			return SendToClient(client, msg)
-		}
 		if len(optionPrices) > 0 {
-			if err := send(optionPrices); err != nil {
+			if err := send(client, optionPrices); err != nil {
 				errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
 				_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
 				return
 			}
 		}
 		if len(stockPrices) > 0 {
-			if err := send(stockPrices); err != nil {
+			if err := send(client, stockPrices); err != nil {
 				errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
 				_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
 				return
@@ -585,4 +572,12 @@ func processWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 	} else {
 		log.Printf("No data yet")
 	}
+}
+
+func send(client *Client, v interface{}) error {
+	msg, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return SendToClient(client, msg)
 }

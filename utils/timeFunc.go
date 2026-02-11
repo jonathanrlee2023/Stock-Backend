@@ -76,3 +76,21 @@ func TodayDate() string {
 	todayStr := today.Format("2006_01_02")
 	return todayStr
 }
+
+func RunDailyAt(hour, min, sec int, tasks ...func()) {
+	go func() {
+		for {
+			now := time.Now()
+			// Next occurrence of the target time today or tomorrow
+			next := time.Date(now.Year(), now.Month(), now.Day(), hour, min, sec, 0, now.Location())
+			if !next.After(now) {
+				next = next.Add(24 * time.Hour)
+			}
+			duration := next.Sub(now)
+			time.Sleep(duration)
+			for _, task := range tasks {
+				task()
+			}
+		}
+	}()
+}

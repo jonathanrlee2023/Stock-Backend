@@ -67,6 +67,16 @@ type Company_Stats struct {
 	Hold          *int     `json:"Hold"`
 	StrongSell    *int     `json:"StrongSell"`
 	Sell          *int     `json:"Sell"`
+	PriceHistory  []Quote  `json:"PriceHistory"`
+}
+
+type Quote struct {
+	Open      float64 `json:"open"`
+	High      float64 `json:"high"`
+	Low       float64 `json:"low"`
+	Close     float64 `json:"close"`
+	Volume    int     `json:"volume"`
+	Timestamp int     `json:"timestamp"`
 }
 type Company_Request struct {
 	Symbol string `json:"symbol"`

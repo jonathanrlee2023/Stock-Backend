@@ -81,22 +81,16 @@ class Company:
         await self.replace_with_usd()
         self.reorder_data()
 
-        await asyncio.sleep(3)
-        print(f"YES")
         # Load the specific annual data needed for DCF calculations
         self.income_df = self.data["income"]["annual"]
         self.balance_df = self.data["balance"]["annual"]
         self.cash_df = self.data["cash"]["annual"]
         self.company_overview = self.data["overview"]
 
-        print(self.data["income"]["annual"])
-
-        print(self.data["overview"])
-
         if self.income_df.empty or self.balance_df.empty or self.cash_df.empty or self.company_overview.empty:
             print(f"--- Initialization Aborted for {ticker}: No data available ---")
             return None # Or handle as an error
-        self.price_at_report = await self.get_current_price()
+        self.price_at_report, self.price_history = await self.get_current_price()
 
 
         # 3. Perform the Math (Sync tasks)
@@ -153,7 +147,8 @@ class Company:
             "Buy": safe_int(self.buy),
             "Hold": safe_int(self.hold),
             "StrongSell": safe_int(self.strong_sell),
-            "Sell": safe_int(self.sell)
+            "Sell": safe_int(self.sell),
+            "PriceHistory": self.price_history
         }
 
         print("Reached")
@@ -198,11 +193,11 @@ class Company:
                 fiscalDate=self.timestamp, 
                 connection=self.client
             )
-            return loader.quote
+            return loader.quote, loader.price_history
 
         # Run the Schwab API request in a thread pool
-        price = await asyncio.to_thread(sync_fetch)
-        return price
+        price, price_history = await asyncio.to_thread(sync_fetch)
+        return price, price_history
     def unix_timestamp(self):
         """
         Convert the latest fiscal date ending from the income statement to a Unix timestamp
