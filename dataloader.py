@@ -70,6 +70,10 @@ class DataLoader:
                 
             quote = response.json()
             if 'candles' in quote and quote['candles']:
+                for candle in quote.get('candles', []):
+                    if 'datetime' in candle:
+                        candle['timestamp'] = candle.pop('datetime')
+                pprint(quote['candles'][0])
                 return quote['candles']
         except Exception as e:
             print(f"Schwab API Error: {e}")

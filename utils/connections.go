@@ -131,7 +131,7 @@ func SendToClient(client *Client, msg []byte) error {
 	if err != nil {
 		return err
 	}
-	log.Printf("sent to %s: %s", client.ID, string(msg))
+
 	return nil
 }
 
@@ -305,7 +305,8 @@ func HandleCompanyRead(msg redis.Message) {
 		return
 	}
 	fmt.Println("Received from Redis:", company.Symbol)
-	fmt.Println("First Quote:", company.PriceHistory[len(company.PriceHistory)-1])
+	fmt.Println("Most Recent Quote:", company.PriceHistory[len(company.PriceHistory)-1])
+	fmt.Println("Oldest Quote:", company.PriceHistory[0])
 	client := "STOCK_CLIENT"
 	if clients[client] == nil {
 		return

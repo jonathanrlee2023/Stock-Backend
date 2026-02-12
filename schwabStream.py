@@ -105,6 +105,8 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
                             print(f"Started Stock Stream Request for: {symbol}") 
                             await handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol)
                         else:
+                            await handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol)
+
                             print(f"Stream for {symbol} already started.")                       
 
             else:
@@ -152,6 +154,7 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
                             print(f"Started Stream Request for: {symbol}")
                         else:
                             print(f"Stream for {symbol} already started.")
+                            await handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol)
 
                 except requests.exceptions.ReadTimeout:
                     print("Timeout connecting to Schwab API.")
