@@ -1,4 +1,5 @@
 import json
+from pprint import pprint
 import re
 
 option_labels = {
@@ -32,14 +33,18 @@ new_data = {}
 labeled_data = {}
 
 async def start_options_stream(streamer, ticker, price, day, month, year, type):
+    yy = str(year)[-2:]
     strike_int = int(float(price) * 1000)
     strike_str = str(strike_int).zfill(8)
     month_filled = month.zfill(2)
-    option_id = f'{year}{month_filled}{day}{type.upper()}{strike_str}'
+    day_filled = day.zfill(2)
+    option_id = f'{yy}{month_filled}{day_filled}{type.upper()}{strike_str}'
+    full_symbol = f"{ticker.ljust(6)}{option_id}"
+    print(repr(full_symbol))
     request = streamer.level_one_options(
-        f"{ticker.ljust(6)}{option_id}",
+        f"{full_symbol}",
         "1,2,3,4,5,10,28,29,30,31,37",
-        command='ADD'
+        command='SUBS'
     )
 
     await streamer.send_async(request)    
@@ -58,6 +63,7 @@ async def start_stock_stream(streamer, ticker):
 
 def receive_data(response):
     parsed = json.loads(response)
+    print(parsed)
     if 'data' in parsed:
         for item in parsed['data']:
             content = item.get("content", [])
@@ -69,7 +75,7 @@ def receive_data(response):
                     new_data[symbol] = {}         
                 if symbol not in labeled_data:
                     labeled_data[symbol] = {}
-                if len(symbol) > 5:           
+                if len(symbol) > 6:           
                     for key, value in quote.items():
                         if key in option_labels:
                             labeled_data[symbol][option_labels[key]] = value
