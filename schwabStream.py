@@ -1,4 +1,5 @@
 import json
+from pprint import pprint
 import sqlite3
 import aiosqlite
 import pytz
@@ -14,6 +15,7 @@ import datetime
 import asyncio
 import websockets
 from stream_func import parse_option
+from dataloader import DataLoader
 
 tasks_started = False
 stream_started = False
@@ -21,6 +23,19 @@ stream_lock = asyncio.Lock()
 r = aioredis.Redis(host='localhost', port=6380, db=0)
 
 async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, client):
+    """
+    Listens for incoming messages from the Redis channel 'Request_Channel'.
+    When a message is received, it is parsed and checked for validity.
+    If valid, it is passed to the streamer to start a new stream.
+
+    NOTE: This function will only start a new stream if the market is currently open.
+    If the market is closed, the stream will not be started until the market reopens.
+
+    :param streamer: The streamer to use when starting new streams.
+    :param alpha_vantage_api_key: The Alpha Vantage API key to use when retrieving company data.
+    :param rate_api_key: The ExchangeRate API key to use when retrieving currency exchange rates.
+    :param client: The Schwab API client to use when retrieving company data.
+    """
     global stream_started
     print("Listening for messages…")
     pubsub = r.pubsub()
@@ -99,11 +114,10 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
                             
 
                                 print(f"Started Stock Stream Request for: {symbol}") 
-                            await handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol)
                         else:
-                            await handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol)
-
-                            print(f"Stream for {symbol} already started.")                       
+                            print(f"Stream for {symbol} already started.")  
+                        await handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol)
+                        await get_option_expiration_chain(symbol, client)                     
 
             else:
                 # Fallback for a single‐item dict (old behavior) or unexpected shape
@@ -144,18 +158,23 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
                                     )
                                 )
                                 print(f"Started Stream Request for: {symbol}")
-                    
-                            await handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol)
                         else:
                             print(f"Stream for {symbol} already started.")
-                            await handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol)
-
+                        await handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol)
+                        await get_option_expiration_chain(symbol, client)
                 except requests.exceptions.ReadTimeout:
                     print("Timeout connecting to Schwab API.")
                 except Exception as e:
                     print("Stream handling error:", e)
 
 async def write_to_db():
+    """
+    Write data to the database. This function is designed to run in a loop and be called
+    every 15 seconds. It will create the tables and indices if they do not exist,
+    and then write the data in the snapshot to the database.
+
+    :return: None
+    """
     async with aiosqlite.connect('PriceData.db') as db:
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA synchronous=NORMAL")
@@ -226,6 +245,12 @@ async def write_to_db():
     
     
 async def broadcast_to_redis():
+    """
+    Broadcasts the current snapshot of data to the Redis channel named "Stream_Channel".
+    This function will sleep for 15 seconds minus the current time modulo 15 seconds
+    and then broadcast the snapshot. This is done to ensure that Redis receives updates
+    at a consistent interval.
+    """
     print("Called")
     try:
         if await r.ping():
@@ -244,6 +269,25 @@ async def broadcast_to_redis():
             await r.publish("Stream_Channel", json.dumps(snapshot))
 
 async def update_tickers_from_db(streamer):
+    """
+    Updates the list of tickers to subscribe to from the database.
+    
+    Retrieves all tickers from the database and subscribes to them.
+    
+    If the ticker is an option, it is parsed into its constituent parts
+    and added to the list of options to subscribe to. If the ticker is
+    a stock, it is added to the list of stocks to subscribe to.
+    
+    Parameters
+    ----------
+    streamer : Streamer
+        The streamer object to use for subscribing to the tickers.
+    
+    Returns
+    -------
+    None
+    """
+    
     async with aiosqlite.connect("Tracker.db") as db:
         async with db.execute("SELECT id FROM tracker") as cursor:
             rows = await cursor.fetchall()
@@ -279,6 +323,24 @@ async def update_tickers_from_db(streamer):
         print("No tickers found in tracker.db")
 
 async def handleCompany(client, api_key, rate_key, ticker):
+    """
+    Handles a company request by fetching the company's data and publishing the final report to the Redis channel.
+
+    Parameters
+    ----------
+    client : schwabdev.Client
+        The client instance to use for fetching the company's data.
+    api_key : str
+        The Alpha Vantage API key to use for fetching the company's data.
+    rate_key : str
+        The ExchangeRate API key to use for fetching the company's data.
+    ticker : str
+        The ticker symbol of the company to fetch data for.
+
+    Returns
+    -------
+    None
+    """
     company = await Company.create(ticker=ticker, api_key=api_key, rate_api_key=rate_key, client=client)
     if company is None:
         print("Company data not fetched properly")
@@ -307,6 +369,11 @@ def is_weekday_business_hours_central():
     return start <= now_central <= end
 
 def is_market_closed():
+    """
+    Checks if the current time in the US/Central timezone is outside regular business hours (8:30am-3:00pm CST, Monday-Friday) and returns a boolean indicating whether the market is closed or not.
+
+    Returns a boolean indicating whether the market is closed or not.
+    """
     now = datetime.datetime.now()
     weekday = now.weekday()  # Monday is 0, Friday is 4, Sunday is 6
     current_time = now.time()
@@ -325,6 +392,31 @@ def is_market_closed():
     
     # Otherwise, the market is open
     return False
+
+async def get_option_expiration_chain(ticker, client) -> list[str]:
+    """
+    Gets a list of option IDs for the given ticker and client.
+
+    The list will contain option IDs for the given ticker with
+    expiration dates within the next 7 days.
+
+    Parameters:
+    ticker (str): Ticker symbol for the option chain
+    client ( SchwabClient): Schwab client object to use for the API call
+
+    Returns:
+    list[str]: List of option IDs with expiration dates within the next 7 days
+    """
+
+    option_id_list = []
+    fromDate = datetime.datetime.now()
+    toDate = fromDate + datetime.timedelta(days=7)
+    response = await client.option_chains(symbol=ticker, strikeCount=5, optionType="CALL", fromDate=fromDate, toDate=toDate).json()
+    data = response['callExpDateMap']
+    for date, contract in data.items():
+        for strike, option in contract.items():
+            option_id_list.append(option['id'])
+    await r.publish("Option_Expiration_Channel", json.dumps({"option_id_list": option_id_list}))
 
 async def main():
     global tasks_started
