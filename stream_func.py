@@ -63,7 +63,7 @@ async def start_stock_stream(streamer, ticker):
 
 def receive_data(response):
     parsed = json.loads(response)
-    print(parsed)
+    # print(parsed)
     if 'data' in parsed:
         for item in parsed['data']:
             content = item.get("content", [])

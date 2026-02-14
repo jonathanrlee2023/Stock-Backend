@@ -37,6 +37,8 @@ SECTOR_BETAS = {
     "UTILITIES": 0.55               # NEE, DUK
 }
 
+
+
 DEFENSIVE = ["HEALTHCARE", "CONSUMER DEFENSIVE", "UTILITIES"]
 SENSITIVE = ["TECHNOLOGY", "COMMUNICATION SERVICES", "INDUSTRIALS", "ENERGY"]
 CYCLICAL = ["CONSUMER CYCLICAL", "FINANCIAL SERVICES", "BASIC MATERIALS", "REAL ESTATE"]
@@ -90,7 +92,7 @@ class Company:
         if self.income_df.empty or self.balance_df.empty or self.cash_df.empty or self.company_overview.empty:
             print(f"--- Initialization Aborted for {ticker}: No data available ---")
             return None # Or handle as an error
-        self.price_at_report, self.price_history = await self.get_current_price()
+        self.price_at_report, self.price_history, self.quote = await self.get_current_price()
 
 
         # 3. Perform the Math (Sync tasks)
@@ -148,7 +150,8 @@ class Company:
             "Hold": safe_int(self.hold),
             "StrongSell": safe_int(self.strong_sell),
             "Sell": safe_int(self.sell),
-            "PriceHistory": self.price_history
+            "PriceHistory": self.price_history,
+            "Quote": self.quote
         }
 
         print("Reached")
@@ -193,11 +196,23 @@ class Company:
                 fiscalDate=self.timestamp, 
                 connection=self.client
             )
-            return loader.quote, loader.price_history
+            return loader.fiscalPrice, loader.price_history, loader.quote
+        
+        
 
         # Run the Schwab API request in a thread pool
-        price, price_history = await asyncio.to_thread(sync_fetch)
-        return price, price_history
+        price, price_history, quote = await asyncio.to_thread(sync_fetch)
+
+        quote_dict = {
+            "Symbol": self.ticker,
+            "timestamp": int(quote['quoteTime'] // 1000),
+            "BidPrice": quote['bidPrice'],
+            "AskPrice": quote['askPrice'],
+            "LastPrice": quote['lastPrice'],
+            "Mark": quote['mark']
+        }
+        print(quote_dict)
+        return price, price_history, quote_dict
     def unix_timestamp(self):
         """
         Convert the latest fiscal date ending from the income statement to a Unix timestamp
@@ -859,7 +874,7 @@ class Company:
 
         # See if has dividends
         dividend_per_share = company_overview["DividendPerShare"].values[0]
-        if industry == "BANKS - DIVERSIFIED" or not np.isnan(dividend_per_share):
+        if industry == "BANKS - DIVERSIFIED" or not pd.isna(dividend_per_share):
             # Dividend model
             dividend_price = self.dividend_model()
 
@@ -1070,7 +1085,7 @@ class Company:
         # 0. Get the Growth Ratios
         try:
             historical_growth = income_df["revGrowth"].tail(10).mean(skipna=True)
-            if np.isnan(cash_df["dividendPayout"].iloc[-1]):
+            if pd.isna(cash_df["dividendPayout"].iloc[-1]):
                 retention_ratio = 1
             else:
                 dividend_payout_ratio = cash_df["dividendPayout"].iloc[-1] / income_df["netIncome"].iloc[-1]

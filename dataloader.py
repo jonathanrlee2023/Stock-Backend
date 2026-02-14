@@ -14,8 +14,9 @@ class DataLoader:
         else:
             self.connection = self.establish_connection()
         self.ticker = ticker
+        self.quote = self.get_quote()
         
-        self.quote = self.load_data()
+        self.fiscalPrice = self.load_data()
         self.price_history = self.get_price_history()
 
     def establish_connection(self):
@@ -73,11 +74,16 @@ class DataLoader:
                 for candle in quote.get('candles', []):
                     if 'datetime' in candle:
                         candle['timestamp'] = candle.pop('datetime')
-                pprint(quote['candles'][0])
                 return quote['candles']
         except Exception as e:
             print(f"Schwab API Error: {e}")
         return None
+    
+    def get_quote(self):
+        response = self.connection.quote(symbol_id=self.ticker).json()
+        data = response[self.ticker]['quote']
+        return data
+
     
     def get_unix_timestamp_5_years_ago(self):
         now = datetime.now()

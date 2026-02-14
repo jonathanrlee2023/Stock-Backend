@@ -18,7 +18,6 @@ from stream_func import parse_option
 tasks_started = False
 stream_started = False
 stream_lock = asyncio.Lock()
-tickers = []
 r = aioredis.Redis(host='localhost', port=6380, db=0)
 
 async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, client):
@@ -60,23 +59,20 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
                         option_type = opt["type"]
 
                         if symbol not in streamer.subscriptions.get("LEVELONE_OPTIONS", {}):
-                            asyncio.create_task(
-                                stream_func.start_options_stream(
-                                    streamer=streamer,
-                                    ticker=symbol,
-                                    price=price,
-                                    day=day,
-                                    month=month,
-                                    year=year,
-                                    type=option_type,
+                            if not is_market_closed():
+                                asyncio.create_task(
+                                    stream_func.start_options_stream(
+                                        streamer=streamer,
+                                        ticker=symbol,
+                                        price=price,
+                                        day=day,
+                                        month=month,
+                                        year=year,
+                                        type=option_type,
+                                    )
                                 )
-                            )
-                            # Track the underlying ticker (before the “_”)
-                            base = symbol.split("_", 1)[0]
-                            if base not in tickers:
-                                tickers.append(base)
 
-                            print(f"Started Option Stream Request for: {symbol} {option_type} at ${price} on {month}/{day}/{year}")
+                                print(f"Started Option Stream Request for: {symbol} {option_type} at ${price} on {month}/{day}/{year}")
                         else:
                             print(f"Stream for {symbol} {option_type} at ${price} on {month}/{day}/{year} already started.")
 
@@ -93,16 +89,16 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
                         symbol = stk["symbol"]
 
                         if symbol not in streamer.subscriptions.get("LEVELONE_EQUITIES", {}):
-                            asyncio.create_task(
-                                stream_func.start_stock_stream(
-                                    streamer=streamer,
-                                    ticker=symbol,
+                            if not is_market_closed():
+                                asyncio.create_task(
+                                    stream_func.start_stock_stream(
+                                        streamer=streamer,
+                                        ticker=symbol,
+                                    )
                                 )
-                            )
-                            if symbol not in tickers:
-                                tickers.append(symbol)
+                            
 
-                            print(f"Started Stock Stream Request for: {symbol}") 
+                                print(f"Started Stock Stream Request for: {symbol}") 
                             await handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol)
                         else:
                             await handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol)
@@ -122,36 +118,34 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
                         year = data["year"]
                         option_type = data["type"]
                         if symbol not in streamer.subscriptions.get('LEVELONE_OPTIONS', {}):
-                            asyncio.create_task(
-                                stream_func.start_options_stream(
-                                    streamer=streamer,
-                                    ticker=symbol,
-                                    price=price,
-                                    day=day,
-                                    month=month,
-                                    year=year,
-                                    type=option_type
+                            if not is_market_closed():
+                                asyncio.create_task(
+                                    stream_func.start_options_stream(
+                                        streamer=streamer,
+                                        ticker=symbol,
+                                        price=price,
+                                        day=day,
+                                        month=month,
+                                        year=year,
+                                        type=option_type
+                                    )
                                 )
-                            )
-                            stripped_ticker = symbol.split("_", 1)[0]
-                            if stripped_ticker not in tickers:
-                                tickers.append(stripped_ticker)
-                            print(f"Started Option Stream Request for: {symbol} {option_type} at ${price} on {month}/{day}/{year}")
+                            
+                                print(f"Started Option Stream Request for: {symbol} {option_type} at ${price} on {month}/{day}/{year}")
                         else: 
                             print(f"Stream for {symbol} {option_type} at ${price} on {month}/{day}/{year} already started.")
                     else:
                         if symbol not in streamer.subscriptions.get('LEVELONE_EQUITIES', {}):
-                            asyncio.create_task(
-                                stream_func.start_stock_stream(
-                                    streamer=streamer,
-                                    ticker=symbol,
+                            if not is_market_closed():
+                                asyncio.create_task(
+                                    stream_func.start_stock_stream(
+                                        streamer=streamer,
+                                        ticker=symbol,
+                                    )
                                 )
-                            )
-                            if symbol not in tickers:
-                                tickers.append(symbol)
+                                print(f"Started Stream Request for: {symbol}")
+                    
                             await handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol)
-
-                            print(f"Started Stream Request for: {symbol}")
                         else:
                             print(f"Stream for {symbol} already started.")
                             await handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol)
@@ -311,6 +305,26 @@ def is_weekday_business_hours_central():
     end = now_central.replace(hour=15, minute=0, second=0, microsecond=0)
 
     return start <= now_central <= end
+
+def is_market_closed():
+    now = datetime.datetime.now()
+    weekday = now.weekday()  # Monday is 0, Friday is 4, Sunday is 6
+    current_time = now.time()
+    
+    # 1. Friday after 7 PM (19:00)
+    if weekday == 4 and current_time >= datetime.time(19, 0):
+        return True
+    
+    # 2. Saturday (All day)
+    if weekday == 5:
+        return True
+    
+    # 3. Sunday before 7 PM (19:00)
+    if weekday == 6 and current_time < datetime.time(19, 0):
+        return True
+    
+    # Otherwise, the market is open
+    return False
 
 async def main():
     global tasks_started

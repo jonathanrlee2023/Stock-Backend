@@ -55,22 +55,23 @@ type Company_Stats struct {
 	ForwardPEG     *float64 `json:"ForwardPEG"`
 	IntrinsicPrice *float64 `json:"IntrinsicPrice"`
 	// DividendPrice can also be None if the company has no dividend history.
-	DividendPrice *float64 `json:"DividendPrice"`
-	PriceAtReport *float64 `json:"PriceAtReport"`
-	WACC          *float64 `json:"WACC"`
-	FCFF          *float64 `json:"FCFF"`
-	FCF           *float64 `json:"FCF"`
-	NWC           *float64 `json:"NWC"`
-	PriceTarget   *float64 `json:"PriceTarget"`
-	StrongBuy     *int     `json:"StrongBuy"`
-	Buy           *int     `json:"Buy"`
-	Hold          *int     `json:"Hold"`
-	StrongSell    *int     `json:"StrongSell"`
-	Sell          *int     `json:"Sell"`
-	PriceHistory  []Quote  `json:"PriceHistory"`
+	DividendPrice *float64       `json:"DividendPrice"`
+	PriceAtReport *float64       `json:"PriceAtReport"`
+	WACC          *float64       `json:"WACC"`
+	FCFF          *float64       `json:"FCFF"`
+	FCF           *float64       `json:"FCF"`
+	NWC           *float64       `json:"NWC"`
+	PriceTarget   *float64       `json:"PriceTarget"`
+	StrongBuy     *int           `json:"StrongBuy"`
+	Buy           *int           `json:"Buy"`
+	Hold          *int           `json:"Hold"`
+	StrongSell    *int           `json:"StrongSell"`
+	Sell          *int           `json:"Sell"`
+	PriceHistory  []Candle       `json:"PriceHistory"`
+	Quote         StockPriceData `json:"Quote"`
 }
 
-type Quote struct {
+type Candle struct {
 	Open      float64 `json:"open"`
 	High      float64 `json:"high"`
 	Low       float64 `json:"low"`
