@@ -71,6 +71,12 @@ type Company_Stats struct {
 	Quote         StockPriceData `json:"Quote"`
 }
 
+type OptionExpiration struct {
+	Symbol string   `json:"Symbol"`
+	Call   []string `json:"Call"`
+	Put    []string `json:"Put"`
+}
+
 type Candle struct {
 	Open      float64 `json:"open"`
 	High      float64 `json:"high"`

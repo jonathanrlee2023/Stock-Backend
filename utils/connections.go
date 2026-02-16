@@ -80,15 +80,16 @@ func ListenToRedis(ctx context.Context, rdb *redis.Client, hub *Hub, channel str
 	switch channel {
 	case "Stream_Channel":
 		for msg := range ch {
-			// This sends the Python data directly to the Hub's broadcast loop
-			fmt.Println("Called")
 			HandleClientRead(*msg)
 		}
 	case "Company_Channel":
 		for msg := range ch {
-			// This sends the Python data directly to the Hub's broadcast loop
-			fmt.Println("Called")
 			HandleCompanyRead(*msg)
+		}
+
+	case "Option_Expiration_Channel":
+		for msg := range ch {
+			HandleOptionRead(*msg)
 		}
 	}
 }
@@ -312,6 +313,26 @@ func HandleCompanyRead(msg redis.Message) {
 	}
 
 	if err := send(clients[client], company); err != nil {
+		errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
+		_ = clients[client].Conn.WriteMessage(websocket.TextMessage, errMsg)
+		return
+	}
+}
+
+func HandleOptionRead(msg redis.Message) {
+	var option OptionExpiration
+	payloadBytes := []byte(msg.Payload)
+	if err := json.Unmarshal(payloadBytes, &option); err != nil {
+		// If it’s not a quotes payload, skip or handle other message types here
+		log.Printf("Invalid quotes JSON from Python Client: %v", err)
+		return
+	}
+
+	client := "STOCK_CLIENT"
+	if clients[client] == nil {
+		return
+	}
+	if err := send(clients[client], option); err != nil {
 		errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
 		_ = clients[client].Conn.WriteMessage(websocket.TextMessage, errMsg)
 		return

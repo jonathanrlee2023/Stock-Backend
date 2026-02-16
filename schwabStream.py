@@ -408,15 +408,27 @@ async def get_option_expiration_chain(ticker, client) -> list[str]:
     list[str]: List of option IDs with expiration dates within the next 7 days
     """
 
-    option_id_list = []
+    call_option_id_list = []
+    put_option_id_list = []
     fromDate = datetime.datetime.now()
     toDate = fromDate + datetime.timedelta(days=7)
-    response = await client.option_chains(symbol=ticker, strikeCount=5, optionType="CALL", fromDate=fromDate, toDate=toDate).json()
-    data = response['callExpDateMap']
-    for date, contract in data.items():
-        for strike, option in contract.items():
-            option_id_list.append(option['id'])
-    await r.publish("Option_Expiration_Channel", json.dumps({"option_id_list": option_id_list}))
+    response = client.option_chains(symbol=ticker, strikeCount=3, optionType="ALL", toDate=toDate).json()
+    pprint(response)
+    call_data = response['callExpDateMap']
+    put_data = response['putExpDateMap']
+    for date, contract in call_data.items():
+        for strike, options_list in contract.items():
+            print(options_list[0]['symbol'])
+            # options_list is a list, e.g., [{ 'id': '...', 'symbol': '...' }]
+            if options_list: 
+                call_option_id_list.append(options_list[0]['symbol'])
+    for date, contract in put_data.items():
+        for strike, options_list in contract.items():
+            if options_list:
+                put_option_id_list.append(options_list[0]['symbol'])
+
+    print(call_option_id_list)
+    await r.publish("Option_Expiration_Channel", json.dumps({"Symbol": ticker, "Call": call_option_id_list, "Put": put_option_id_list}))
 
 async def main():
     global tasks_started
