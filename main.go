@@ -64,7 +64,7 @@ func main() {
 	go hub.Run()
 	go utils.ListenToRedis(context.Background(), rdb, hub, "Stream_Channel")
 	go utils.ListenToRedis(context.Background(), rdb, hub, "Company_Channel")
-	go utils.ListenToRedis(context.Background(), rdb, hub, "Option_Expiration_Channel")
+	go utils.ListenToRedis(context.Background(), rdb, hub, "One_Time_Data_Channel")
 
 	// Endpoints for API
 	mux := http.NewServeMux()

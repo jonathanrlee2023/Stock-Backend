@@ -92,7 +92,7 @@ class Company:
         if self.income_df.empty or self.balance_df.empty or self.cash_df.empty or self.company_overview.empty:
             print(f"--- Initialization Aborted for {ticker}: No data available ---")
             return None # Or handle as an error
-        self.price_at_report, self.price_history, self.quote = await self.get_current_price()
+        self.price_at_report = await self.get_current_price()
 
 
         # 3. Perform the Math (Sync tasks)
@@ -150,8 +150,6 @@ class Company:
             "Hold": safe_int(self.hold),
             "StrongSell": safe_int(self.strong_sell),
             "Sell": safe_int(self.sell),
-            "PriceHistory": self.price_history,
-            "Quote": self.quote
         }
 
         print("Reached")
@@ -188,31 +186,21 @@ class Company:
     async def get_current_price(self) -> float:
         """Asynchronously fetches price data using the DataLoader."""
         self.unix_timestamp() # Sets self.timestamp
-        
-        # Define a small wrapper function for the blocking code
-        def sync_fetch():
-            loader = DataLoader(
+
+        loader = DataLoader(
                 ticker=self.ticker, 
                 fiscalDate=self.timestamp, 
                 connection=self.client
             )
-            return loader.fiscalPrice, loader.price_history, loader.quote
         
+        # Corrected wrapper: Just call the synchronous method normally
+        def sync_fetch():
+            return loader.load_data() 
         
-
-        # Run the Schwab API request in a thread pool
-        price, price_history, quote = await asyncio.to_thread(sync_fetch)
-
-        quote_dict = {
-            "Symbol": self.ticker,
-            "timestamp": int(quote['quoteTime'] // 1000),
-            "BidPrice": quote['bidPrice'],
-            "AskPrice": quote['askPrice'],
-            "LastPrice": quote['lastPrice'],
-            "Mark": quote['mark']
-        }
-        print(quote_dict)
-        return price, price_history, quote_dict
+        # Run the wrapper in a thread pool
+        price = await asyncio.to_thread(sync_fetch)
+        
+        return price
     def unix_timestamp(self):
         """
         Convert the latest fiscal date ending from the income statement to a Unix timestamp
@@ -267,8 +255,6 @@ class Company:
                 
                 if not already_exists:
                     if not raw_exists:
-                        print(f"Fetching {category} for {ticker}...")
-
                         url = f"https://www.alphavantage.co/query?function={category}&symbol={ticker}&apikey={self.api_key}"
                         response = await client.get(url)
                         data = response.json()
@@ -311,8 +297,6 @@ class Company:
                             if 'fiscalDateEnding' in combined_df.columns:
                                 combined_df = combined_df.rename(columns={'fiscalDateEnding': 'date'})
                             
-                            print(f"Combined DF: {combined_df}")
-
                             engine = create_async_engine(f"sqlite+aiosqlite:///RAW_{category}.db")
                             async with engine.connect() as conn:
                                 try:
@@ -329,7 +313,6 @@ class Company:
                             return False
 
                     else:
-                        print(f"Loading {category} for {ticker} from RAW_{category}.db...")
                         quarterly_df = await self._read_sql_to_df(table_name, engine=engine, report_type="quarterly")
                         annual_df = await self._read_sql_to_df(table_name, engine=engine, report_type="annual")
                         self.data[table_name]["annual"] = annual_df
@@ -375,7 +358,6 @@ class Company:
                             # Use .copy() to ensure they are independent DataFrames in memory
                             self.data[cat_key]["annual"] = df[df["report_type"] == "annual"].copy()
                             self.data[cat_key]["quarterly"] = df[df["report_type"] == "quarterly"].copy()
-                            print(f"Loaded {cat_key} data from DB for {ticker}")
                 except Exception as e:
                     print(f"Database table check failed for {db_file}: {e}")
             await engine.dispose()
@@ -393,7 +375,6 @@ class Company:
                     overview_df = pd.DataFrame(result.fetchall(), columns=result.keys())
                     if not overview_df.empty:
                         self.data["overview"] = overview_df
-                        print(f"Loaded Overview from DB for {ticker}")
                 except Exception:
                     pass
             await engine.dispose()
@@ -588,11 +569,11 @@ class Company:
             )
         
         cash_df["FCFF"] = (income_df["ebit"] * (1 - income_df["effectiveTaxRate"]) + income_df["depreciationAndAmortization"] - cash_df["capitalExpenditures"] -  balance_df["deltaNWC"]).round(2)
-        print(
-            f"FCF: {cash_df['FCF'].iloc[-1]}, "
-            f"FCFF: {cash_df['FCFF'].iloc[-1]}, "
-            f"ΔNWC: {balance_df['deltaNWC'].iloc[-1]}"
-        )
+        # print(
+        #     f"FCF: {cash_df['FCF'].iloc[-1]}, "
+        #     f"FCFF: {cash_df['FCFF'].iloc[-1]}, "
+        #     f"ΔNWC: {balance_df['deltaNWC'].iloc[-1]}"
+        # )
 
 
         self.cash_df = cash_df
@@ -626,8 +607,6 @@ class Company:
                     # 3. Reset index to keep iloc clean
                     df.reset_index(drop=True, inplace=True)
                     
-        print(f"Data reordered chronologically for {self.ticker}")
-
     def calc_wacc(self) -> float:
         """
         Calculate the Weighted Average Cost of Capital (WACC) for a given ticker.
@@ -664,44 +643,44 @@ class Company:
         recent_balance = balance_df.tail(2)
 
         company_overview = self.company_overview
-        print(company_overview["Beta"])
+        # print(company_overview["Beta"])
 
         beta = company_overview["Beta"].values[0]
         sector = company_overview["Sector"].values[0]
-        print(f"Sector: {sector} for {ticker}")
-        print(f"Beta type: {type(beta)} for {ticker}")
+        # print(f"Sector: {sector} for {ticker}")
+        # print(f"Beta type: {type(beta)} for {ticker}")
         if abs(SECTOR_BETAS[sector] - beta) > 0.4:
             beta = (SECTOR_BETAS[sector] + beta) / 2.0
             # beta = SECTOR_BETAS[sector]
-        print(f"Beta: {beta} for {ticker}", beta)
+        # print(f"Beta: {beta} for {ticker}", beta)
 
         cost_of_equity = RISK_FREE_RATE + beta * MARKET_RISK_PREMIUM
-        print(f"Cost of Equity: {cost_of_equity} for {ticker}", cost_of_equity)
+        # print(f"Cost of Equity: {cost_of_equity} for {ticker}", cost_of_equity)
         company_overview["CostOfEquity"] = cost_of_equity
 
         interest_expense = abs(income_df["interestExpense"].dropna().iloc[-1])
         if pd.isna(interest_expense):
             interest_expense = recent_income["ebit"] - recent_income["incomeBeforeTax"]
-        print(f"Interest Expense: {interest_expense} for {ticker}", interest_expense)
+        # print(f"Interest Expense: {interest_expense} for {ticker}", interest_expense)
 
         average_debt = recent_balance["shortLongTermDebtTotal"].mean(skipna=True)
-        print(f"Average Debt: {average_debt} for {ticker}", average_debt)
+        # print(f"Average Debt: {average_debt} for {ticker}", average_debt)
         
         effective_tax_rate = recent_income["effectiveTaxRate"]
-        print(f"Effective Tax Rate: {effective_tax_rate} for {ticker}", effective_tax_rate)
+        # print(f"Effective Tax Rate: {effective_tax_rate} for {ticker}", effective_tax_rate)
         
         cost_of_debt = min(interest_expense / average_debt, 0.15)
-        print(f"Cost of Debt: {cost_of_debt} for {ticker}", cost_of_debt)
+        # print(f"Cost of Debt: {cost_of_debt} for {ticker}", cost_of_debt)
         
         post_tax_cost_of_debt = cost_of_debt * (1 - effective_tax_rate)
-        print(f"Post Tax Cost of Debt: {post_tax_cost_of_debt} for {ticker}", post_tax_cost_of_debt)
+        # print(f"Post Tax Cost of Debt: {post_tax_cost_of_debt} for {ticker}", post_tax_cost_of_debt)
 
         total_debt = recent_balance.iloc[-1]["shortLongTermDebtTotal"]
-        print(f"Total Debt: {total_debt} for {ticker}", total_debt)
+        # print(f"Total Debt: {total_debt} for {ticker}", total_debt)
         equity = company_overview["MarketCapitalization"].values[0] / 1_000_000
 
         wacc = ((equity / (equity + total_debt)) * cost_of_equity + (total_debt / (equity + total_debt)) * post_tax_cost_of_debt) * 100
-        print(f"WACC: {wacc.round(4)} for {ticker}")
+        # print(f"WACC: {wacc.round(4)} for {ticker}")
 
         company_overview["WACC"] = wacc
 
@@ -770,7 +749,7 @@ class Company:
         company_overview["dividendPrice"] = round(float(intrinsic_price), 2)
         
         self.company_overview = company_overview
-        print("--- Using Dividend Model ---")
+        # print("--- Using Dividend Model ---")
         return intrinsic_price
     
     def calculate_3_stage_growth(self, start_growth, terminal_growth, years):
@@ -825,7 +804,7 @@ class Company:
         avg_nwc_ratio = balance_df["nwcRatio"].tail(5).mean(skipna=True)
 
         std_rev_growth = income_df["revGrowth"].tail(5).std()
-        print(f"--- Standard Deviation of Revenue Growth: {std_rev_growth:.4f} ---")
+        # print(f"--- Standard Deviation of Revenue Growth: {std_rev_growth:.4f} ---")
 
         # 4. STARTING VALUES & CYCLE DETECTION
         revenue_0 = income_df["totalRevenue"].iloc[-1]
@@ -854,14 +833,14 @@ class Company:
             # Cap start growth between 5% and 40% (for hyper-growth)
             start_growth = max(min(actual_growth, 0.40), 0.05)
 
-        print(f"--- Starting Growth: {start_growth:.1%}")
+        # print(f"--- Starting Growth: {start_growth:.1%}")
         self.start_growth = start_growth
         avg_ebit_growth_long_term = income_df["ebitGrowth"].tail(15).mean(skipna=True)
-        print(f"--- Average Long-Term EBIT Growth: {avg_ebit_growth_long_term:.3%}")
-        print(f"--- Average Long-Term Revenue Growth: {avg_long_term_rev_growth:.3%}")
+        # print(f"--- Average Long-Term EBIT Growth: {avg_ebit_growth_long_term:.3%}")
+        # print(f"--- Average Long-Term Revenue Growth: {avg_long_term_rev_growth:.3%}")
         
         long_term_growth = (avg_long_term_rev_growth * 0.7) + (avg_ebit_growth_long_term * 0.3)
-        print(f"--- Long-Term Growth: {long_term_growth:.1%}")
+        # print(f"--- Long-Term Growth: {long_term_growth:.1%}")
         # 5. CREATE THE MEAN REVERSION GLIDE PATHS
         # Terminal targets
         if sector in DEFENSIVE: terminal_growth = long_term_growth
@@ -869,7 +848,7 @@ class Company:
         else: terminal_growth = (long_term_growth + 0.02) / 2
         while terminal_growth > start_growth or terminal_growth > 0.06:
             terminal_growth = terminal_growth * 0.9
-        print(f"--- Terminal Growth Rate for {ticker}: {terminal_growth:.1%} ---")
+        # print(f"--- Terminal Growth Rate for {ticker}: {terminal_growth:.1%} ---")
         self.terminal_growth = terminal_growth
 
         # See if has dividends
@@ -882,12 +861,12 @@ class Company:
         # (Or use current if margin is expanding and improving)
         if ebit_margin_0 > avg_ebit_margin * 1.2:
             terminal_ebit_margin = (ebit_margin_0 + avg_ebit_margin) / 2
-            print(f"--- Using Margin Expansion Target: {terminal_ebit_margin:.1%} ---")
+            # print(f"--- Using Margin Expansion Target: {terminal_ebit_margin:.1%} ---")
         else:
             terminal_ebit_margin = avg_ebit_margin
 
         if start_growth - terminal_growth > 0.25:
-            print(f"--- Using 3-Stage Growth Path ---")
+            # print(f"--- Using 3-Stage Growth Path ---")
             growth_path = self.calculate_3_stage_growth(start_growth, terminal_growth, years)
         else:
             growth_path = np.linspace(start_growth, terminal_growth, years)
@@ -895,7 +874,7 @@ class Company:
         tax_path = np.linspace(income_df["effectiveTaxRate"].iloc[-1], avg_tax_rate, years)
         tax_path = np.clip(tax_path, 0.10, 0.35) # Keep tax between 10% and 35%
 
-        print(f"--- Growth Glide Path: {growth_path} ---")
+        # print(f"--- Growth Glide Path: {growth_path} ---")
         
         # 6. RUN THE 10-YEAR PROJECTION
         forecast = []
@@ -937,11 +916,11 @@ class Company:
         if start_growth > 0.12 or sector == "TECHNOLOGY":
             target_multiple = 20.0 if start_growth < 0.25 else 25.0
             terminal_value = terminal_fcff * target_multiple
-            print(f"--- Using Exit Multiple: {target_multiple}x ---")
+            # print(f"--- Using Exit Multiple: {target_multiple}x ---")
         else:
             denom = max(wacc - terminal_growth, 0.01)
             terminal_value = terminal_fcff / denom
-            print("--- Using Gordon Growth Method ---")
+            # print("--- Using Gordon Growth Method ---")
 
         # Final Calculation
         pv_terminal = terminal_value / ((1 + wacc) ** years)
@@ -1015,7 +994,7 @@ class Company:
 
     def peg_ratio(self):        
         peg_ratio = self.company_overview["PEGRatio"].iloc[0]
-        print(f"PEG Ratio for {self.ticker}: {peg_ratio}")
+        # print(f"PEG Ratio for {self.ticker}: {peg_ratio}")
         return peg_ratio
 
     def sloan_ratio(self):
@@ -1040,7 +1019,7 @@ class Company:
             val = company_overview["sloanRatio"].iloc[0]
             if pd.notna(val): # This handles None, NaN, and Null
                 if val > 0:
-                    print(f"Sloan Ratio for {ticker} already calculated: {val}")
+                    # print(f"Sloan Ratio for {ticker} already calculated: {val}")
                     return val
         income_df = self.income_df
         balance_df = self.balance_df
@@ -1054,7 +1033,7 @@ class Company:
 
         company_overview["sloanRatio"] = sloan_ratio.round(4)
         self.company_overview = company_overview
-        print(f"Sloan Ratio for {ticker}: {sloan_ratio}")
+        # print(f"Sloan Ratio for {ticker}: {sloan_ratio}")
         return sloan_ratio
 
 
@@ -1102,10 +1081,10 @@ class Company:
             print("--- PEG Analysis Failed: Missing P/E Data ---")
             return
 
-        print(f"Historical Growth: {historical_growth:.3f}")
-        print(f"Projected Growth: {projected_growth:.3f}")
-        print(f"Trailing P/E: {trailing_pe}")
-        print(f"Forward P/E: {forward_pe}")
+        # print(f"Historical Growth: {historical_growth:.3f}")
+        # print(f"Projected Growth: {projected_growth:.3f}")
+        # print(f"Trailing P/E: {trailing_pe}")
+        # print(f"Forward P/E: {forward_pe}")
         # 2. Convert Growth to Integers (e.g., 0.15 -> 15.0)
         hist_g_int = historical_growth * 100
         proj_g_int = projected_growth * 100
@@ -1151,7 +1130,7 @@ class Company:
                 df[cols_to_convert] = df[cols_to_convert].div(conversion_factors, axis=0).round(4)
                 df['reportedCurrency'] = 'USD'
                 
-        print(f"Currency standardization complete for {self.ticker}")
+        # print(f"Currency standardization complete for {self.ticker}")
 
     
     async def save_all_to_db(self):

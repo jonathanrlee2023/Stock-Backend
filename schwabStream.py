@@ -116,8 +116,10 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
                                 print(f"Started Stock Stream Request for: {symbol}") 
                         else:
                             print(f"Stream for {symbol} already started.")  
-                        await handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol)
-                        await get_option_expiration_chain(symbol, client)                     
+                        await asyncio.gather(
+                            get_option_expiration_chain(symbol, client),
+                            handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol)
+                        )
 
             else:
                 # Fallback for a single‐item dict (old behavior) or unexpected shape
@@ -160,8 +162,10 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
                                 print(f"Started Stream Request for: {symbol}")
                         else:
                             print(f"Stream for {symbol} already started.")
-                        await handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol)
-                        await get_option_expiration_chain(symbol, client)
+                        await asyncio.gather(
+                            get_option_expiration_chain(symbol, client),
+                            handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol)
+                        )
                 except requests.exceptions.ReadTimeout:
                     print("Timeout connecting to Schwab API.")
                 except Exception as e:
@@ -393,7 +397,7 @@ def is_market_closed():
     # Otherwise, the market is open
     return False
 
-async def get_option_expiration_chain(ticker, client) -> list[str]:
+async def get_option_expiration_chain(ticker, client):
     """
     Gets a list of option IDs for the given ticker and client.
 
@@ -410,25 +414,27 @@ async def get_option_expiration_chain(ticker, client) -> list[str]:
 
     call_option_id_list = []
     put_option_id_list = []
-    fromDate = datetime.datetime.now()
-    toDate = fromDate + datetime.timedelta(days=7)
-    response = client.option_chains(symbol=ticker, strikeCount=3, optionType="ALL", toDate=toDate).json()
-    pprint(response)
-    call_data = response['callExpDateMap']
-    put_data = response['putExpDateMap']
-    for date, contract in call_data.items():
-        for strike, options_list in contract.items():
-            print(options_list[0]['symbol'])
-            # options_list is a list, e.g., [{ 'id': '...', 'symbol': '...' }]
-            if options_list: 
-                call_option_id_list.append(options_list[0]['symbol'])
-    for date, contract in put_data.items():
-        for strike, options_list in contract.items():
-            if options_list:
-                put_option_id_list.append(options_list[0]['symbol'])
+    
+    loader = DataLoader(ticker=ticker, connection=client)
 
-    print(call_option_id_list)
-    await r.publish("Option_Expiration_Channel", json.dumps({"Symbol": ticker, "Call": call_option_id_list, "Put": put_option_id_list}))
+    quote = loader.get_quote()
+
+    # print(f"quote {quote}")
+    price_history = loader.get_price_history()
+    # print(f"price history {price_history[0]}")
+
+    call_option_id_list, put_option_id_list = loader.get_option_expirations()
+    quote_dict = {
+            "Symbol": ticker,
+            "timestamp": int(quote['quoteTime'] // 1000),
+            "BidPrice": quote['bidPrice'],
+            "AskPrice": quote['askPrice'],
+            "LastPrice": quote['lastPrice'],
+            "Mark": quote['mark']
+        }
+    
+    # print(quote_dict)
+    await r.publish("One_Time_Data_Channel", json.dumps({"Symbol": ticker, "Quote": quote_dict, "PriceHistory": price_history, "Call": call_option_id_list, "Put": put_option_id_list}))
 
 async def main():
     global tasks_started

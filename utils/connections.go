@@ -87,7 +87,7 @@ func ListenToRedis(ctx context.Context, rdb *redis.Client, hub *Hub, channel str
 			HandleCompanyRead(*msg)
 		}
 
-	case "Option_Expiration_Channel":
+	case "One_Time_Data_Channel":
 		for msg := range ch {
 			HandleOptionRead(*msg)
 		}
@@ -306,7 +306,6 @@ func HandleCompanyRead(msg redis.Message) {
 		return
 	}
 	fmt.Println("Received from Redis:", company.Symbol)
-	fmt.Println("Most Recent Quote:", company.Quote)
 	client := "STOCK_CLIENT"
 	if clients[client] == nil {
 		return
@@ -327,6 +326,9 @@ func HandleOptionRead(msg redis.Message) {
 		log.Printf("Invalid quotes JSON from Python Client: %v", err)
 		return
 	}
+
+	fmt.Println(option.Quote)
+	fmt.Println(option.PriceHistory[0])
 
 	client := "STOCK_CLIENT"
 	if clients[client] == nil {

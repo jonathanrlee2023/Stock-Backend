@@ -1,4 +1,4 @@
-from datetime import datetime
+import datetime
 from pprint import pprint
 import time
 import schwabdev
@@ -7,17 +7,13 @@ from dotenv import load_dotenv
 
 
 class DataLoader:
-    def __init__(self, ticker, fiscalDate, connection):
+    def __init__(self, ticker, connection, fiscalDate=None):
         self.fiscalDate = fiscalDate
         if connection is not None:
             self.connection = connection
         else:
             self.connection = self.establish_connection()
         self.ticker = ticker
-        self.quote = self.get_quote()
-        
-        self.fiscalPrice = self.load_data()
-        self.price_history = self.get_price_history()
 
     def establish_connection(self):
         load_dotenv()  # loads variables from .env into environment
@@ -32,6 +28,8 @@ class DataLoader:
     
     def load_data(self):
         try:
+            if self.fiscalDate is None:
+                return None
             start_ms = int(self.fiscalDate * 1000)
             end_ms = start_ms + (2 * 86400 * 1000)
             
@@ -83,10 +81,31 @@ class DataLoader:
         response = self.connection.quote(symbol_id=self.ticker).json()
         data = response[self.ticker]['quote']
         return data
+    
+    def get_option_expirations(self):
+        call_option_id_list = []
+        put_option_id_list = []
+        fromDate = datetime.datetime.now()
+        toDate = fromDate + datetime.timedelta(days=7)
+        response = self.connection.option_chains(symbol=self.ticker, strikeCount=3, optionType="ALL", toDate=toDate).json()
+        call_data = response['callExpDateMap']
+        put_data = response['putExpDateMap']
+        for date, contract in call_data.items():
+            for strike, options_list in contract.items():
+                # print(options_list[0]['symbol'])
+                # options_list is a list, e.g., [{ 'id': '...', 'symbol': '...' }]
+                if options_list: 
+                    call_option_id_list.append(options_list[0]['symbol'])
+        for date, contract in put_data.items():
+            for strike, options_list in contract.items():
+                if options_list:
+                    put_option_id_list.append(options_list[0]['symbol'])
+
+        return call_option_id_list, put_option_id_list
 
     
     def get_unix_timestamp_5_years_ago(self):
-        now = datetime.now()
+        now = datetime.datetime.now()
         
         try:
             # Subtract 5 years from the current year
