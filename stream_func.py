@@ -1,6 +1,9 @@
+import datetime
 import json
 from pprint import pprint
 import re
+
+import pytz
 
 option_labels = {
     '1': 'Description',
@@ -110,3 +113,47 @@ def parse_option(symbol):
             "price": price
         }
     return None
+
+def is_weekday_business_hours_central():
+    """
+    Checks if the current time in the US/Central timezone is within regular business hours (8:30am-3:00pm CST, Monday-Friday).
+
+    Returns a boolean indicating whether the current time is within business hours or not.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    central = pytz.timezone('US/Central')
+    now_central = now.astimezone(central)
+
+    if now_central.weekday() >= 5:  # 5=Saturday, 6=Sunday
+        return False
+
+    start = now_central.replace(hour=8, minute=30, second=0, microsecond=0)
+    end = now_central.replace(hour=15, minute=0, second=0, microsecond=0)
+
+    return start <= now_central <= end
+
+def is_market_closed():
+    """
+    Checks if the current time in the US/Central timezone is outside regular business hours (8:30am-3:00pm CST, Monday-Friday) and returns a boolean indicating whether the market is closed or not.
+
+    Returns a boolean indicating whether the market is closed or not.
+    """
+    now = datetime.datetime.now()
+    weekday = now.weekday()  # Monday is 0, Friday is 4, Sunday is 6
+    current_time = now.time()
+    
+    # 1. Friday after 7 PM (19:00)
+    if weekday == 4 and current_time >= datetime.time(19, 0):
+        return True
+    
+    # 2. Saturday (All day)
+    if weekday == 5:
+        return True
+    
+    # 3. Sunday before 7 PM (19:00)
+    if weekday == 6 and current_time < datetime.time(19, 0):
+        return True
+    
+    # Otherwise, the market is open
+    return False
