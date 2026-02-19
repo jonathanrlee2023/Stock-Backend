@@ -1,6 +1,8 @@
 import asyncio
 import json
+from operator import itemgetter
 import time
+import orjson
 from redis import asyncio as aioredis
 import aiosqlite
 import requests
@@ -13,6 +15,10 @@ stream_started = False
 stream_lock = asyncio.Lock()
 is_weekday_business_hours_central = stream_func.is_weekday_business_hours_central()
 is_market_closed = stream_func.is_market_closed()
+option_attributes = ['askPrice', 'bidPrice', 'lastPrice', 'highPrice', 'volatility', 'delta', 'gamma', 'theta', 'vega', 'mark']
+parsed_labels = ['Ask Price',  'Bid Price', 'Last Price', 'High Price', 'IV', 'Delta', 'Gamma', 'Theta', 'Vega', 'Mark']
+get_option_stats = itemgetter(*option_attributes)
+
 r = aioredis.Redis(host='localhost', port=6380, db=0)
 
 async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, client):
@@ -127,7 +133,7 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
                         year = data["year"]
                         option_type = data["type"]
                         if symbol not in streamer.subscriptions.get('LEVELONE_OPTIONS', {}):
-                            if not is_market_closed():
+                            if not is_market_closed:
                                 asyncio.create_task(
                                     stream_func.start_options_stream(
                                         streamer=streamer,
@@ -239,6 +245,53 @@ async def write_to_db():
 
             await db.commit()
             print("Wrote to DB")
+
+async def stream_options(client):
+    option_ids = stream_func.option_ids
+    new_data = stream_func.new_data
+    while True:
+        wait_time = 15 - (time.time() % 15)
+        if wait_time < 0.1: wait_time = 15
+        await asyncio.sleep(wait_time)
+        if not option_ids:
+            continue
+        print(option_ids)
+        response = client.quotes(option_ids)
+
+        start_time = time.perf_counter()
+        data = orjson.loads(response.content) 
+            
+        local_fetcher = get_option_stats
+        local_new_data = new_data
+        
+        for symbol, details in data.items():
+            try:
+                # EAFP: Assume the symbol exists. This is faster than 'if symbol in'
+                t = local_new_data[symbol]
+            except KeyError:
+                # Only happens once per symbol
+                t = local_new_data[symbol] = {}
+            try:
+                v = local_fetcher(details['quote'])
+                
+                # Manual unrolling: Faster than zip() because it avoids iterator overhead
+                t['Bid Price']   = v[0]
+                t['Ask Price']   = v[1]
+                t['Last Price']  = v[2]
+                t['High Price']  = v[3]
+                t['IV']          = v[4]
+                t['Delta']       = v[5]
+                t['Gamma']       = v[6]
+                t['Theta']       = v[7]
+                t['Vega']        = v[8]
+                t['Mark']        = v[9]
+            except KeyError:
+                continue
+            
+        print(f"Extraction & Renaming: {time.perf_counter() - start_time:.6f}s")
+        return
+    
+
     
     
 async def broadcast_to_redis():
@@ -249,12 +302,14 @@ async def broadcast_to_redis():
     at a consistent interval.
     """
     print("Called")
+    new_data = stream_func.new_data
+    file_names = stream_func.file_names 
     try:
         if await r.ping():
             print("✅ Redis Connection Successful!")
     except aioredis.ConnectionError:
         print("❌ Redis Connection Failed. Is the Docker container running?")
-    if not is_weekday_business_hours_central():
+    if not is_weekday_business_hours_central:
         print("Stream is closed.")
     while True:
         wait_time = 15 - (time.time() % 15)
@@ -262,7 +317,9 @@ async def broadcast_to_redis():
         await asyncio.sleep(wait_time)
 
         if stream_func.file_names:
-            snapshot = {name: stream_func.new_data[name] for name in stream_func.file_names}
+            snapshot = {name: new_data[name] for name in file_names}
+            print(file_names)
+            print(snapshot)
             await r.publish("Stream_Channel", json.dumps(snapshot))
 
 async def update_tickers_from_db(streamer):

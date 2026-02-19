@@ -513,15 +513,11 @@ func processWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 			log.Printf("ID: %s | Amount: %d | Mark: %f", id, amount, mark)
 		}
 
-		fmt.Println("Temp Position Value:", tempPositionValue)
-
 		tempBalance := cash + tempPositionValue
 		balance = tempBalance
 		if err := rows.Err(); err != nil {
 			log.Println("Rows iteration error:", err)
 		}
-
-		fmt.Println("Balance:", balance, "Cash:", cash)
 
 		insertData := `INSERT OR REPLACE INTO Balance (timestamp, balance, cash) VALUES (?, ?, ?)`
 		_, err = balanceDB.Exec(insertData, time.Now().Unix(), balance, cash)
@@ -565,7 +561,7 @@ func processWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 					Vega:      *q.Vega,
 				}
 				optionPrices = append(optionPrices, option)
-
+				fmt.Println(optionPrices)
 			default:
 				log.Printf("Unrecognized quote type for %s: %+v", symbol, q)
 			}
@@ -579,6 +575,7 @@ func processWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 		stockPrices = append(stockPrices, message)
 
 		if len(optionPrices) > 0 {
+			fmt.Println(optionPrices)
 			if err := send(client, optionPrices); err != nil {
 				errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
 				_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
@@ -602,5 +599,6 @@ func send(client *Client, v interface{}) error {
 	if err != nil {
 		return err
 	}
+	fmt.Println("Sending to client:", string(msg))
 	return SendToClient(client, msg)
 }

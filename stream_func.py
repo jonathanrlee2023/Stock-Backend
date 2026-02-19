@@ -1,23 +1,13 @@
+import asyncio
 import datetime
 import json
+from operator import itemgetter
+import time
+import orjson
 from pprint import pprint
 import re
 
 import pytz
-
-option_labels = {
-    '1': 'Description',
-    '2': 'Bid Price',
-    '3': 'Ask Price',
-    '4': 'Last Price',
-    '5': 'High Price',
-    '10': 'IV',
-    '28': 'Delta',
-    '29': 'Gamma',
-    '30': 'Theta',
-    '31': 'Vega',
-    '37': 'Mark'
-}
 
 stock_labels = {
     '1': 'Bid Price',
@@ -27,15 +17,13 @@ stock_labels = {
     '5': 'Ask Size',
     '33': 'Mark'
 }
-ticker = None
-option_price = None
-c_or_p = None
-option_id = None
 file_names = []
 new_data = {}
 labeled_data = {}
+option_ids = []
 
 async def start_options_stream(streamer, ticker, price, day, month, year, type):
+    ticker = str(ticker).strip().replace('\xa0', '')
     yy = str(year)[-2:]
     strike_int = int(float(price) * 1000)
     strike_str = str(strike_int).zfill(8)
@@ -44,13 +32,9 @@ async def start_options_stream(streamer, ticker, price, day, month, year, type):
     option_id = f'{yy}{month_filled}{day_filled}{type.upper()}{strike_str}'
     full_symbol = f"{ticker.ljust(6)}{option_id}"
     print(repr(full_symbol))
-    request = streamer.level_one_options(
-        f"{full_symbol}",
-        "1,2,3,4,5,10,28,29,30,31,37",
-        command='SUBS'
-    )
-
-    await streamer.send_async(request)    
+    option_ids.append(full_symbol)
+    file_names.append(full_symbol)
+    new_data[full_symbol] = {}
 
 async def start_stock_stream(streamer, ticker):
     caps_ticker = ticker.upper()
@@ -78,14 +62,9 @@ def receive_data(response):
                     new_data[symbol] = {}         
                 if symbol not in labeled_data:
                     labeled_data[symbol] = {}
-                if len(symbol) > 6:           
-                    for key, value in quote.items():
-                        if key in option_labels:
-                            labeled_data[symbol][option_labels[key]] = value
-                else:
-                    for key, value in quote.items():
-                        if key in stock_labels:
-                            labeled_data[symbol][stock_labels[key]] = value
+                for key, value in quote.items():
+                    if key in stock_labels:
+                        labeled_data[symbol][stock_labels[key]] = value
                 # Merge new data into stored state
                 if symbol not in file_names:
                     file_names.append(symbol)

@@ -1,8 +1,11 @@
+from pprint import pprint
+
 import schwabdev
 from dotenv import load_dotenv
 import os
 import asyncio
 import asyncFunc
+import stream_func
 
 tasks_started = False
 
@@ -18,6 +21,7 @@ async def main():
     rate_api_key = os.getenv("ExchangeRateKey")
 
     client = schwabdev.Client(app_key=appKey, app_secret=appSecret)
+
     streamer = client.stream
 
     print("Starting background tasks...")
@@ -26,6 +30,7 @@ async def main():
         asyncio.create_task(asyncFunc.broadcast_to_redis()),
         asyncio.create_task(asyncFunc.listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, client)),
         asyncio.create_task(asyncFunc.write_to_db()),
+        asyncio.create_task(asyncFunc.stream_options(client)),
     ]
 
     # CRITICAL: This keeps the script alive and running all tasks
