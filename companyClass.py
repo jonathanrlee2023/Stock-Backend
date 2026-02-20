@@ -942,7 +942,6 @@ class Company:
         
         if "ROIC" in income_df.columns:
             if income_df["ROIC"].iloc[-1] > 0:
-                print(f"ROIC for {ticker} already calculated.")
                 Roic = income_df["ROIC"].iloc[-1]
                 return Roic
         # Calculate Invested Capital (Debt + Equity - Cash)
