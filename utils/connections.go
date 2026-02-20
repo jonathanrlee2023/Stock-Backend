@@ -545,7 +545,6 @@ func processWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 					Vega:      *q.Vega,
 				}
 				optionPrices = append(optionPrices, option)
-				fmt.Println(optionPrices)
 			default:
 				log.Printf("Unrecognized quote type for %s: %+v", symbol, q)
 			}

@@ -18,7 +18,7 @@ is_market_closed = stream_func.is_market_closed()
 option_attributes = ['askPrice', 'bidPrice', 'lastPrice', 'highPrice', 'volatility', 'delta', 'gamma', 'theta', 'vega', 'mark']
 parsed_labels = ['Ask Price',  'Bid Price', 'Last Price', 'High Price', 'IV', 'Delta', 'Gamma', 'Theta', 'Vega', 'Mark']
 get_option_stats = itemgetter(*option_attributes)
-
+symbol_cache = {}
 r = aioredis.Redis(host='localhost', port=6380, db=0)
 
 async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, client):
@@ -36,6 +36,7 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
     :param client: The Schwab API client to use when retrieving company data.
     """
     global stream_started
+    option_ids = stream_func.option_ids
     pubsub = r.pubsub()
     await pubsub.subscribe('Request_Channel')
     try:
@@ -70,11 +71,10 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
                         year        = opt["year"]
                         option_type = opt["type"]
 
-                        if symbol not in streamer.subscriptions.get("LEVELONE_OPTIONS", {}):
+                        if symbol not in option_ids:
                             if not is_weekday_business_hours_central:
                                 asyncio.create_task(
                                     stream_func.start_options_stream(
-                                        streamer=streamer,
                                         ticker=symbol,
                                         price=price,
                                         day=day,
@@ -108,7 +108,7 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
                         else:
                             print(f"Stream for {symbol} already started.")  
                         await asyncio.gather(
-                            get_option_expiration_chain(symbol, client),
+                            get_options_and_initial_quotes(symbol, client),
                             handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol)
                         )
 
@@ -122,11 +122,10 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
                         month = data["month"]
                         year = data["year"]
                         option_type = data["type"]
-                        if symbol not in streamer.subscriptions.get('LEVELONE_OPTIONS', {}):
+                        if symbol not in option_ids:
                             if not is_market_closed:
                                 asyncio.create_task(
                                     stream_func.start_options_stream(
-                                        streamer=streamer,
                                         ticker=symbol,
                                         price=price,
                                         day=day,
@@ -149,13 +148,31 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
                         else:
                             print(f"Stream for {symbol} already started.")
                         await asyncio.gather(
-                            get_option_expiration_chain(symbol, client),
+                            get_options_and_initial_quotes(symbol, client),
                             handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol)
                         )
                 except requests.exceptions.ReadTimeout:
                     print("Timeout connecting to Schwab API.")
                 except Exception as e:
                     print("Stream handling error:", e)
+
+async def get_symbol_id(db, symbol):
+    """Helper to get ID from cache or DB, creating it if necessary."""
+    if symbol in symbol_cache:
+        return symbol_cache[symbol]
+
+    # Check DB if not in cache
+    async with db.execute("SELECT symbol_id FROM Symbols WHERE symbol = ?", (symbol,)) as cursor:
+        row = await cursor.fetchone()
+        if row:
+            symbol_cache[symbol] = row[0]
+            return row[0]
+
+    # If totally new, insert it
+    await db.execute("INSERT INTO Symbols (symbol) VALUES (?)", (symbol,))
+    new_id = db.lastrowid # Note: aiosqlite might require await cursor.lastrowid depending on version
+    symbol_cache[symbol] = new_id
+    return new_id
 
 async def write_to_db():
     """
@@ -170,23 +187,32 @@ async def write_to_db():
         await db.execute("PRAGMA synchronous=NORMAL")
         await db.execute("""
             CREATE TABLE IF NOT EXISTS Options (
-                timestamp INTEGER NOT NULL, symbol TEXT NOT NULL, mark REAL,
+                timestamp INTEGER NOT NULL, symbol_id INTEGER NOT NULL, mark REAL,
                 bid_price REAL, ask_price REAL, last_price REAL, high_price REAL,
                 iv REAL, delta REAL, gamma REAL, theta REAL, vega REAL,
-                PRIMARY KEY (timestamp, symbol)
+                PRIMARY KEY (timestamp, symbol_id)
             )
         """)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS Stocks (
-                timestamp INTEGER NOT NULL, symbol TEXT NOT NULL, mark REAL,
+                timestamp INTEGER NOT NULL, symbol_id INTEGER NOT NULL, mark REAL,
                 bid_price REAL, ask_price REAL, last_price REAL, bid_size INTEGER, ask_size INTEGER,
-                PRIMARY KEY (timestamp, symbol)
+                PRIMARY KEY (timestamp, symbol_id)
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS Symbols (
+                symbol_id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT UNIQUE
             )
         """)
 
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_options_symbol ON Options (symbol, timestamp)")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_stocks_symbol ON Stocks (symbol, timestamp)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_options_symbol ON Options (symbol_id, timestamp)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_stocks_symbol ON Stocks (symbol_id, timestamp)")
         await db.commit()
+
+        async with db.execute("SELECT symbol, symbol_id FROM Symbols") as cursor:
+            async for row in cursor:
+                symbol_cache[row[0]] = row[1]
 
         while True:
             wait_time = 15 - (time.time() % 15)
@@ -201,16 +227,17 @@ async def write_to_db():
 
             for name, data in snapshot.items():
                 try:
+                    s_id = await get_symbol_id(db, name)
                     if len(name) > 8: # Option logic
                         option_records.append((
-                            timestamp, name, data.get("Mark"), data.get("Bid Price"),
+                            timestamp, s_id, data.get("Mark"), data.get("Bid Price"),
                             data.get("Ask Price"), data.get("Last Price"), data.get("High Price"),
                             data.get("IV"), data.get("Delta"), data.get("Gamma"),
                             data.get("Theta"), data.get("Vega")
                         ))
                     else: # Stock logic
                         stock_records.append((
-                            timestamp, name, data.get("Mark"), data.get("Bid Price"),
+                            timestamp, s_id, data.get("Mark"), data.get("Bid Price"),
                             data.get("Ask Price"), data.get("Last Price"), 
                             data.get("Bid Size"), data.get("Ask Size")
                         ))
@@ -220,26 +247,39 @@ async def write_to_db():
 
             if option_records:
                 await db.executemany(
-                    "INSERT OR REPLACE INTO Options VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", 
+                    "INSERT OR IGNORE INTO Options VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", 
                     option_records
                 )
             
             if stock_records:
                 await db.executemany(
-                    "INSERT OR REPLACE INTO Stocks VALUES (?,?,?,?,?,?,?,?)", 
+                    "INSERT OR IGNORE INTO Stocks VALUES (?,?,?,?,?,?,?,?)", 
                     stock_records
                 )
 
             await db.commit()
 
 async def stream_options(client):
+    """
+    Streams options data from the client and updates the local data storage.
+    
+    Parameters
+    ----------
+    client : schwabdev.Client
+        The client instance to use for fetching the options data.
+    
+    Returns
+    -------
+    None
+    """
+        
     option_ids = stream_func.option_ids
     new_data = stream_func.new_data
     while True:
-        wait_time = 15 - (time.time() % 15)
-        if wait_time < 0.1: wait_time = 15
-        await asyncio.sleep(wait_time)
         if not option_ids:
+            wait_time = 5 - (time.time() % 5)
+            if wait_time < 0.1: wait_time = 5
+            await asyncio.sleep(wait_time)
             continue
         response = client.quotes(option_ids)
 
@@ -274,6 +314,9 @@ async def stream_options(client):
                 continue
             
         print(f"Extraction & Renaming: {time.perf_counter() - start_time:.6f}s")
+        wait_time = 15 - (time.time() % 15)
+        if wait_time < 0.1: wait_time = 15
+        await asyncio.sleep(wait_time)
     
 
     
@@ -335,7 +378,6 @@ async def update_tickers_from_db(streamer):
                 if parsed:
                     asyncio.create_task(
                                 stream_func.start_options_stream(
-                                    streamer=streamer,
                                     ticker=parsed["ticker"],
                                     price=parsed["price"],
                                     day=parsed["day"],
@@ -382,7 +424,7 @@ async def handleCompany(client, api_key, rate_key, ticker):
         return
     await r.publish("Company_Channel", json.dumps(company.final_report))
 
-async def get_option_expiration_chain(ticker, client):
+async def get_options_and_initial_quotes(ticker, client):
     """
     Fetches the one time data for a given ticker and publishes it to the "One_Time_Data_Channel" Redis channel.
 
@@ -397,6 +439,7 @@ async def get_option_expiration_chain(ticker, client):
     -------
     None
     """
+    option_ids = stream_func.option_ids
     call_option_id_list = []
     put_option_id_list = []
     
@@ -407,6 +450,7 @@ async def get_option_expiration_chain(ticker, client):
     price_history = loader.get_price_history()
 
     call_option_id_list, put_option_id_list = loader.get_option_expirations()
+    option_ids.append(call_option_id_list, put_option_id_list)
     quote_dict = {
             "Symbol": ticker,
             "timestamp": int(quote['quoteTime'] // 1000),

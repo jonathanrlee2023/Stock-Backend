@@ -22,7 +22,7 @@ new_data = {}
 labeled_data = {}
 option_ids = []
 
-async def start_options_stream(streamer, ticker, price, day, month, year, type):
+async def start_options_stream(ticker, price, day, month, year, type):
     ticker = str(ticker).strip().replace('\xa0', '')
     yy = str(year)[-2:]
     strike_int = int(float(price) * 1000)
