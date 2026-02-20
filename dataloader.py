@@ -92,7 +92,6 @@ class DataLoader:
         put_data = response['putExpDateMap']
         for date, contract in call_data.items():
             for strike, options_list in contract.items():
-                # print(options_list[0]['symbol'])
                 # options_list is a list, e.g., [{ 'id': '...', 'symbol': '...' }]
                 if options_list: 
                     call_option_id_list.append(options_list[0]['symbol'])

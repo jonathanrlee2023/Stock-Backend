@@ -36,7 +36,6 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
     :param client: The Schwab API client to use when retrieving company data.
     """
     global stream_started
-    print("Listening for messages…")
     pubsub = r.pubsub()
     await pubsub.subscribe('Request_Channel')
     try:
@@ -50,7 +49,6 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
         if not stream_started:
             async with stream_lock:
                 if not stream_started:
-                    print("Starting streamer…")
                     streamer.start(receiver=stream_func.receive_data)
                     stream_started = True
         if message is not None:
@@ -85,8 +83,6 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
                                         type=option_type,
                                     )
                                 )
-
-                                print(f"Started Option Stream Request for: {symbol} {option_type} at ${price} on {month}/{day}/{year}")
                         else:
                             print(f"Stream for {symbol} {option_type} at ${price} on {month}/{day}/{year} already started.")
 
@@ -97,7 +93,6 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
                         print("Skipping malformed or empty request:", data)
                         continue
                     
-                    print("Handling single request:", data)
                     # ... (rest of your single request logic)
                     for stk in data:
                         symbol = stk["symbol"]
@@ -110,9 +105,6 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
                                         ticker=symbol,
                                     )
                                 )
-                            
-
-                                print(f"Started Stock Stream Request for: {symbol}") 
                         else:
                             print(f"Stream for {symbol} already started.")  
                         await asyncio.gather(
@@ -123,8 +115,6 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
             else:
                 # Fallback for a single‐item dict (old behavior) or unexpected shape
                 symbol = data.get("symbol")
-                print("Handling single request:", data)
-
                 try:
                     if "price" in data:
                         price = data["price"]
@@ -144,9 +134,7 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
                                         year=year,
                                         type=option_type
                                     )
-                                )
-                            
-                                print(f"Started Option Stream Request for: {symbol} {option_type} at ${price} on {month}/{day}/{year}")
+                                )                            
                         else: 
                             print(f"Stream for {symbol} {option_type} at ${price} on {month}/{day}/{year} already started.")
                     else:
@@ -158,7 +146,6 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
                                         ticker=symbol,
                                     )
                                 )
-                                print(f"Started Stream Request for: {symbol}")
                         else:
                             print(f"Stream for {symbol} already started.")
                         await asyncio.gather(
@@ -244,7 +231,6 @@ async def write_to_db():
                 )
 
             await db.commit()
-            print("Wrote to DB")
 
 async def stream_options(client):
     option_ids = stream_func.option_ids
@@ -255,7 +241,6 @@ async def stream_options(client):
         await asyncio.sleep(wait_time)
         if not option_ids:
             continue
-        print(option_ids)
         response = client.quotes(option_ids)
 
         start_time = time.perf_counter()
@@ -289,7 +274,6 @@ async def stream_options(client):
                 continue
             
         print(f"Extraction & Renaming: {time.perf_counter() - start_time:.6f}s")
-        return
     
 
     
@@ -301,7 +285,6 @@ async def broadcast_to_redis():
     and then broadcast the snapshot. This is done to ensure that Redis receives updates
     at a consistent interval.
     """
-    print("Called")
     new_data = stream_func.new_data
     file_names = stream_func.file_names 
     try:
@@ -318,8 +301,6 @@ async def broadcast_to_redis():
 
         if stream_func.file_names:
             snapshot = {name: new_data[name] for name in file_names}
-            print(file_names)
-            print(snapshot)
             await r.publish("Stream_Channel", json.dumps(snapshot))
 
 async def update_tickers_from_db(streamer):
@@ -423,9 +404,7 @@ async def get_option_expiration_chain(ticker, client):
 
     quote = loader.get_quote()
 
-    # print(f"quote {quote}")
     price_history = loader.get_price_history()
-    # print(f"price history {price_history[0]}")
 
     call_option_id_list, put_option_id_list = loader.get_option_expirations()
     quote_dict = {
@@ -437,5 +416,4 @@ async def get_option_expiration_chain(ticker, client):
             "Mark": quote['mark']
         }
     
-    # print(quote_dict)
     await r.publish("One_Time_Data_Channel", json.dumps({"Symbol": ticker, "Quote": quote_dict, "PriceHistory": price_history, "Call": call_option_id_list, "Put": put_option_id_list}))

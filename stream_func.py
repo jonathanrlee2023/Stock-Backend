@@ -31,7 +31,6 @@ async def start_options_stream(streamer, ticker, price, day, month, year, type):
     day_filled = day.zfill(2)
     option_id = f'{yy}{month_filled}{day_filled}{type.upper()}{strike_str}'
     full_symbol = f"{ticker.ljust(6)}{option_id}"
-    print(repr(full_symbol))
     option_ids.append(full_symbol)
     file_names.append(full_symbol)
     new_data[full_symbol] = {}

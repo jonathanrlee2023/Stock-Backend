@@ -3,7 +3,6 @@ package utils
 import (
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"math"
@@ -53,8 +52,6 @@ func NewTrackerHandler(trackerDB *sql.DB, w http.ResponseWriter, r *http.Request
 	if err != nil {
 		log.Fatalf("Failed to write to table: %v", err)
 	}
-
-	fmt.Fprintf(w, "Data has been read")
 }
 
 // Handles the removal of a symbol from the tracker db
@@ -76,8 +73,6 @@ func RemoveTrackerHandler(trackerDB *sql.DB, w http.ResponseWriter, r *http.Requ
 		log.Printf("Error deleting tracker %s: %v", closeTracker.ID, err)
 		http.Error(w, "Database delete failed", http.StatusInternalServerError)
 	}
-
-	fmt.Fprintf(w, "Data has been deleted")
 }
 
 // Handles the creation of a position
@@ -134,19 +129,15 @@ func OpenPositionHandler(openDB, balanceDB *sql.DB, w http.ResponseWriter, r *ht
 	if len(newPosition.ID) > 6 {
 		tradeCost *= 100 // Options contract multiplier
 	}
-	fmt.Println("Balance:", balance, "Cash:", cash)
 
 	newCash := cash - tradeCost
 	newBalance := balance
-
-	fmt.Println("New Balance:", newBalance, "New Cash:", newCash)
 
 	insertData := `INSERT INTO Balance (timestamp, balance, cash) VALUES (?, ?, ?)`
 	_, err = balanceDB.Exec(insertData, time.Now().Unix(), newBalance, newCash)
 	if err != nil {
 		http.Error(w, "Failed to write balance", http.StatusInternalServerError)
 	}
-	fmt.Fprintf(w, "Position Opened")
 }
 
 // Handles the closing of a position
@@ -246,5 +237,4 @@ func ClosePositionHandler(openDB, closeDB, balanceDB *sql.DB, w http.ResponseWri
 	if err != nil {
 		http.Error(w, "Failed to write balance", http.StatusInternalServerError)
 	}
-	fmt.Fprintf(w, "Position Closed")
 }

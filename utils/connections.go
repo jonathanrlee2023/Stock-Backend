@@ -98,8 +98,6 @@ func SendToRedis(data []byte, ctx context.Context, rdb *redis.Client, channel st
 	err := rdb.Publish(ctx, channel, data).Err()
 	if err != nil {
 		return fmt.Errorf("failed to publish to redis: %v", err)
-	} else {
-		fmt.Println("Successfully published to redis")
 	}
 	return nil
 }
@@ -241,7 +239,6 @@ func WebsocketConnectHandler(hub *Hub, openDB, balanceDB, priceDB, trackerDB *sq
 	log.Printf("Client connected: %s", clientID)
 
 	if clientID == "STOCK_CLIENT" {
-		fmt.Println(priceDB == nil)
 		clients[clientID].IsWriting = false
 		SendOpenPositions(balanceDB, openDB, priceDB, trackerDB, clients)
 		go HandleClientWrite(newClient, openDB, balanceDB, priceDB)
@@ -286,9 +283,7 @@ func ShutdownAllClients() {
 
 func CompanyHandler(rdb *redis.Client, w http.ResponseWriter, r *http.Request) {
 	ticker := r.URL.Query().Get("ticker")
-	fmt.Println("Received ticker:", ticker)
 	company_request := Company_Request{Symbol: ticker}
-	fmt.Println("Sending to Redis:", company_request)
 	msg, err := json.Marshal(company_request)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -305,7 +300,6 @@ func HandleCompanyRead(msg redis.Message) {
 		log.Printf("Invalid quotes JSON from Python Client: %v", err)
 		return
 	}
-	fmt.Println("Received from Redis:", company.Symbol)
 	client := "STOCK_CLIENT"
 	if clients[client] == nil {
 		return
@@ -326,9 +320,6 @@ func HandleOptionRead(msg redis.Message) {
 		log.Printf("Invalid quotes JSON from Python Client: %v", err)
 		return
 	}
-
-	fmt.Println(option.Quote)
-	fmt.Println(option.PriceHistory[0])
 
 	client := "STOCK_CLIENT"
 	if clients[client] == nil {
@@ -355,12 +346,10 @@ func HandleClientRead(msg redis.Message) {
 	// This preserves data if one broadcast only contains a subset of symbols
 	maps.Copy(GlobalPrices.Prices, quotes)
 	GlobalPrices.Unlock()
-	fmt.Println("Updated GlobalPrices:", GlobalPrices.Prices)
 }
 
 // Incremently writes balance to the Frontend
 func HandleClientWrite(client *Client, openDB, balanceDB, priceDB *sql.DB) {
-	fmt.Println(priceDB == nil)
 	client.Mu.Lock()
 	// If already writing, just unlock and leave
 	if client.IsWriting {
@@ -452,8 +441,6 @@ func StartStockStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	fmt.Fprintf(w, "Sent to WebSocket!")
 }
 
 // Write to a specific client the most recent balance
@@ -478,10 +465,9 @@ func processWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 			return
 		}
 
-		fmt.Println("Timestamp:", timestamp, "Balance:", balance, "Cash:", cash)
 		rows, err := openDB.Query("SELECT * FROM OpenPositions")
 		if err == sql.ErrNoRows {
-			fmt.Println("No Open Positions Yet")
+			log.Println("No Open Positions Yet")
 		} else if err != nil {
 			log.Printf("Query failed process write openDB: %v", err)
 		}
@@ -490,12 +476,11 @@ func processWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 		tempPositionValue := 0.0
 
 		for rows.Next() {
-			fmt.Println("Processing Open Position")
 			var id string
 			var price float64
 			var amount int64
 			if err := rows.Scan(&id, &price, &amount); err != nil {
-				fmt.Println("Scan failed:", err)
+				log.Println("Scan failed:", err)
 				continue
 			}
 			GlobalPrices.RLock() // Lock for reading
@@ -510,7 +495,6 @@ func processWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 			} else {
 				tempPositionValue += (mark * float64(amount))
 			}
-			log.Printf("ID: %s | Amount: %d | Mark: %f", id, amount, mark)
 		}
 
 		tempBalance := cash + tempPositionValue
@@ -575,7 +559,6 @@ func processWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 		stockPrices = append(stockPrices, message)
 
 		if len(optionPrices) > 0 {
-			fmt.Println(optionPrices)
 			if err := send(client, optionPrices); err != nil {
 				errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
 				_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
@@ -599,6 +582,6 @@ func send(client *Client, v interface{}) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println("Sending to client:", string(msg))
+	// fmt.Println("Sending to client:", string(msg))
 	return SendToClient(client, msg)
 }
