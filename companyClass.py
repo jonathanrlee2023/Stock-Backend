@@ -12,7 +12,10 @@ import numpy as np
 import requests
 import httpx
 
+import asyncFunc
 from dataloader import DataLoader
+
+pd.set_option('future.no_silent_downcasting', True)
 
 RISK_FREE_RATE = 0.0375
 MARKET_RISK_PREMIUM = 0.055
@@ -46,6 +49,7 @@ class Company:
     def __init__(self, ticker, api_key, rate_api_key, client):
         # 1. Minimal setup: only assign non-I/O variables
         self.ticker = ticker
+        print(self.ticker)
         self.api_key = api_key
         self.rate_api_key = rate_api_key
         self.client = client
@@ -70,6 +74,8 @@ class Company:
         """Asynchronous factory to create and fully initialize the instance."""
         self = cls(ticker, api_key, rate_api_key, client)
         await self.load_all_from_dbs()
+        db = await asyncFunc.init_db()
+        self.symbol_id = await asyncFunc.get_symbol_id(db, self.ticker)
         
         # 2. Run async I/O tasks
         # These will check the DBs, fetch if missing, and load into DataFrames
@@ -1106,7 +1112,6 @@ class Company:
         Final Flush: Persists data from the memory dictionary into 5 separate DB files.
         Handles 'Extra Columns' in annual data via automatic schema migration.
         """
-        # Map dictionary keys to their specific database filenames
         db_map = {
             "income": "income_statement.db",
             "balance": "balance_sheet.db",
@@ -1116,65 +1121,98 @@ class Company:
 
         # 1. Save the 4 Financial Databases
         for cat_key, db_file in db_map.items():
-            annual_df = self.data[cat_key]["annual"]
-            quarterly_df = self.data[cat_key]["quarterly"]
+            # Create a copy to avoid modifying the original memory dictionary directly
+            annual_df = self.data[cat_key]["annual"].copy()
+            quarterly_df = self.data[cat_key]["quarterly"].copy()
             
-            # Combine into one DF for storage
             df_to_save = pd.concat([annual_df, quarterly_df], ignore_index=True)
             if df_to_save.empty:
                 continue
 
+            # Add the ID so the upsert logic can use it
+            df_to_save["symbol_id"] = self.symbol_id
+
             engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}")
-            await self._upsert_to_database(engine, df_to_save, cat_key)
+            # Ensure we use symbol_id as the primary key column for the delete step
+            await self._upsert_to_database(engine, df_to_save, cat_key, pk_col="symbol_id")
             await engine.dispose()
 
         # 2. Save the Company Overview Database (The 5th DB)
-        # This includes your final target price, WACC, and other calculated metrics
         if not self.data["overview"].empty:
-            # Update overview DF with the final calculated class attributes
-            self.data["overview"]["intrinsic_price"] = self.intrinsic_price
-            self.data["overview"]["wacc"] = self.wacc
-            self.data["overview"]["roic"] = self.return_on_invested_capital
-            self.data["overview"]["timestamp"] = self.timestamp
+            overview_df = self.data["overview"].copy()
+            
+            # Inject calculated metrics
+            overview_df["intrinsic_price"] = self.intrinsic_price
+            overview_df["wacc"] = self.wacc
+            overview_df["roic"] = self.return_on_invested_capital
+            overview_df["timestamp"] = self.timestamp
+            
+            # NEW: Inject the integer ID
+            overview_df["symbol_id"] = self.symbol_id
             
             overview_engine = create_async_engine("sqlite+aiosqlite:///company_overviews.db")
-            # For overviews, the PK is 'Symbol' (Capitalized)
-            await self._upsert_to_database(overview_engine, self.data["overview"], "Overview", pk_col="Symbol")
+            
+            # CHANGE: Use symbol_id as the pk_col here too for a unified system
+            await self._upsert_to_database(overview_engine, overview_df, "Overview", pk_col="symbol_id")
             await overview_engine.dispose()
 
-    async def _upsert_to_database(self, engine, df, table_name, pk_col="ticker"):
-        """Helper to handle Schema Evolution and prevent duplicates."""
+    async def _upsert_to_database(self, engine, df, table_name, pk_col="symbol_id"):
+        """
+        Handles Schema Evolution and prevents duplicates by using symbol_id.
+        Ensures the transition from ticker strings to integer IDs is seamless.
+        """
+        # Ensure the integer ID is present in the DataFrame before saving
+        if pk_col == "symbol_id":
+            df["symbol_id"] = self.symbol_id
+
         async with engine.begin() as conn:
+            # 1. Check if the table exists
             table_exists_res = await conn.execute(
                 text("SELECT name FROM sqlite_master WHERE type='table' AND name=:t"), 
                 {"t": table_name}
             )
             table_exists = table_exists_res.fetchone() is not None
+            
             if table_exists:
-                # A. Schema Migration: Check for new columns (e.g., your annual calc columns)
+                # 2. Schema Migration: Check for missing columns
                 existing_cols_res = await conn.execute(text(f"PRAGMA table_info({table_name})"))
-                existing_cols = [row[1] for row in existing_cols_res.fetchall()]
+                existing_cols_info = existing_cols_res.fetchall()
+                existing_cols_lower = [row[1].lower() for row in existing_cols_info]
+
+                for col in df.columns:
+                    if col.lower() not in existing_cols_lower:
+                        # Assign correct SQLite types
+                        if col.lower() == "symbol_id":
+                            dtype = "INTEGER"
+                        elif col.lower() in ["reportedcurrency", "report_type", "ticker", "symbol"]:
+                            dtype = "TEXT"
+                        else:
+                            dtype = "REAL"
+                        
+                        try:
+                            await conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {col} {dtype}"))
+                            print(f"Migration: Added column {col} ({dtype}) to {table_name}")
+                        except Exception as e:
+                            print(f"Column {col} add failed (likely case conflict): {e}")
+
+                # 3. Clean Slate: Remove old entries for this company
+                # We delete by both symbol_id AND ticker during the migration phase 
+                # to ensure no duplicate rows exist under different identifiers.
+                delete_query = f"DELETE FROM {table_name} WHERE symbol_id = :sid"
+                params = {"sid": self.symbol_id}
                 
-                if existing_cols:
-                    existing_cols_res = await conn.execute(text(f"PRAGMA table_info({table_name})"))
-                    existing_cols_lower = [row[1].lower() for row in existing_cols_res.fetchall()]
+                if "ticker" in existing_cols_lower:
+                    delete_query += " OR ticker = :t"
+                    params["t"] = self.ticker
+                elif "symbol" in existing_cols_lower: # For the Overview table
+                    delete_query += " OR Symbol = :t"
+                    params["t"] = self.ticker
 
-
-                    for col in df.columns:
-                        # 3. ONLY add if the column doesn't exist in ANY case format
-                        if col.lower() not in existing_cols_lower:
-                            dtype = "TEXT" if col.lower() in ["reportedcurrency", "report_type", "ticker", "symbol"] else "REAL"
-                            try:
-                                await conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {col} {dtype}"))
-                            except Exception as e:
-                                print(f"Column {col} add failed (likely case conflict): {e}")
-
-                    # B. Clean Slate (Only if table exists)
-                    await conn.execute(text(f"DELETE FROM {table_name} WHERE {pk_col} = :t"), {"t": self.ticker})
+                await conn.execute(text(delete_query), params)
             
-            
-            # C. Save
+            # 4. Final Flush: Save the DataFrame
             def sync_save(sync_conn):
+                # Using 'append' because we manually handled the 'Clean Slate' above
                 df.to_sql(table_name, sync_conn, if_exists="append", index=False)
             
             await conn.run_sync(sync_save)

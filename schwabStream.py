@@ -8,7 +8,17 @@ import asyncFunc
 import stream_func
 
 tasks_started = False
-
+# def delete_table(db_name, table_name):
+#         conn = sqlite3.connect(db_name)
+#         cursor = conn.cursor()
+        
+#         # Using a f-string for the table name is okay if YOU define it, 
+#         # but be careful of SQL injection with user input!
+#         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        
+#         conn.commit()
+#         conn.close()
+#         print(f"Table '{table_name}' has been deleted.")
 async def main():
     global tasks_started
     if tasks_started:

@@ -55,7 +55,9 @@ class DataLoader:
     def get_price_history(self):
         try:
             start_ms = self.get_unix_timestamp_5_years_ago()
-            
+            # One year ago in milliseconds
+            one_year_ago_ms = int((time.time() - (365 * 24 * 60 * 60)) * 1000)
+
             response = self.connection.price_history(
                 symbol=self.ticker,
                 periodType="year",
@@ -63,16 +65,37 @@ class DataLoader:
                 startDate=start_ms,
             )
             
-            # Ensure the response is valid before calling .json()
             if response.status_code != 200:
                 return None
                 
             quote = response.json()
-            if 'candles' in quote and quote['candles']:
-                for candle in quote.get('candles', []):
-                    if 'datetime' in candle:
-                        candle['timestamp'] = candle.pop('datetime')
-                return quote['candles']
+            raw_candles = quote.get('candles', [])
+            
+            if not raw_candles:
+                return None
+
+            filtered_candles = []
+            # We use a counter for the "every 5th" logic
+            skip_counter = 0
+
+            # Iterate through candles (Schwab returns them Chronological: Oldest -> Newest)
+            for candle in raw_candles:
+                # Fix the naming immediately
+                if 'datetime' in candle:
+                    candle['timestamp'] = candle.pop('datetime')
+                
+                # Check if candle is within the last year
+                if candle['timestamp'] >= one_year_ago_ms:
+                    # RECENT: Keep everything
+                    filtered_candles.append(candle)
+                else:
+                    # OLD: Only keep every 5th candle
+                    if skip_counter % 5 == 0:
+                        filtered_candles.append(candle)
+                    skip_counter += 1
+
+            return filtered_candles
+
         except Exception as e:
             print(f"Schwab API Error: {e}")
         return None
@@ -87,7 +110,7 @@ class DataLoader:
         put_option_id_list = []
         fromDate = datetime.datetime.now()
         toDate = fromDate + datetime.timedelta(days=7)
-        response = self.connection.option_chains(symbol=self.ticker, strikeCount=3, optionType="ALL", toDate=toDate).json()
+        response = self.connection.option_chains(symbol=self.ticker, strikeCount=5, optionType="ALL", toDate=toDate).json()
         call_data = response['callExpDateMap']
         put_data = response['putExpDateMap']
         for date, contract in call_data.items():

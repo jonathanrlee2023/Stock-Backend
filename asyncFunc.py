@@ -231,12 +231,14 @@ async def write_to_db(db):
             symbol_cache[row[0]] = row[1]
 
     while True:
-        wait_time = 15 - (time.time() % 15)
-        if wait_time < 0.1: wait_time = 15
+        write_interval = 300
+        wait_time = write_interval - (time.time() % write_interval)
+        if wait_time < 0.1: wait_time = write_interval
         await asyncio.sleep(wait_time)
         timestamp = int(time.time())    
         
-        snapshot = {name: stream_func.new_data[name] for name in stream_func.file_names}
+        snapshot = {name: stream_func.new_data[name] for name in stream_func.file_names 
+                   if name in stream_func.new_data}
 
         option_records = []
         stock_records = []
@@ -281,59 +283,80 @@ async def write_to_db(db):
 
 async def stream_options(client):
     """
-    Streams options data from the client and updates the local data storage.
-    
-    Parameters
-    ----------
-    client : schwabdev.Client
-        The client instance to use for fetching the options data.
-    
-    Returns
-    -------
-    None
+    Streams options from the Schwab API into the SQLite database.
+
+    Fetches a batch of options from the API and processes them in parallel.
+    For each option, fetches the current quote and stores it in the database.
+
+    Continuously fetches options until the list of option IDs is empty.
+    Then, waits for the next 15 second interval to fetch more options.
+
+    :param client: The Schwab API client to use when fetching options.
     """
-        
     option_ids = stream_func.option_ids
     new_data = stream_func.new_data
+    LIMIT = 250 
+    
     while True:
         if not option_ids:
-            wait_time = 5 - (time.time() % 5)
-            if wait_time < 0.1: wait_time = 5
-            await asyncio.sleep(wait_time)
+            await asyncio.sleep(5)
             continue
-        response = client.quotes(option_ids)
 
-        start_time = time.perf_counter()
-        data = orjson.loads(response.content) 
-            
+        start_fetch = time.perf_counter()
+        
+        try:
+            if len(option_ids) <= LIMIT:
+                response = client.quotes(option_ids)
+                # GUARD: Verify response is valid and not empty
+                if response.status_code != 200 or not response.content:
+                    print(f"API Error: Status {response.status_code} | Length: {len(response.content)}")
+                    await asyncio.sleep(5) 
+                    continue
+                all_responses = [response.content]
+            else:
+                batches = [option_ids[i:i + LIMIT] for i in range(0, len(option_ids), LIMIT)]
+                tasks = [asyncio.to_thread(client.quotes, b) for b in batches]
+                responses = await asyncio.gather(*tasks)
+                
+                # GUARD: Filter out failed responses
+                all_responses = [
+                    r.content for r in responses 
+                    if r.status_code == 200 and r.content
+                ]
+                
+                if not all_responses:
+                    continue
+        except Exception as e:
+            print(f"Network exception caught: {e}")
+            await asyncio.sleep(5)
+            continue
+
+        fetch_done = time.perf_counter()
+        
         local_fetcher = get_option_stats
         local_new_data = new_data
         
-        for symbol, details in data.items():
-            try:
-                # EAFP: Assume the symbol exists. This is faster than 'if symbol in'
-                t = local_new_data[symbol]
-            except KeyError:
-                # Only happens once per symbol
-                t = local_new_data[symbol] = {}
-            try:
-                v = local_fetcher(details['quote'])
+        for raw_content in all_responses:
+            batch_data = orjson.loads(raw_content)
+            for symbol, details in batch_data.items():
+                try:
+                    t = local_new_data[symbol]
+                except KeyError:
+                    t = local_new_data[symbol] = {}
                 
-                # Manual unrolling: Faster than zip() because it avoids iterator overhead
-                t['Bid Price']   = v[0]
-                t['Ask Price']   = v[1]
-                t['Last Price']  = v[2]
-                t['High Price']  = v[3]
-                t['IV']          = v[4]
-                t['Delta']       = v[5]
-                t['Gamma']       = v[6]
-                t['Theta']       = v[7]
-                t['Vega']        = v[8]
-                t['Mark']        = v[9]
-            except KeyError:
-                continue
-            
-        print(f"Extraction & Renaming: {time.perf_counter() - start_time:.6f}s")
+                try:
+                    v = local_fetcher(details['quote'])
+                    # Fastest way to assign: Multiple assignment
+                    t['Bid Price'], t['Ask Price'], t['Last Price'], t['High Price'], \
+                    t['IV'], t['Delta'], t['Gamma'], t['Theta'], t['Vega'], t['Mark'] = v
+                except KeyError:
+                    continue
+
+        end_time = time.perf_counter()
+        
+        # --- DIAGNOSTICS ---
+        print(f"Fetch: {fetch_done - start_fetch:.4f}s | Rename: {end_time - fetch_done:.4f}s")
+        print(f"Total: {end_time - start_fetch:.4f}s | Symbols: {len(option_ids)}")
         wait_time = 15 - (time.time() % 15)
         if wait_time < 0.1: wait_time = 15
         await asyncio.sleep(wait_time)
@@ -363,7 +386,8 @@ async def broadcast_to_redis():
         await asyncio.sleep(wait_time)
 
         if stream_func.file_names:
-            snapshot = {name: new_data[name] for name in file_names}
+            snapshot = {name: stream_func.new_data[name] for name in stream_func.file_names 
+                   if name in stream_func.new_data}
             await r.publish("Stream_Channel", json.dumps(snapshot))
 
 async def update_tickers_from_db(streamer):
@@ -499,6 +523,8 @@ async def get_options_and_initial_quotes(ticker, client, db):
     call_option_id_list, put_option_id_list = loader.get_option_expirations()
     option_ids.extend(call_option_id_list)
     option_ids.extend(put_option_id_list)
+    stream_func.file_names.extend(call_option_id_list)
+    stream_func.file_names.extend(put_option_id_list)
     quote_dict = {
             "Symbol": ticker,
             "timestamp": int(quote['quoteTime'] // 1000),
