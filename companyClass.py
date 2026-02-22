@@ -46,13 +46,14 @@ DEFENSIVE = ["HEALTHCARE", "CONSUMER DEFENSIVE", "UTILITIES"]
 SENSITIVE = ["TECHNOLOGY", "COMMUNICATION SERVICES", "INDUSTRIALS", "ENERGY"]
 CYCLICAL = ["CONSUMER CYCLICAL", "FINANCIAL SERVICES", "BASIC MATERIALS", "REAL ESTATE"]
 class Company:
-    def __init__(self, ticker, api_key, rate_api_key, client):
+    def __init__(self, ticker, api_key, rate_api_key, client, engines):
         # 1. Minimal setup: only assign non-I/O variables
         self.ticker = ticker
         print(self.ticker)
         self.api_key = api_key
         self.rate_api_key = rate_api_key
         self.client = client
+        self.engines = engines
 
         self.data = {
             "income": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
@@ -70,9 +71,9 @@ class Company:
 
 
     @classmethod
-    async def create(cls, ticker, api_key, rate_api_key, client):
+    async def create(cls, ticker, api_key, rate_api_key, client, engines):
         """Asynchronous factory to create and fully initialize the instance."""
-        self = cls(ticker, api_key, rate_api_key, client)
+        self = cls(ticker, api_key, rate_api_key, client, engines)
         await self.load_all_from_dbs()
         db = await asyncFunc.init_db()
         self.symbol_id = await asyncFunc.get_symbol_id(db, self.ticker)
@@ -184,7 +185,6 @@ class Company:
                 {"t": self.ticker, "r": report_type}
             )
             df = pd.DataFrame(result.fetchall(), columns=result.keys())
-        await engine.dispose()
         return df
 
     async def get_current_price(self) -> float:
@@ -248,14 +248,13 @@ class Company:
                 elif category == "CASH_FLOW": table_name = "cash"
                 elif category == "EARNINGS": table_name = "earnings"
                 # 1. Define the specific DB for this category
-                db_name = f"{category.lower()}.db"
-                engine = create_async_engine(f"sqlite+aiosqlite:///{db_name}")
-
+                
+                engine = self.engines[table_name]
                 # 2. Check if this ticker already has data in this specific DB
                 # Note: We check a table named 'data' inside that specific DB
                 already_exists = await self._check_db_for_ticker(table_name, engine, ticker)
-                engine = create_async_engine(f"sqlite+aiosqlite:///RAW_{category}.db")
-                raw_exists = await self._check_db_for_ticker(table_name, engine, ticker)
+                raw_engine = self.engines[f"RAW_{category}"]
+                raw_exists = await self._check_db_for_ticker(table_name, raw_engine, ticker)
                 
                 if not already_exists:
                     if not raw_exists:
@@ -301,11 +300,9 @@ class Company:
                             if 'fiscalDateEnding' in combined_df.columns:
                                 combined_df = combined_df.rename(columns={'fiscalDateEnding': 'date'})
                             
-                            engine = create_async_engine(f"sqlite+aiosqlite:///RAW_{category}.db")
-                            async with engine.connect() as conn:
+                            async with raw_engine.connect() as conn:
                                 try:
-                                    await self._upsert_to_database(engine, combined_df, table_name=table_name)
-                                    await engine.dispose()
+                                    await self._upsert_to_database(raw_engine, combined_df, table_name=table_name)
 
                                 except Exception as e:
                                     print(f"Database table check failed for RAW_{category}.db: {e}")
@@ -320,9 +317,7 @@ class Company:
                         quarterly_df = await self._read_sql_to_df(table_name, engine=engine, report_type="quarterly")
                         annual_df = await self._read_sql_to_df(table_name, engine=engine, report_type="annual")
                         self.data[table_name]["annual"] = annual_df
-                        self.data[table_name]["quarterly"] = quarterly_df
-                
-                await engine.dispose() # Clean up connection for this specific DB file
+                        self.data[table_name]["quarterly"] = quarterly_df                
             else:
                 await self.load_all_from_dbs()
         return True
@@ -346,7 +341,7 @@ class Company:
             if not os.path.exists(db_file):
                 continue
                 
-            engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}")
+            engine = self.engines[cat_key]
             async with engine.connect() as conn:
                 try:
                     check_sql = f"SELECT name FROM sqlite_master WHERE type='table' AND name='{cat_key}'"
@@ -364,12 +359,11 @@ class Company:
                             self.data[cat_key]["quarterly"] = df[df["report_type"] == "quarterly"].copy()
                 except Exception as e:
                     print(f"Database table check failed for {db_file}: {e}")
-            await engine.dispose()
 
         # 2. Load the Company Overview (The 5th Database)
         overview_db = "company_overviews.db"
         if os.path.exists(overview_db):
-            engine = create_async_engine(f"sqlite+aiosqlite:///{overview_db}")
+            engine = self.engines["overview"]
             async with engine.connect() as conn:
                 try:
                     # Note: Overview uses 'Symbol' instead of 'ticker' per your current schema
@@ -381,7 +375,6 @@ class Company:
                         self.data["overview"] = overview_df
                 except Exception:
                     pass
-            await engine.dispose()
     async def _check_db_for_ticker(self, table_name, engine, ticker):
         async with engine.connect() as conn:
             try:
@@ -424,8 +417,7 @@ class Company:
 
 
     async def get_company_overviews(self):
-        OVERVIEW_DB_URL = "sqlite+aiosqlite:///company_overviews.db"
-        overview_engine = create_async_engine(OVERVIEW_DB_URL)
+        overview_engine = self.engines["overview"]
         ticker = self.ticker
         api_key = self.api_key
 
@@ -1112,15 +1104,10 @@ class Company:
         Final Flush: Persists data from the memory dictionary into 5 separate DB files.
         Handles 'Extra Columns' in annual data via automatic schema migration.
         """
-        db_map = {
-            "income": "income_statement.db",
-            "balance": "balance_sheet.db",
-            "cash": "cash_flow.db",
-            "earnings": "earnings.db"
-        }
+        db_map = ["income", "balance", "cash", "earnings"]
 
         # 1. Save the 4 Financial Databases
-        for cat_key, db_file in db_map.items():
+        for cat_key in db_map:
             # Create a copy to avoid modifying the original memory dictionary directly
             annual_df = self.data[cat_key]["annual"].copy()
             quarterly_df = self.data[cat_key]["quarterly"].copy()
@@ -1132,10 +1119,9 @@ class Company:
             # Add the ID so the upsert logic can use it
             df_to_save["symbol_id"] = self.symbol_id
 
-            engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}")
+            engine = self.engines[cat_key]
             # Ensure we use symbol_id as the primary key column for the delete step
             await self._upsert_to_database(engine, df_to_save, cat_key, pk_col="symbol_id")
-            await engine.dispose()
 
         # 2. Save the Company Overview Database (The 5th DB)
         if not self.data["overview"].empty:
@@ -1150,11 +1136,10 @@ class Company:
             # NEW: Inject the integer ID
             overview_df["symbol_id"] = self.symbol_id
             
-            overview_engine = create_async_engine("sqlite+aiosqlite:///company_overviews.db")
+            overview_engine = self.engines["overview"]
             
             # CHANGE: Use symbol_id as the pk_col here too for a unified system
             await self._upsert_to_database(overview_engine, overview_df, "Overview", pk_col="symbol_id")
-            await overview_engine.dispose()
 
     async def _upsert_to_database(self, engine, df, table_name, pk_col="symbol_id"):
         """

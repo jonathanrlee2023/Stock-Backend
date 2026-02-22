@@ -21,7 +21,7 @@ get_option_stats = itemgetter(*option_attributes)
 symbol_cache = {}
 r = aioredis.Redis(host='localhost', port=6380, db=0)
 
-async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, client, db):
+async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, client, db, engines):
     """
     Listens for incoming messages from the Redis channel 'Request_Channel'.
     When a message is received, it is parsed and checked for validity.
@@ -58,60 +58,6 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
             # 🛑 FILTER: If this is just a confirmation message, IGNORE IT
             if "Status" in data:
                 continue
-            if isinstance(data, list) and data:
-                first = data[0]
-
-                # OptionStreamRequest array
-                if "price" in first:
-                    for opt in data:
-                        symbol      = opt["symbol"]
-                        price       = opt["price"]
-                        day         = opt["day"]
-                        month       = opt["month"]
-                        year        = opt["year"]
-                        option_type = opt["type"]
-
-                        if symbol not in option_ids:
-                            if not is_weekday_business_hours_central:
-                                asyncio.create_task(
-                                    stream_func.start_options_stream(
-                                        ticker=symbol,
-                                        price=price,
-                                        day=day,
-                                        month=month,
-                                        year=year,
-                                        type=option_type,
-                                    )
-                                )
-                        else:
-                            print(f"Stream for {symbol} {option_type} at ${price} on {month}/{day}/{year} already started.")
-
-                # StockStreamRequest array
-                else:
-                    symbol = data.get("symbol")
-                    if not symbol:
-                        print("Skipping malformed or empty request:", data)
-                        continue
-                    
-                    # ... (rest of your single request logic)
-                    for stk in data:
-                        symbol = stk["symbol"]
-
-                        if symbol not in streamer.subscriptions.get("LEVELONE_EQUITIES", {}):
-                            if not is_weekday_business_hours_central:
-                                asyncio.create_task(
-                                    stream_func.start_stock_stream(
-                                        streamer=streamer,
-                                        ticker=symbol,
-                                    )
-                                )
-                        else:
-                            print(f"Stream for {symbol} already started.")  
-                        await asyncio.gather(
-                            get_options_and_initial_quotes(symbol, client, db),
-                            handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol)
-                        )
-
             else:
                 # Fallback for a single‐item dict (old behavior) or unexpected shape
                 symbol = data.get("symbol")
@@ -149,7 +95,7 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
                             print(f"Stream for {symbol} already started.")
                         await asyncio.gather(
                             get_options_and_initial_quotes(symbol, client, db),
-                            handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol)
+                            handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol, engines)
                         )
                 except requests.exceptions.ReadTimeout:
                     print("Timeout connecting to Schwab API.")
@@ -373,22 +319,26 @@ async def broadcast_to_redis():
     """
     new_data = stream_func.new_data
     file_names = stream_func.file_names 
-    try:
-        if await r.ping():
-            print("✅ Redis Connection Successful!")
-    except aioredis.ConnectionError:
-        print("❌ Redis Connection Failed. Is the Docker container running?")
-    if not is_weekday_business_hours_central:
-        print("Stream is closed.")
     while True:
-        wait_time = 15 - (time.time() % 15)
-        if wait_time < 0.1: wait_time = 15
-        await asyncio.sleep(wait_time)
+        try:
+            if not is_weekday_business_hours_central:
+                print("Stream is closed.")
+    
+            if stream_func.file_names:
+                snapshot = {name: new_data[name] for name in file_names 
+                    if name in new_data}
+                await r.publish("Stream_Channel", json.dumps(snapshot))
 
-        if stream_func.file_names:
-            snapshot = {name: stream_func.new_data[name] for name in stream_func.file_names 
-                   if name in stream_func.new_data}
-            await r.publish("Stream_Channel", json.dumps(snapshot))
+            wait_time = 15 - (time.time() % 15)
+            if wait_time < 0.1: wait_time = 15
+            await asyncio.sleep(wait_time)
+        except aioredis.ConnectionError:
+            print("❌ Connection lost. Retrying in 5 seconds...")
+            await asyncio.sleep(5)
+        except Exception as e:
+            print(f"⚠️ Unexpected error: {e}")
+            await asyncio.sleep(1) # Prevent tight-looping on errors
+        
 
 async def update_tickers_from_db(streamer):
     """
@@ -443,7 +393,7 @@ async def update_tickers_from_db(streamer):
     else:
         print("No tickers found in tracker.db")
 
-async def handleCompany(client, api_key, rate_key, ticker):
+async def handleCompany(client, api_key, rate_key, ticker, engines):
     """
     Handles a company request by fetching the company's data and publishing the final report to the Redis channel.
 
@@ -462,7 +412,7 @@ async def handleCompany(client, api_key, rate_key, ticker):
     -------
     None
     """
-    company = await Company.create(ticker=ticker, api_key=api_key, rate_api_key=rate_key, client=client)
+    company = await Company.create(ticker=ticker, api_key=api_key, rate_api_key=rate_key, client=client, engines=engines)
     if company is None:
         print("Company data not fetched properly")
         return

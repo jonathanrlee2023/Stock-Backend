@@ -5,7 +5,8 @@ from dotenv import load_dotenv
 import os
 import asyncio
 import asyncFunc
-import stream_func
+from sqlalchemy.ext.asyncio import create_async_engine
+
 
 tasks_started = False
 # def delete_table(db_name, table_name):
@@ -19,6 +20,18 @@ tasks_started = False
 #         conn.commit()
 #         conn.close()
 #         print(f"Table '{table_name}' has been deleted.")
+ENGINES = {
+        "income": create_async_engine("sqlite+aiosqlite:///income_statement.db"),
+        "balance": create_async_engine("sqlite+aiosqlite:///balance_sheet.db"),
+        "cash": create_async_engine("sqlite+aiosqlite:///cash_flow.db"),
+        "earnings": create_async_engine("sqlite+aiosqlite:///earnings.db"),
+        "overview": create_async_engine("sqlite+aiosqlite:///company_overviews.db"),
+        "raw_income": create_async_engine("sqlite+aiosqlite:///RAW_INCOME_STATEMENT.db"),
+        "raw_balance": create_async_engine("sqlite+aiosqlite:///RAW_BALANCE_SHEET.db"),
+        "raw_cash": create_async_engine("sqlite+aiosqlite:///RAW_CASH_FLOW.db"),
+        "raw_earnings": create_async_engine("sqlite+aiosqlite:///RAW_EARNINGS.db")
+    }
+
 async def main():
     global tasks_started
     if tasks_started:
@@ -40,7 +53,7 @@ async def main():
     tasks = [
         asyncio.create_task(asyncFunc.update_tickers_from_db(streamer)),
         asyncio.create_task(asyncFunc.broadcast_to_redis()),
-        asyncio.create_task(asyncFunc.listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, client, db_connection)),
+        asyncio.create_task(asyncFunc.listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, client, db_connection, ENGINES)),
         asyncio.create_task(asyncFunc.write_to_db(db_connection)),
         asyncio.create_task(asyncFunc.stream_options(client)),
     ]
@@ -55,6 +68,9 @@ async def main():
         # This part ensures the script actually exits
         print("Closing database and cleaning up tasks...")
         await db_connection.close()
+
+        dispose_tasks = [engine.dispose() for engine in ENGINES.values()]
+        await asyncio.gather(*dispose_tasks)
         
         # Cancel all remaining tasks
         current_tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
