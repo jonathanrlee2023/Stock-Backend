@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  python-streamer:
+    build:
+      context: .
+      dockerfile: Python_Streamer/Dockerfile
+    env_file: .env
+    environment:
+      - PYTHONUNBUFFERED=1  # <--- Add this line
+    volumes:
+      - ./Database:/app/Database
+    depends_on:
+      - redis
+
+  go-api:
+    build:
+      context: .
+      dockerfile: Go_Backend/Dockerfile
+    ports:
+      - "8080:8080"
+    env_file: .env
+    volumes:
+      - ./Database:/app/Database
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"

@@ -1,0 +1,10 @@
+schwabdev
+python-dotenv
+aiosqlite
+sqlalchemy
+redis
+orjson
+httpx
+pandas
+numpy
+pytz

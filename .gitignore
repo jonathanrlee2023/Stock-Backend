@@ -1,0 +1,7 @@
+*.json
+*.db
+*.db-shm
+*.db-wal
+.env
+**/ .env
+Database/
