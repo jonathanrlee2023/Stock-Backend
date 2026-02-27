@@ -1,4 +1,7 @@
 import asyncio
+import io
+import sqlite3
+import pandas as pd
 from operator import itemgetter
 import os
 import time
@@ -6,6 +9,9 @@ import orjson
 from redis import asyncio as aioredis
 import aiosqlite
 import requests
+import httpx
+import datetime
+from dbState import db_state
 from companyClass import Company
 from dataloader import DataLoader
 import stream_func
@@ -23,7 +29,7 @@ r = aioredis.Redis(host='redis', port=6379, db=0)
 db_dir = os.getenv("DB_DIR", "../Database")
 
 
-async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, client, db, engines):
+async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, client):
     """
     Listens for incoming messages from the Redis channel 'Request_Channel'.
     When a message is received, it is parsed and checked for validity.
@@ -82,8 +88,6 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
                                         type=option_type
                                     )
                                 )                            
-                        else: 
-                            print(f"Stream for {symbol} {option_type} at ${price} on {month}/{day}/{year} already started.")
                     else:
                         if symbol not in streamer.subscriptions.get('LEVELONE_EQUITIES', {}):
                             if not is_market_closed:
@@ -93,23 +97,22 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
                                         ticker=symbol,
                                     )
                                 )
-                        else:
-                            print(f"Stream for {symbol} already started.")
                         await asyncio.gather(
-                            get_options_and_initial_quotes(symbol, client, db),
-                            handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol, engines)
+                            get_options_and_initial_quotes(symbol, client),
+                            handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol)
                         )
                 except requests.exceptions.ReadTimeout:
                     print("Timeout connecting to Schwab API.")
                 except Exception as e:
                     print("Stream handling error:", e)
 
-async def get_symbol_id(db, symbol):
+async def get_symbol_id(symbol):
     """Helper to get ID from cache or DB, creating it if necessary."""
     # 1. Check RAM Cache first
     if symbol in symbol_cache:
         return symbol_cache[symbol]
 
+    db = db_state.price_db
     # 2. Check DB if not in cache
     async with db.execute("SELECT symbol_id FROM Symbols WHERE symbol = ?", (symbol,)) as cursor:
         row = await cursor.fetchone()
@@ -167,7 +170,7 @@ async def init_db():
 
     return db
 
-async def write_to_db(db):
+async def write_to_db():
     """
     Write data to the database. This function is designed to run in a loop and be called
     every 15 seconds. It will create the tables and indices if they do not exist,
@@ -175,6 +178,7 @@ async def write_to_db(db):
 
     :return: None
     """
+    db = db_state.price_db
     async with db.execute("SELECT symbol, symbol_id FROM Symbols") as cursor:
         async for row in cursor:
             symbol_cache[row[0]] = row[1]
@@ -198,7 +202,7 @@ async def write_to_db(db):
                     s_id = symbol_cache[name]
                 else:
                     # Only await if it's a brand new symbol we haven't seen since startup
-                    s_id = await get_symbol_id(db, name)
+                    s_id = await get_symbol_id(name)
                 if len(name) > 8: # Option logic
                     option_records.append((
                         timestamp, s_id, data.get("Mark"), data.get("Bid Price"),
@@ -324,9 +328,6 @@ async def broadcast_to_redis():
     file_names = stream_func.file_names 
     while True:
         try:
-            if not is_weekday_business_hours_central:
-                print("Stream is closed.")
-    
             if stream_func.file_names:
                 snapshot = {name: new_data[name] for name in file_names 
                     if name in new_data}
@@ -342,6 +343,14 @@ async def broadcast_to_redis():
             print(f"⚠️ Unexpected error: {e}")
             await asyncio.sleep(1) # Prevent tight-looping on errors
         
+async def init_tracker_db():
+    db_path = os.path.join(db_dir, 'Tracker.db')
+    db = await aiosqlite.connect(db_path)
+    await db.execute("PRAGMA journal_mode=WAL")
+    await db.execute("PRAGMA synchronous=NORMAL")
+    await db.commit()
+
+    return db
 
 async def update_tickers_from_db(streamer):
     """
@@ -362,11 +371,10 @@ async def update_tickers_from_db(streamer):
     -------
     None
     """
-    db_path = os.path.join(db_dir, 'Tracker.db')
-    async with aiosqlite.connect(db_path) as db:
-        async with db.execute("SELECT id FROM tracker") as cursor:
-            rows = await cursor.fetchall()
-            ticker_list = [row[0] for row in rows]
+    db = db_state.tracker_db
+    async with db.execute("SELECT id FROM tracker") as cursor:
+        rows = await cursor.fetchall()
+        ticker_list = [row[0] for row in rows]
             
     if ticker_list:
         for ticker in ticker_list:
@@ -396,7 +404,7 @@ async def update_tickers_from_db(streamer):
     else:
         print("No tickers found in tracker.db")
 
-async def handleCompany(client, api_key, rate_key, ticker, engines):
+async def handleCompany(client, api_key, rate_key, ticker):
     """
     Handles a company request by fetching the company's data and publishing the final report to the Redis channel.
 
@@ -415,13 +423,13 @@ async def handleCompany(client, api_key, rate_key, ticker, engines):
     -------
     None
     """
-    company = await Company.create(ticker=ticker, api_key=api_key, rate_api_key=rate_key, client=client, engines=engines)
+    company = await Company.create(ticker=ticker, api_key=api_key, rate_api_key=rate_key, client=client)
     if company is None:
         print("Company data not fetched properly")
         return
     await r.publish("Company_Channel", orjson.dumps(company.final_report))
 
-async def get_options_and_initial_quotes(ticker, client, db):
+async def get_options_and_initial_quotes(ticker, client):
     """
     Fetches the one time data for a given ticker and publishes it to the "One_Time_Data_Channel" Redis channel.
 
@@ -436,7 +444,8 @@ async def get_options_and_initial_quotes(ticker, client, db):
     -------
     None
     """
-    s_id = await get_symbol_id(db, ticker)
+    db = db_state.price_db
+    s_id = await get_symbol_id(ticker)
     option_ids = stream_func.option_ids
     call_option_id_list = []
     put_option_id_list = []
@@ -488,3 +497,81 @@ async def get_options_and_initial_quotes(ticker, client, db):
         }
     
     await r.publish("One_Time_Data_Channel", orjson.dumps({"Symbol": ticker, "Quote": quote_dict, "PriceHistory": price_history, "Call": call_option_id_list, "Put": put_option_id_list}))
+
+async def init_earnings_db():
+    db_path = os.path.join(db_dir, 'EarningsDates.db')
+    db = await aiosqlite.connect(db_path)
+    await db.execute("PRAGMA journal_mode=WAL")
+    await db.execute("PRAGMA synchronous=NORMAL")
+    await db.execute("""
+            CREATE TABLE IF NOT EXISTS earnings_calendar (
+                symbol TEXT,
+                name TEXT,
+                reportdate TEXT,
+                fiscaldateending TEXT,
+                estimate REAL,
+                currency TEXT,
+                timeoftheday TEXT,
+                UNIQUE(symbol, reportdate) ON CONFLICT REPLACE
+            )
+        """)
+    await db.commit()
+
+    return db
+
+async def get_last_update_date():
+    db = db_state.earnings_db
+    async with db.execute("SELECT MAX(reportdate) FROM earnings_calendar") as cursor:
+        row = await cursor.fetchone()
+        # If the table was just created, row[0] will be None
+        return row[0] if row else None
+        
+async def get_earnings_dates(api_key):
+    # 1. Use httpx for an async network request
+    url = f"https://www.alphavantage.co/query?function=EARNINGS_CALENDAR&horizon=3month&apikey={api_key}"
+    db_path = os.path.join(db_dir, 'EarningsDates.db')
+    should_fetch = False
+
+    latest_report = await get_last_update_date()
+    if latest_report is None:
+        should_fetch = True
+    else:
+        today = datetime.date.today()
+        report_date = datetime.date.fromisoformat(latest_report)
+        if today > report_date:
+            should_fetch = True
+    
+    if should_fetch:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url)
+
+        if response.status_code == 200:
+            # 2. Use io.StringIO to turn raw text into a file-like object for Pandas
+            csv_data = io.StringIO(response.text)
+            df = pd.read_csv(csv_data)
+            df.columns = [c.strip().lower() for c in df.columns]
+
+            # 3. Handle the DB Path
+            os.makedirs(db_dir, exist_ok=True)
+
+            # 4. Run the BLOCKING Pandas to_sql in a thread to keep the loop moving
+            def save_to_db():
+                with sqlite3.connect(db_path) as conn:
+                    df.to_sql('earnings_calendar', conn, if_exists='append', index=False)
+            
+            await asyncio.to_thread(save_to_db)
+            print(f"Successfully imported {len(df)} rows.")
+        else:
+            print(f"Failed to fetch data: {response.status_code}")
+            return None
+    else:
+        return
+    
+async def get_furthest_date_for_stock(symbol):
+    """Returns the latest scheduled earnings date for a specific ticker."""
+    query = "SELECT MAX(reportdate) FROM earnings_calendar WHERE symbol = ?"
+    db = db_state.earnings_db
+    # Use the passed 'db' object directly
+    async with db.execute(query, (symbol.upper(),)) as cursor:
+        row = await cursor.fetchone()
+        return row[0] if row and row[0] else None

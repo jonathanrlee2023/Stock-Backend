@@ -9,6 +9,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1  # <--- Add this line
     volumes:
+      - ./Python_Streamer:/app
       - ./Database:/app/Database
     depends_on:
       - redis

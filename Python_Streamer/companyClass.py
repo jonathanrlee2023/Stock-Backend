@@ -9,6 +9,7 @@ import pandas as pd
 import numpy as np
 import httpx
 
+from dbState import db_state
 import asyncFunc
 from dataloader import DataLoader
 
@@ -43,14 +44,14 @@ DEFENSIVE = ["HEALTHCARE", "CONSUMER DEFENSIVE", "UTILITIES"]
 SENSITIVE = ["TECHNOLOGY", "COMMUNICATION SERVICES", "INDUSTRIALS", "ENERGY"]
 CYCLICAL = ["CONSUMER CYCLICAL", "FINANCIAL SERVICES", "BASIC MATERIALS", "REAL ESTATE"]
 class Company:
-    def __init__(self, ticker, api_key, rate_api_key, client, engines):
+    def __init__(self, ticker, api_key, rate_api_key, client):
         # 1. Minimal setup: only assign non-I/O variables
         self.ticker = ticker
         print(self.ticker)
         self.api_key = api_key
         self.rate_api_key = rate_api_key
         self.client = client
-        self.engines = engines
+        self.engines = db_state.engines
 
         self.data = {
             "income": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
@@ -68,12 +69,12 @@ class Company:
 
 
     @classmethod
-    async def create(cls, ticker, api_key, rate_api_key, client, engines):
+    async def create(cls, ticker, api_key, rate_api_key, client):
         """Asynchronous factory to create and fully initialize the instance."""
-        self = cls(ticker, api_key, rate_api_key, client, engines)
+        self = cls(ticker, api_key, rate_api_key, client)
         await self.load_all_from_dbs()
         db = await asyncFunc.init_db()
-        self.symbol_id = await asyncFunc.get_symbol_id(db, self.ticker)
+        self.symbol_id = await asyncFunc.get_symbol_id(self.ticker)
         
         # 2. Run async I/O tasks
         # These will check the DBs, fetch if missing, and load into DataFrames
@@ -110,6 +111,8 @@ class Company:
         self.peg = self.peg_ratio()
         self.sloan = self.sloan_ratio()
         self.hist_growth, self.forecasted_growth, self.trailing_peg, self.forward_peg = self.analyze_peg()
+
+        self.earnings_date = await asyncFunc.get_furthest_date_for_stock(symbol=self.ticker)
 
 
         # Extract values from the loaded overview
@@ -154,6 +157,7 @@ class Company:
             "Hold": safe_int(self.hold),
             "StrongSell": safe_int(self.strong_sell),
             "Sell": safe_int(self.sell),
+            "EarningsDate": self.earnings_date,
         }
 
         await self.save_all_to_db()
@@ -251,9 +255,10 @@ class Company:
                 # Note: We check a table named 'data' inside that specific DB
                 already_exists = await self._check_db_for_ticker(table_name, engine, ticker)
                 raw_engine = self.engines[f"RAW_{category}"]
-                raw_exists = await self._check_db_for_ticker(table_name, raw_engine, ticker)
                 
                 if not already_exists:
+                    raw_exists = await self._check_db_for_ticker(table_name, raw_engine, ticker)
+
                     if not raw_exists:
                         url = f"https://www.alphavantage.co/query?function={category}&symbol={ticker}&apikey={self.api_key}"
                         response = await client.get(url)
@@ -324,6 +329,7 @@ class Company:
         Separates quarterly and annual data for financials.
         """
         ticker = self.ticker
+        db_dir = os.getenv("DB_DIR", "/app/Database")
         
         # Map dictionary keys to their specific database filenames
         db_map = {
@@ -335,7 +341,10 @@ class Company:
 
         # 1. Load the 4 Financial/Time-Series Databases
         for cat_key, db_file in db_map.items():
-            if not os.path.exists(db_file):
+            full_path = os.path.join(db_dir, db_file)
+        
+            if not os.path.exists(full_path):
+                print(f"File not found: {full_path}") # Debug print
                 continue
                 
             engine = self.engines[cat_key]
@@ -359,7 +368,9 @@ class Company:
 
         # 2. Load the Company Overview (The 5th Database)
         overview_db = "company_overviews.db"
-        if os.path.exists(overview_db):
+        full_path = os.path.join(db_dir, overview_db)
+
+        if os.path.exists(full_path):
             engine = self.engines["overview"]
             async with engine.connect() as conn:
                 try:

@@ -67,6 +67,7 @@ type Company_Stats struct {
 	Hold          *int     `json:"Hold"`
 	StrongSell    *int     `json:"StrongSell"`
 	Sell          *int     `json:"Sell"`
+	EarningsDate *string `json:"EarningsDate"`
 }
 
 type OptionExpiration struct {
