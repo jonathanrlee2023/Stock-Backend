@@ -72,9 +72,9 @@ class Company:
     async def create(cls, ticker, api_key, rate_api_key, client):
         """Asynchronous factory to create and fully initialize the instance."""
         self = cls(ticker, api_key, rate_api_key, client)
-        await self.load_all_from_dbs()
-        db = await asyncFunc.init_db()
         self.symbol_id = await asyncFunc.get_symbol_id(self.ticker)
+
+        await self.load_all_from_dbs()
         
         # 2. Run async I/O tasks
         # These will check the DBs, fetch if missing, and load into DataFrames
@@ -241,6 +241,7 @@ class Company:
         """
         categories = ["INCOME_STATEMENT", "BALANCE_SHEET", "CASH_FLOW", "EARNINGS"]
         ticker = self.ticker
+        symbol_id = self.symbol_id
 
         async with httpx.AsyncClient() as client:
             for category in categories:
@@ -249,17 +250,18 @@ class Company:
                 elif category == "CASH_FLOW": table_name = "cash"
                 elif category == "EARNINGS": table_name = "earnings"
                 # 1. Define the specific DB for this category
-                
+                retrieve_new_data = await asyncFunc.check_for_new_earnings(ticker, symbol_id, table_name)
+
                 engine = self.engines[table_name]
                 # 2. Check if this ticker already has data in this specific DB
                 # Note: We check a table named 'data' inside that specific DB
                 already_exists = await self._check_db_for_ticker(table_name, engine, ticker)
                 raw_engine = self.engines[f"RAW_{category}"]
                 
-                if not already_exists:
+                if retrieve_new_data or not already_exists:
                     raw_exists = await self._check_db_for_ticker(table_name, raw_engine, ticker)
 
-                    if not raw_exists:
+                    if not raw_exists or retrieve_new_data:
                         url = f"https://www.alphavantage.co/query?function={category}&symbol={ticker}&apikey={self.api_key}"
                         response = await client.get(url)
                         data = response.json()
@@ -329,6 +331,7 @@ class Company:
         Separates quarterly and annual data for financials.
         """
         ticker = self.ticker
+        symbol_id = self.symbol_id
         db_dir = os.getenv("DB_DIR", "/app/Database")
         
         # Map dictionary keys to their specific database filenames
@@ -342,7 +345,10 @@ class Company:
         # 1. Load the 4 Financial/Time-Series Databases
         for cat_key, db_file in db_map.items():
             full_path = os.path.join(db_dir, db_file)
-        
+            retrieve_new_data = await asyncFunc.check_for_new_earnings(ticker, symbol_id, cat_key)
+            if retrieve_new_data:
+                continue
+
             if not os.path.exists(full_path):
                 print(f"File not found: {full_path}") # Debug print
                 continue

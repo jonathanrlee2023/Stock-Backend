@@ -10,6 +10,7 @@ from redis import asyncio as aioredis
 import aiosqlite
 import requests
 import httpx
+from sqlalchemy import text
 import datetime
 from dbState import db_state
 from companyClass import Company
@@ -575,3 +576,41 @@ async def get_furthest_date_for_stock(symbol):
     async with db.execute(query, (symbol.upper(),)) as cursor:
         row = await cursor.fetchone()
         return row[0] if row and row[0] else None
+    
+async def check_for_new_earnings(symbol, symbol_id, table) -> bool:
+    start = time.perf_counter()
+
+    async def get_calendar():
+        async with db_state.earnings_db.execute(
+            "SELECT reportdate, fiscaldateending FROM earnings_calendar WHERE symbol = ?", 
+            (symbol,)
+        ) as cursor:
+            return await cursor.fetchone()
+
+    async def get_max_fiscal():
+        async with db_state.engines[table].connect() as conn:
+            # We use a raw SQL text object for speed
+            res = await conn.execute(
+                text(f"SELECT MAX(date) FROM {table} WHERE symbol_id = :s"),
+                {"s": symbol_id}
+            )
+            return res.scalar()
+
+    # 2. Fire both queries concurrently
+    calendar_row, last_local_fiscal = await asyncio.gather(get_calendar(), get_max_fiscal())
+
+    if not calendar_row:
+        return False
+    # Use the passed 'db' object directly
+
+    today = datetime.date.today()
+    report_date_str, next_fiscal_date = calendar_row
+    if next_fiscal_date > (last_local_fiscal or "1900-01-01"):
+        if today.isoformat() > report_date_str: # String comparison is faster than parsing
+            print(f"Update needed for {symbol}: {(time.perf_counter() - start):.6f}s")
+            return True
+    print(f"Time to compare earnings {(time.perf_counter() - start):.6f}")        
+    return False
+
+    
+        
