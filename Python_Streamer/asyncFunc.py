@@ -513,7 +513,8 @@ async def init_earnings_db():
                 estimate REAL,
                 currency TEXT,
                 timeoftheday TEXT,
-                UNIQUE(symbol, reportdate) ON CONFLICT REPLACE
+                symbol_id INTEGER,
+                UNIQUE(symbol_id, reportdate) ON CONFLICT REPLACE
             )
         """)
     await db.commit()
@@ -552,6 +553,14 @@ async def get_earnings_dates(api_key):
             df = pd.read_csv(csv_data)
             df.columns = [c.strip().lower() for c in df.columns]
 
+            unique_symbols = df['symbol'].unique().tolist()
+
+            symbol_id_list = await asyncio.gather(*(get_symbol_id(s) for s in unique_symbols))
+
+            symbol_map = dict(zip(unique_symbols, symbol_id_list))
+
+            df['symbol_id'] = df['symbol'].map(symbol_map)
+            print(df.head())
             # 3. Handle the DB Path
             os.makedirs(db_dir, exist_ok=True)
 
