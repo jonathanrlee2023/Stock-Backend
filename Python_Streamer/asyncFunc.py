@@ -29,6 +29,8 @@ symbol_cache = {}
 r = aioredis.Redis(host='redis', port=6379, db=0)
 db_dir = os.getenv("DB_DIR", "../Database")
 
+max_fiscal_lookup = {'income': {}, 'balance': {}, 'cash': {}, 'earnings': {}}
+earnings_lookup = {}
 
 async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, client):
     """
@@ -529,6 +531,23 @@ async def get_last_update_date():
         return row[0] if row else None
         
 async def get_earnings_dates(api_key):
+    """
+    Fetches the earnings calendar for the next 3 months.
+
+    If the latest report date is older than today, fetches the latest earnings calendar
+    from Alpha Vantage and saves it to the database. Otherwise, loads the earnings calendar
+    from the database.
+
+    Parameters
+    ----------
+    api_key: str
+        The API key to use for the Alpha Vantage request.
+
+    Returns
+    -------
+    None
+    """
+    global earnings_lookup
     # 1. Use httpx for an async network request
     url = f"https://www.alphavantage.co/query?function=EARNINGS_CALENDAR&horizon=3month&apikey={api_key}"
     db_path = os.path.join(db_dir, 'EarningsDates.db')
@@ -542,7 +561,7 @@ async def get_earnings_dates(api_key):
         report_date = datetime.date.fromisoformat(latest_report)
         if today > report_date:
             should_fetch = True
-    
+    await cache_all_max_dates()
     if should_fetch:
         async with httpx.AsyncClient() as client:
             response = await client.get(url)
@@ -560,21 +579,37 @@ async def get_earnings_dates(api_key):
             symbol_map = dict(zip(unique_symbols, symbol_id_list))
 
             df['symbol_id'] = df['symbol'].map(symbol_map)
-            print(df.head())
-            # 3. Handle the DB Path
+
+            earnings_df = df
+            earnings_lookup = dict(
+                zip(
+                    earnings_df['symbol_id'], 
+                    zip(earnings_df['reportdate'], earnings_df['fiscaldateending'])
+                )
+            )
             os.makedirs(db_dir, exist_ok=True)
 
-            # 4. Run the BLOCKING Pandas to_sql in a thread to keep the loop moving
             def save_to_db():
                 with sqlite3.connect(db_path) as conn:
-                    df.to_sql('earnings_calendar', conn, if_exists='append', index=False)
+                    earnings_df.to_sql('earnings_calendar', conn, if_exists='append', index=False)
             
             await asyncio.to_thread(save_to_db)
-            print(f"Successfully imported {len(df)} rows.")
+            print(f"Successfully imported {len(earnings_df)} rows.")
         else:
             print(f"Failed to fetch data: {response.status_code}")
-            return None
+            return
     else:
+        def load_from_db():
+            with sqlite3.connect(db_path) as conn:
+                return pd.read_sql("SELECT * FROM earnings_calendar", conn)
+        
+        earnings_df = await asyncio.to_thread(load_from_db)
+        earnings_lookup = dict(
+                zip(
+                    earnings_df['symbol_id'], 
+                    zip(earnings_df['reportdate'], earnings_df['fiscaldateending'])
+                )
+            )
         return
     
 async def get_furthest_date_for_stock(symbol):
@@ -587,7 +622,21 @@ async def get_furthest_date_for_stock(symbol):
         return row[0] if row and row[0] else None
     
 async def check_for_new_earnings(symbol, symbol_id, table) -> bool:
+    """
+    Checks if there are new earnings available for a specific ticker.
+
+    Args:
+        symbol (str): The ticker symbol.
+        symbol_id (int): The ID of the ticker symbol in the database.
+        table (str): The table name in the earnings database.
+
+    Returns:
+        bool: True if there are new earnings available, False otherwise.
+    """
+    global earnings_lookup
+    global max_fiscal_lookup
     start = time.perf_counter()
+    today = datetime.date.today()
 
     async def get_calendar():
         async with db_state.earnings_db.execute(
@@ -596,30 +645,39 @@ async def check_for_new_earnings(symbol, symbol_id, table) -> bool:
         ) as cursor:
             return await cursor.fetchone()
 
-    async def get_max_fiscal():
-        async with db_state.engines[table].connect() as conn:
-            # We use a raw SQL text object for speed
-            res = await conn.execute(
-                text(f"SELECT MAX(date) FROM {table} WHERE symbol_id = :s"),
-                {"s": symbol_id}
-            )
-            return res.scalar()
+    if earnings_lookup is None:
+        calendar_row = await get_calendar()
+        last_local_fiscal = max_fiscal_lookup[table].get(symbol_id, None)
 
-    # 2. Fire both queries concurrently
-    calendar_row, last_local_fiscal = await asyncio.gather(get_calendar(), get_max_fiscal())
+        if not calendar_row:
+            return False
 
-    if not calendar_row:
-        return False
-    # Use the passed 'db' object directly
+        report_date_str, next_fiscal_date = calendar_row
+    else:
+        last_local_fiscal = max_fiscal_lookup[table].get(symbol_id, None)
+        if last_local_fiscal is None:
+            return True
+        ticker_data = earnings_lookup.get(symbol_id)
 
-    today = datetime.date.today()
-    report_date_str, next_fiscal_date = calendar_row
+        if not ticker_data:
+            return False
+            
+        report_date_str, next_fiscal_date = ticker_data
+              
     if next_fiscal_date > (last_local_fiscal or "1900-01-01"):
         if today.isoformat() > report_date_str: # String comparison is faster than parsing
             print(f"Update needed for {symbol}: {(time.perf_counter() - start):.6f}s")
             return True
-    print(f"Time to compare earnings {(time.perf_counter() - start):.6f}")        
+
+        print(f"Time to compare earnings {(time.perf_counter() - start):.6f}")  
     return False
 
+async def cache_all_max_dates():
+    global max_fiscal_lookup
+    financial_tables = ["balance", "cash", "earnings", "income"]
     
-        
+    for table in financial_tables:
+        async with db_state.engines[table].connect() as conn:
+            query = text(f"SELECT symbol_id, MAX(date) FROM {table} GROUP BY symbol_id")
+            result = await conn.execute(query)
+            max_fiscal_lookup[table] = dict(result.fetchall())

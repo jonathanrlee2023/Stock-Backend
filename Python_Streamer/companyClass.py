@@ -262,6 +262,7 @@ class Company:
                     raw_exists = await self._check_db_for_ticker(table_name, raw_engine, ticker)
 
                     if not raw_exists or retrieve_new_data:
+                        await asyncio.sleep(1.05) # Alpha Vantage Rate Limit
                         url = f"https://www.alphavantage.co/query?function={category}&symbol={ticker}&apikey={self.api_key}"
                         response = await client.get(url)
                         data = response.json()
@@ -307,12 +308,12 @@ class Company:
                             async with raw_engine.connect() as conn:
                                 try:
                                     await self._upsert_to_database(raw_engine, combined_df, table_name=table_name)
-
+                                   
+                                    new_max_date = quarterly_df['date'].max()
+                                    asyncFunc.max_fiscal_lookup[table_name][symbol_id] = new_max_date                                    
                                 except Exception as e:
                                     print(f"Database table check failed for RAW_{category}.db: {e}")
                                 await conn.execute(text(f"DELETE FROM {table_name} WHERE ticker = :t"), {"t": self.ticker})
-                            await asyncio.sleep(1.05) # Alpha Vantage Rate Limit
-                            
                         except Exception as e:
                             print(f"Error processing {category} for {ticker}: {e}")
                             return False
