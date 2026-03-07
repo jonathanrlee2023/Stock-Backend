@@ -453,7 +453,7 @@ async def get_options_and_initial_quotes(ticker, client):
     call_option_id_list = []
     put_option_id_list = []
     
-    loader = DataLoader(ticker=ticker, connection=client)
+    loader = DataLoader(ticker=ticker, symbol_id=s_id, connection=client)
 
     quote = loader.get_quote()
 

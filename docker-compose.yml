@@ -5,6 +5,8 @@ services:
     build:
       context: .
       dockerfile: Python_Streamer/Dockerfile
+    stdin_open: true  # Allows you to interact with the input prompt
+    tty: true         # Provides a terminal behavior
     env_file: .env
     environment:
       - PYTHONUNBUFFERED=1  # <--- Add this line

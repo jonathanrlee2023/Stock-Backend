@@ -60,6 +60,7 @@ type Company_Stats struct {
 	WACC          *float64 `json:"WACC"`
 	FCFF          *float64 `json:"FCFF"`
 	FCF           *float64 `json:"FCF"`
+	FCFPerShare   *float64 `json:"FCFPerShare"`
 	NWC           *float64 `json:"NWC"`
 	PriceTarget   *float64 `json:"PriceTarget"`
 	StrongBuy     *int     `json:"StrongBuy"`
@@ -68,6 +69,7 @@ type Company_Stats struct {
 	StrongSell    *int     `json:"StrongSell"`
 	Sell          *int     `json:"Sell"`
 	EarningsDate *string `json:"EarningsDate"`
+	Grade *int `json:"Grade"`
 }
 
 type OptionExpiration struct {

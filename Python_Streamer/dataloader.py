@@ -1,19 +1,22 @@
+import asyncio
 import datetime
 from pprint import pprint
 import time
 import schwabdev
 import os
 from dotenv import load_dotenv
+from dbState import db_state
 
 
 class DataLoader:
-    def __init__(self, ticker, connection, fiscalDate=None):
+    def __init__(self, ticker, symbol_id, connection, fiscalDate=None):
         self.fiscalDate = fiscalDate
         if connection is not None:
             self.connection = connection
         else:
             self.connection = self.establish_connection()
         self.ticker = ticker
+        self.symbol_id = symbol_id
 
     def establish_connection(self):
         load_dotenv()  # loads variables from .env into environment
@@ -26,28 +29,39 @@ class DataLoader:
         client = schwabdev.Client(app_key=appKey, app_secret=appSecret)
         return client
     
-    def load_data(self):
+    async def load_data(self):
+        db = db_state.price_db
+        start = time.perf_counter()
         try:
             if self.fiscalDate is None:
                 return None
             start_ms = int(self.fiscalDate * 1000)
-            end_ms = start_ms + (2 * 86400 * 1000)
+            end_ms = start_ms + (7 * 86400 * 1000)
+            async with db.execute(
+                f"SELECT close FROM HistoricalStocks WHERE symbol_id = ? AND timestamp BETWEEN ? AND ? ORDER BY timestamp ASC LIMIT 1", 
+                (self.symbol_id, start_ms, end_ms)
+            ) as cursor:
+                rows = await cursor.fetchall()
+            if rows:
+                print(f"Time to load fiscal date price: {time.perf_counter() - start} seconds") 
+                return rows[0][0]
+        
+            def fetch_api():
+                return self.connection.price_history(
+                    symbol=self.ticker,
+                    periodType="year",
+                    frequencyType="daily",
+                    startDate=start_ms,
+                    endDate=end_ms
+                )
+
+            response = await asyncio.to_thread(fetch_api)
             
-            response = self.connection.price_history(
-                symbol=self.ticker,
-                periodType="year",
-                frequencyType="daily",
-                startDate=start_ms,
-                endDate=end_ms
-            )
-            
-            # Ensure the response is valid before calling .json()
-            if response.status_code != 200:
-                return None
-                
-            quote = response.json()
-            if 'candles' in quote and quote['candles']:
-                return quote['candles'][0]['close']
+            if response.status_code == 200:
+                quote = response.json()
+                if 'candles' in quote and quote['candles']:
+                    print(f"API Success: {time.perf_counter() - start:.4f}s")
+                    return quote['candles'][0]['close']
         except Exception as e:
             print(f"Schwab API Error: {e}")
         return None

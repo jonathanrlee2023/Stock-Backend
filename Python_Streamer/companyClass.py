@@ -45,7 +45,6 @@ SENSITIVE = ["TECHNOLOGY", "COMMUNICATION SERVICES", "INDUSTRIALS", "ENERGY"]
 CYCLICAL = ["CONSUMER CYCLICAL", "FINANCIAL SERVICES", "BASIC MATERIALS", "REAL ESTATE"]
 class Company:
     def __init__(self, ticker, api_key, rate_api_key, client):
-        # 1. Minimal setup: only assign non-I/O variables
         self.ticker = ticker
         print(self.ticker)
         self.api_key = api_key
@@ -61,7 +60,6 @@ class Company:
             "overview": pd.DataFrame() # Overviews are usually 1 row
         }
         
-        # Placeholders for data that will be loaded asynchronously
         self.income_df = None
         self.balance_df = None
         self.cash_df = None
@@ -75,9 +73,7 @@ class Company:
         self.symbol_id = await asyncFunc.get_symbol_id(self.ticker)
 
         await self.load_all_from_dbs()
-        
-        # 2. Run async I/O tasks
-        # These will check the DBs, fetch if missing, and load into DataFrames
+
         if self.data["overview"].empty or self.data["income"]["annual"].empty or self.data["balance"]["annual"].empty or self.data["cash"]["annual"].empty:
             await asyncio.gather(
                 self.get_fundamentals(),
@@ -88,7 +84,6 @@ class Company:
         await self.replace_with_usd()
         self.reorder_data()
 
-        # Load the specific annual data needed for DCF calculations
         self.income_df = self.data["income"]["annual"]
         self.balance_df = self.data["balance"]["annual"]
         self.cash_df = self.data["cash"]["annual"]
@@ -96,12 +91,12 @@ class Company:
 
         if self.income_df.empty or self.balance_df.empty or self.cash_df.empty or self.company_overview.empty:
             print(f"--- Initialization Aborted for {ticker}: No data available ---")
-            return None # Or handle as an error
+            return None
         self.price_at_report = await self.get_current_price()
 
 
         # 3. Perform the Math (Sync tasks)
-        self.fcf, self.fcff, self.nwc = self.calc_fcf()
+        self.fcf, self.fcff, self.fcf_per_share, self.nwc = self.calc_fcf()
         self.wacc = self.calc_wacc()
         self.calc_forecast_metrics()
 
@@ -120,12 +115,11 @@ class Company:
         def safe_float(val):
             try:
                 if val is None or pd.isna(val):
-                    return None # Or None, if your frontend prefers null over 0
+                    return None 
                 return float(val)
             except:
                 return None
 
-        # Helper to safely convert numpy/none to int
         def safe_int(val):
             try:
                 if val is None or pd.isna(val):
@@ -133,6 +127,8 @@ class Company:
                 return int(val)
             except:
                 return None
+            
+
 
         self.final_report = {
             "Symbol": str(self.ticker),
@@ -150,6 +146,7 @@ class Company:
             "WACC": safe_float(self.wacc),
             "FCFF": safe_float(self.fcff),
             "FCF": safe_float(self.fcf),
+            "FCFPerShare": safe_float(self.fcf_per_share),
             "NWC": safe_float(self.nwc),
             "PriceTarget": safe_float(self.price_target),
             "StrongBuy": safe_int(self.strong_buy),
@@ -158,12 +155,59 @@ class Company:
             "StrongSell": safe_int(self.strong_sell),
             "Sell": safe_int(self.sell),
             "EarningsDate": self.earnings_date,
+            "Grade": self.grade_stock(),
         }
 
         await self.save_all_to_db()
         return self
+    def grade_stock(self):
+        score = 0
+        total_possible = 100
+        
+        # 1. Capital Efficiency: ROIC vs WACC (Weight: 15)
+        # Ideally ROIC > WACC. If ROIC is 2x WACC, it's an elite performer.
+        roic = self.return_on_invested_capital
+        wacc = self.wacc
+        if roic > (wacc * 2): score += 15
+        elif roic > wacc: score += 10
+        elif roic > 0: score += 5
 
+        # 2. Valuation: PEG Ratio (Weight: 15)
+        # Lower is better. < 1.0 is undervalued, > 2.0 is overvalued.
+        peg = self.peg
+        if 0 < peg <= 1.0: score += 15
+        elif 1.0 < peg <= 1.5: score += 10
+        elif 1.5 < peg <= 2.0: score += 5
 
+        # 3. Earnings Quality: Sloan Ratio (Weight: 15)
+        # -10% to 10% is the safe zone. Outside that indicates accrual risk.
+        sloan = self.sloan
+        if -0.10 <= sloan <= 0.10: score += 15
+        elif -0.20 <= sloan <= 0.20: score += 7
+
+        # 4. Margin of Safety: Price vs Intrinsic (Weight: 20)
+        intrinsic = self.intrinsic_price
+        current = self.price_at_report
+        if intrinsic > (current * 1.3): score += 15 # 30% Margin of Safety
+        elif intrinsic > current: score += 10
+
+        # 5. Analyst Sentiment (Weight: 15)
+        # Ratio of Buys to Sells
+        buys = self.strong_buy + self.buy
+        sells = self.strong_sell + self.sell
+        if buys > (sells * 3) and buys > 5: score += 15
+        elif buys > sells: score += 8
+
+        # 6. Cash Flow Strength: FCF (Weight: 15)
+        # Positive FCF is mandatory for a good grade
+        if self.fcf > 0: score += 15
+
+        hist = self.hist_growth
+        fore = self.forecasted_growth
+        if fore >= (hist * 0.75) and fore > 0: score += 10
+        elif fore > 0: score += 5
+
+        return int(score)
     def _setup_analyst_ratings(self):
         self.price_target = float(self.company_overview["AnalystTargetPrice"].values[0])
         self.strong_buy = float(self.company_overview["AnalystRatingStrongBuy"].values[0])
@@ -194,16 +238,12 @@ class Company:
 
         loader = DataLoader(
                 ticker=self.ticker, 
+                symbol_id=self.symbol_id,
                 fiscalDate=self.timestamp, 
                 connection=self.client
             )
         
-        # Corrected wrapper: Just call the synchronous method normally
-        def sync_fetch():
-            return loader.load_data() 
-        
-        # Run the wrapper in a thread pool
-        price = await asyncio.to_thread(sync_fetch)
+        price = await loader.load_data()
         
         return price
     def unix_timestamp(self):
@@ -511,7 +551,7 @@ class Company:
                 df[cols_to_fix] = df[cols_to_fix].apply(pd.to_numeric, errors='coerce')
                 self.company_overview = df
 
-    def calc_fcf(self) -> tuple[float, float, float]:
+    def calc_fcf(self) -> tuple[float, float, float, float]:
         """
         Calculate the Free Cash Flow (FCF) and Free Cash Flow to the Firm (FCFF) for a given ticker.
 
@@ -586,7 +626,7 @@ class Company:
         self.income_df = income_df
         self.balance_df = balance_df
 
-        return cash_df['FCF'].iloc[-1], cash_df['FCFF'].iloc[-1], balance_df['deltaNWC'].iloc[-1]
+        return cash_df['FCF'].iloc[-1], cash_df['FCFF'].iloc[-1], cash_df['FCF_Per_Share'].iloc[-1], balance_df['deltaNWC'].iloc[-1]
 
     def reorder_data(self):
         """
@@ -1040,7 +1080,6 @@ class Company:
         company_overview = self.company_overview
         income_df = self.income_df
         cash_df = self.cash_df
-        ticker = self.ticker
 
         # 0. Get the Growth Ratios
         try:
