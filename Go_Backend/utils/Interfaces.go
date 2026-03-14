@@ -68,8 +68,13 @@ type Company_Stats struct {
 	Hold          *int     `json:"Hold"`
 	StrongSell    *int     `json:"StrongSell"`
 	Sell          *int     `json:"Sell"`
-	EarningsDate *string `json:"EarningsDate"`
-	Grade *int `json:"Grade"`
+	EarningsDate  *string  `json:"EarningsDate"`
+	Grade         *int     `json:"Grade"`
+}
+
+type OpenPositionDetails struct {
+	Price  float64 `json:"price"`
+	Amount int64   `json:"amount"`
 }
 
 type OptionExpiration struct {

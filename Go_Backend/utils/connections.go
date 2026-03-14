@@ -21,8 +21,28 @@ type LivePrices struct {
 	Prices map[string]MixedQuote
 }
 
+type OpenPositions struct {
+	sync.RWMutex
+	Positions map[string]OpenPositionDetails
+}
+
+type Balance struct {
+	sync.RWMutex
+	Balance float64
+	Cash    float64
+}
+
 var GlobalPrices = &LivePrices{
 	Prices: make(map[string]MixedQuote),
+}
+
+var GlobalOpenPositions = &OpenPositions{
+	Positions: make(map[string]OpenPositionDetails),
+}
+
+var GlobalBalance = &Balance{
+	Balance: 0,
+	Cash:    0,
 }
 
 var upgrader = websocket.Upgrader{
@@ -61,8 +81,8 @@ func NewHub() *Hub {
 func InitRedis() *redis.Client {
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     "redis:6379", // Default Redis port
-		Password: "",               // No password set by default
-		DB:       0,                // Use default DB
+		Password: "",           // No password set by default
+		DB:       0,            // Use default DB
 	})
 
 	// Verify connection
@@ -446,49 +466,29 @@ func StartStockStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request)
 // Write to a specific client the most recent balance
 func processWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 	// Don't write if we don't have any data
-	if len(GlobalPrices.Prices) > 0 {
+	if len(GlobalPrices.Prices) > 0 || GlobalBalance.Balance == 0 {
 		var cash float64
 		var balance float64
 
 		balance = 10000.0
 		cash = 10000.0
 
-		query := `SELECT timestamp, balance, cash FROM Balance ORDER BY timestamp DESC LIMIT 1`
-		row := balanceDB.QueryRow(query)
-
-		var timestamp int64
-		err := row.Scan(&timestamp, &balance, &cash)
-		if err == sql.ErrNoRows {
-			log.Printf("No rows in Balance; using default balance 10000")
-		} else if err != nil {
-			log.Printf("Failed to query table: %v", err)
-			return
-		}
-
-		rows, err := openDB.Query("SELECT * FROM OpenPositions")
-		if err == sql.ErrNoRows {
-			log.Println("No Open Positions Yet")
-		} else if err != nil {
-			log.Printf("Query failed process write openDB: %v", err)
-		}
-		defer rows.Close()
+		balance, cash = GlobalBalance.Balance, GlobalBalance.Cash
 
 		tempPositionValue := 0.0
 
-		for rows.Next() {
-			var id string
-			var price float64
-			var amount int64
-			if err := rows.Scan(&id, &price, &amount); err != nil {
-				log.Println("Scan failed:", err)
-				continue
-			}
+		for id, details := range GlobalOpenPositions.Positions {
+			amount := details.Amount
+
 			GlobalPrices.RLock() // Lock for reading
 			q, exists := GlobalPrices.Prices[id]
 			GlobalPrices.RUnlock()
 			var mark float64
 			if exists {
 				mark = q.Mark
+			} else {
+				log.Printf("Mark not found for %s", id)
+				continue
 			}
 			if len(id) > 6 {
 				tempPositionValue += (mark * float64(amount) * 100)
@@ -499,12 +499,15 @@ func processWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 
 		tempBalance := cash + tempPositionValue
 		balance = tempBalance
-		if err := rows.Err(); err != nil {
-			log.Println("Rows iteration error:", err)
-		}
 
-		insertData := `INSERT OR REPLACE INTO Balance (timestamp, balance, cash) VALUES (?, ?, ?)`
-		_, err = balanceDB.Exec(insertData, time.Now().Unix(), balance, cash)
+		GlobalBalance.Lock()
+		GlobalBalance.Balance = balance
+		GlobalBalance.Cash = cash
+		GlobalBalance.Unlock()
+		now := time.Now().Unix()
+
+		insertData := `INSERT OR IGNORE INTO Balance (timestamp, balance, cash) VALUES (?, ?, ?)`
+		_, err := balanceDB.Exec(insertData, now, balance, cash)
 		if err != nil {
 			log.Printf("Failed to insert initial balance into table: %v", err)
 		}
@@ -517,7 +520,7 @@ func processWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 			case q.BidSize != nil && q.AskSize != nil:
 				stock := StockPriceData{
 					Symbol:    symbol,
-					Timestamp: timestamp,
+					Timestamp: now,
 					Mark:      q.Mark,
 					BidPrice:  q.BidPrice,
 					AskPrice:  q.AskPrice,
@@ -532,7 +535,7 @@ func processWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 			case q.IV != nil:
 				option := OptionPriceData{
 					Symbol:    symbol,
-					Timestamp: timestamp,
+					Timestamp: now,
 					Bid:       q.BidPrice,
 					Ask:       q.AskPrice,
 					Mark:      q.Mark,

@@ -25,6 +25,7 @@ func SendOpenPositions(balanceDB, openDB, priceDB, trackerDB *sql.DB, clients ma
 		return
 	}
 	defer rows.Close()
+	GlobalOpenPositions.Lock()
 
 	for rows.Next() {
 		var id string
@@ -36,9 +37,10 @@ func SendOpenPositions(balanceDB, openDB, priceDB, trackerDB *sql.DB, clients ma
 			log.Println("Scan failed:", err)
 			continue
 		}
-
+		GlobalOpenPositions.Positions[id] = OpenPositionDetails{Price: price, Amount: amount}
 		openIDs[id] = amount
 	}
+	GlobalOpenPositions.Unlock()
 
 	rows, err = trackerDB.Query("SELECT * FROM Tracker")
 	if err == sql.ErrNoRows {

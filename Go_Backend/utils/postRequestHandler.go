@@ -25,7 +25,10 @@ type Position struct {
 	Amount int64   `json:"amount"`
 }
 
-// Handles call from frontend to add a symbol to the tracker db
+// NewTrackerHandler is an HTTP handler for creating a new tracker entry in the tracker db.
+// It expects a POST request with a JSON body containing a single tracker struct.
+// If the request is invalid, it will return a 400 error with a JSON body containing an error message.
+// If the write to the database fails, it will return a 500 error with a JSON body containing an error message.
 func NewTrackerHandler(trackerDB *sql.DB, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
@@ -54,7 +57,11 @@ func NewTrackerHandler(trackerDB *sql.DB, w http.ResponseWriter, r *http.Request
 	}
 }
 
-// Handles the removal of a symbol from the tracker db
+// Removes a symbol from the tracker db
+//
+// # Body should contain a single tracker struct in JSON format
+//
+// Returns 500 if database delete fails
 func RemoveTrackerHandler(trackerDB *sql.DB, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
@@ -75,7 +82,10 @@ func RemoveTrackerHandler(trackerDB *sql.DB, w http.ResponseWriter, r *http.Requ
 	}
 }
 
-// Handles the creation of a position
+// OpenPositionHandler is an HTTP handler for opening a new position in the openpositions db.
+// It expects a POST request with a JSON body containing a single position struct.
+// If the request is invalid, it will return a 400 error with a JSON body containing an error message.
+// If the write to the database fails, it will return a 500 error with a JSON body containing an error message.
 func OpenPositionHandler(openDB, balanceDB *sql.DB, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
@@ -99,39 +109,47 @@ func OpenPositionHandler(openDB, balanceDB *sql.DB, w http.ResponseWriter, r *ht
 		return
 	}
 
-	err = openDB.QueryRow("SELECT price, amount FROM OpenPositions WHERE id = ?", newPosition.ID).Scan(&extPrice, &extAmount)
-	updatedAmount := newPosition.Amount
-	updatedPrice := newPosition.Price
-	if err == nil {
-		// FOUND: Average in the new shares
+	GlobalOpenPositions.Lock()
+
+	if _, ok := GlobalOpenPositions.Positions[newPosition.ID]; ok {
+		extAmount = GlobalOpenPositions.Positions[newPosition.ID].Amount
+		extPrice = GlobalOpenPositions.Positions[newPosition.ID].Price
 		totalCost := (extPrice * float64(extAmount)) + (newPosition.Price * float64(newPosition.Amount))
-		updatedAmount = extAmount + newPosition.Amount
-		updatedPrice = math.Round((totalCost/float64(updatedAmount))*100) / 100
+		updatedAmount := extAmount + newPosition.Amount
+		updatedPrice := math.Round((totalCost/float64(updatedAmount))*100) / 100
 
 		_, err = openDB.Exec("UPDATE OpenPositions SET price = ?, amount = ? WHERE id = ?", updatedPrice, updatedAmount, newPosition.ID)
-	} else if err == sql.ErrNoRows {
-		// NOT FOUND: Insert new
+		GlobalOpenPositions.Positions[newPosition.ID] = OpenPositionDetails{
+			Price:  updatedPrice,
+			Amount: updatedAmount,
+		}
+	} else {
 		_, err = openDB.Exec("INSERT INTO OpenPositions (id, price, amount) VALUES (?, ?, ?)", newPosition.ID, newPosition.Price, newPosition.Amount)
+		GlobalOpenPositions.Positions[newPosition.ID] = OpenPositionDetails{
+			Price:  newPosition.Price,
+			Amount: newPosition.Amount,
+		}
 	}
-
 	if err != nil {
 		log.Printf("Failed to write to table: %v", err)
+		return
 	}
 
-	row := balanceDB.QueryRow(`SELECT timestamp, balance, cash FROM Balance ORDER BY timestamp DESC LIMIT 1`)
+	GlobalOpenPositions.Unlock()
+	GlobalBalance.Lock()
 
-	var timestamp int64
-	var balance float64
-	var cash float64
-
-	err = row.Scan(&timestamp, &balance, &cash)
+	balance, cash := GlobalBalance.Balance, GlobalBalance.Cash
 	tradeCost := newPosition.Price * float64(newPosition.Amount)
 	if len(newPosition.ID) > 6 {
-		tradeCost *= 100 // Options contract multiplier
+		tradeCost *= 100
 	}
 
 	newCash := cash - tradeCost
 	newBalance := balance
+
+	GlobalBalance.Balance = newBalance
+	GlobalBalance.Cash = newCash
+	GlobalBalance.Unlock()
 
 	insertData := `INSERT INTO Balance (timestamp, balance, cash) VALUES (?, ?, ?)`
 	_, err = balanceDB.Exec(insertData, time.Now().Unix(), newBalance, newCash)
@@ -148,7 +166,6 @@ func ClosePositionHandler(openDB, closeDB, balanceDB *sql.DB, w http.ResponseWri
 	}
 	var pl float64
 	var closePosition Position
-	var id string
 	var price float64
 	var amount int64
 
@@ -156,28 +173,13 @@ func ClosePositionHandler(openDB, closeDB, balanceDB *sql.DB, w http.ResponseWri
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
-
-	createTableSQL := `
-		CREATE TABLE IF NOT EXISTS ClosePositions (
-			order_number INTEGER PRIMARY KEY AUTOINCREMENT,
-			id STRING NOT NULL,
-			price REAL NOT NULL,
-			amount INTEGER NOT NULL,
-			pl REAL NOT NULL
-		);`
-	_, err := closeDB.Exec(createTableSQL)
-	if err != nil {
-		log.Printf("Failed to create table: %v", err)
+	GlobalOpenPositions.Lock()
+	if _, ok := GlobalOpenPositions.Positions[closePosition.ID]; !ok {
+		GlobalOpenPositions.Unlock()
+		http.Error(w, "Position not found", http.StatusBadRequest)
+		return
 	}
-
-	querySelect := "SELECT * FROM OpenPositions WHERE id = ?"
-
-	err = openDB.QueryRow(querySelect, closePosition.ID).Scan(&id, &price, &amount)
-	if err == sql.ErrNoRows {
-		log.Println("No more positions to close")
-	} else if err != nil {
-		log.Printf("Failed to select FIFO position from %s: %v", closePosition.ID, err)
-	}
+	price, amount = GlobalOpenPositions.Positions[closePosition.ID].Price, GlobalOpenPositions.Positions[closePosition.ID].Amount
 
 	if closePosition.Amount > amount {
 		http.Error(w, "Insufficient shares", 400)
@@ -189,46 +191,42 @@ func ClosePositionHandler(openDB, closeDB, balanceDB *sql.DB, w http.ResponseWri
 	if len(closePosition.ID) > 6 {
 		multiplier = 100.0
 	}
-	// P/L = (SellPrice - BuyPrice) * Quantity * Multiplier
-	pl = diff * float64(closePosition.Amount) * multiplier
-	pl = math.Round(pl*100) / 100 // Clean cents
-	remaining := amount - closePosition.Amount
 
+	pl = diff * float64(closePosition.Amount) * multiplier
+	pl = math.Round(pl*100) / 100
+	remaining := amount - closePosition.Amount
 	if remaining != 0 {
 		insertData := `INSERT OR REPLACE INTO OpenPositions (id, price, amount) VALUES (?, ?, ?)`
-		_, err = openDB.Exec(insertData, closePosition.ID, price, remaining)
+		_, err := openDB.Exec(insertData, closePosition.ID, price, remaining)
 		if err != nil {
 			log.Printf("Failed to write to table: %v", err)
 		}
+		GlobalOpenPositions.Positions[closePosition.ID] = OpenPositionDetails{
+			Price:  price,
+			Amount: remaining,
+		}
 	} else {
-		_, err = openDB.Exec("DELETE FROM OpenPositions WHERE id = ?", closePosition.ID)
+		_, err := openDB.Exec("DELETE FROM OpenPositions WHERE id = ?", closePosition.ID)
 		if err != nil {
 			log.Printf("Failed to delete: %v", err)
 			return
 		}
+		delete(GlobalOpenPositions.Positions, closePosition.ID)
 	}
+	GlobalOpenPositions.Unlock()
+
 	insertData := `INSERT INTO ClosePositions (id, price, amount, pl) VALUES (?, ?, ?, ?)`
-	_, err = closeDB.Exec(insertData, closePosition.ID, closePosition.Price, closePosition.Amount, pl)
+	_, err := closeDB.Exec(insertData, closePosition.ID, closePosition.Price, closePosition.Amount, pl)
 	if err != nil {
 		log.Printf("Failed to write to table: %v", err)
 	}
-
-	row := balanceDB.QueryRow(`SELECT timestamp, balance, cash FROM Balance ORDER BY timestamp DESC LIMIT 1`)
-
-	var timestamp int64
-	var balance float64
-	var cash float64
-
-	err = row.Scan(&timestamp, &balance, &cash)
-	if err == sql.ErrNoRows {
-		http.Error(w, "No Rows", http.StatusInternalServerError)
-	} else if err != nil {
-		http.Error(w, "Failed to query Balance", http.StatusInternalServerError)
-		return
-	}
+	GlobalBalance.Lock()
+	balance := GlobalBalance.Balance
+	cash := GlobalBalance.Cash
+	GlobalBalance.Unlock()
 	tradeCost := closePosition.Price * float64(closePosition.Amount)
 	if len(closePosition.ID) > 6 {
-		tradeCost *= 100 // Options contract multiplier
+		tradeCost *= 100
 	}
 	newCash := cash + tradeCost
 
