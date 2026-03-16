@@ -22,7 +22,7 @@ type Tracker struct {
 type Position struct {
 	ID     string  `json:"id"`
 	Price  float64 `json:"price"`
-	Amount int64   `json:"amount"`
+	Amount float64 `json:"amount"`
 }
 
 // NewTrackerHandler is an HTTP handler for creating a new tracker entry in the tracker db.
@@ -86,14 +86,14 @@ func RemoveTrackerHandler(trackerDB *sql.DB, w http.ResponseWriter, r *http.Requ
 // It expects a POST request with a JSON body containing a single position struct.
 // If the request is invalid, it will return a 400 error with a JSON body containing an error message.
 // If the write to the database fails, it will return a 500 error with a JSON body containing an error message.
-func OpenPositionHandler(openDB, balanceDB *sql.DB, w http.ResponseWriter, r *http.Request) {
+func OpenSharesPositionHandler(openDB, balanceDB *sql.DB, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	var newPosition Position
-	var extAmount int64
+	var extAmount float64
 	var extPrice float64
 
 	body, err := io.ReadAll(r.Body)
@@ -167,7 +167,7 @@ func ClosePositionHandler(openDB, closeDB, balanceDB *sql.DB, w http.ResponseWri
 	var pl float64
 	var closePosition Position
 	var price float64
-	var amount int64
+	var amount float64
 
 	if err := json.NewDecoder(r.Body).Decode(&closePosition); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
@@ -223,12 +223,13 @@ func ClosePositionHandler(openDB, closeDB, balanceDB *sql.DB, w http.ResponseWri
 	GlobalBalance.Lock()
 	balance := GlobalBalance.Balance
 	cash := GlobalBalance.Cash
-	GlobalBalance.Unlock()
 	tradeCost := closePosition.Price * float64(closePosition.Amount)
 	if len(closePosition.ID) > 6 {
 		tradeCost *= 100
 	}
 	newCash := cash + tradeCost
+	GlobalBalance.Cash = newCash
+	GlobalBalance.Unlock()
 
 	insertData = `INSERT OR REPLACE INTO Balance (timestamp, balance, cash) VALUES (?, ?, ?)`
 	_, err = balanceDB.Exec(insertData, time.Now().Unix(), balance, newCash)

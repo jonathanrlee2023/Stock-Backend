@@ -66,11 +66,9 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
         if message is not None:
             data = orjson.loads(message["data"])
             
-            # 🛑 FILTER: If this is just a confirmation message, IGNORE IT
             if "Status" in data:
                 continue
             else:
-                # Fallback for a single‐item dict (old behavior) or unexpected shape
                 symbol = data.get("symbol")
                 try:
                     if "price" in data:

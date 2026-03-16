@@ -95,7 +95,7 @@ func main() {
 		utils.NewTrackerHandler(trackerDB, w, r)
 	})
 	mux.HandleFunc("/openPosition", func(w http.ResponseWriter, r *http.Request) {
-		utils.OpenPositionHandler(openDB, balanceDB, w, r)
+		utils.OpenSharesPositionHandler(openDB, balanceDB, w, r)
 	})
 	mux.HandleFunc("/closePosition", func(w http.ResponseWriter, r *http.Request) {
 		utils.ClosePositionHandler(openDB, closeDB, balanceDB, w, r)

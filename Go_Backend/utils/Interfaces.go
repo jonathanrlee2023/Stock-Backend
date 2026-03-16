@@ -70,11 +70,12 @@ type Company_Stats struct {
 	Sell          *int     `json:"Sell"`
 	EarningsDate  *string  `json:"EarningsDate"`
 	Grade         *int     `json:"Grade"`
+	Sector        *string  `json:"Sector"`
 }
 
 type OpenPositionDetails struct {
 	Price  float64 `json:"price"`
-	Amount int64   `json:"amount"`
+	Amount float64 `json:"amount"`
 }
 
 type OptionExpiration struct {
@@ -97,9 +98,9 @@ type Company_Request struct {
 	Symbol string `json:"symbol"`
 }
 type OpenPositionsMessage struct {
-	PrevBalance float64          `json:"prevBalance"`
-	OpenIDs     map[string]int64 `json:"openIdList"`
-	TrackerIDs  []string         `json:"trackerIdList"`
+	PrevBalance float64            `json:"prevBalance"`
+	OpenIDs     map[string]float64 `json:"openIdList"`
+	TrackerIDs  []string           `json:"trackerIdList"`
 }
 type OptionPriceData struct {
 	Symbol    string  `json:"Symbol"`

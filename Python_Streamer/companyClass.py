@@ -106,6 +106,7 @@ class Company:
         self.peg = self.peg_ratio()
         self.sloan = self.sloan_ratio()
         self.hist_growth, self.forecasted_growth, self.trailing_peg, self.forward_peg = self.analyze_peg()
+        self.sector = self.company_overview["Sector"].values[0]
 
         self.earnings_date = await asyncFunc.get_furthest_date_for_stock(symbol=self.ticker)
 
@@ -156,6 +157,7 @@ class Company:
             "Sell": safe_int(self.sell),
             "EarningsDate": self.earnings_date,
             "Grade": self.grade_stock(),
+            "Sector": self.sector
         }
 
         await self.save_all_to_db()

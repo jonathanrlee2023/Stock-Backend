@@ -12,7 +12,7 @@ import (
 
 // Sends open position and previous balance
 func SendOpenPositions(balanceDB, openDB, priceDB, trackerDB *sql.DB, clients map[string]*Client) {
-	openIDs := make(map[string]int64)
+	openIDs := make(map[string]float64)
 	var trackerIds []string
 	prevBalance := GetMostRecentBalance(balanceDB)
 
@@ -30,7 +30,7 @@ func SendOpenPositions(balanceDB, openDB, priceDB, trackerDB *sql.DB, clients ma
 	for rows.Next() {
 		var id string
 		var price float64
-		var amount int64
+		var amount float64
 
 		err := rows.Scan(&id, &price, &amount)
 		if err != nil {
@@ -161,9 +161,9 @@ func InitSchemas(openDB, balanceDB, closeDB, trackerDB *sql.DB) {
 		db  *sql.DB
 		sql string
 	}{
-		{openDB, `CREATE TABLE IF NOT EXISTS OpenPositions (id TEXT PRIMARY KEY, price REAL, amount INTEGER);`},
+		{openDB, `CREATE TABLE IF NOT EXISTS OpenPositions (id TEXT PRIMARY KEY, price REAL, amount REAL);`},
 		{balanceDB, `CREATE TABLE IF NOT EXISTS Balance (timestamp INTEGER PRIMARY KEY, balance REAL, cash REAL);`},
-		{closeDB, `CREATE TABLE IF NOT EXISTS ClosePositions (order_number INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT, price REAL, amount INTEGER, pl REAL);`},
+		{closeDB, `CREATE TABLE IF NOT EXISTS ClosePositions (order_number INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT, price REAL, amount REAL, pl REAL);`},
 		{trackerDB, `CREATE TABLE IF NOT EXISTS Tracker (id TEXT PRIMARY KEY);`},
 	}
 
