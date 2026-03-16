@@ -415,7 +415,7 @@ async def handleCompany(client, api_key, rate_key, ticker):
     ----------
     client : schwabdev.Client
         The client instance to use for fetching the company's data.
-    api_key : str
+    api_key : SecureAPIKey
         The Alpha Vantage API key to use for fetching the company's data.
     rate_key : str
         The ExchangeRate API key to use for fetching the company's data.
@@ -548,8 +548,8 @@ async def get_earnings_dates(api_key):
     None
     """
     global earnings_lookup
-    # 1. Use httpx for an async network request
-    url = f"https://www.alphavantage.co/query?function=EARNINGS_CALENDAR&horizon=3month&apikey={api_key}"
+
+        
     db_path = os.path.join(db_dir, 'EarningsDates.db')
     should_fetch = False
 
@@ -564,8 +564,16 @@ async def get_earnings_dates(api_key):
     await cache_all_max_dates()
     if should_fetch:
         async with httpx.AsyncClient() as client:
-            response = await client.get(url)
-
+            await api_key.lock_key()
+            try:
+                url = f"https://www.alphavantage.co/query?function=EARNINGS_CALENDAR&horizon=3month&apikey={api_key.key}"
+                response = await client.get(url)
+            except Exception as e:
+                print(f"Error fetching earnings calendar: {e}")
+                api_key.unlock_key()
+                return
+            finally:
+                api_key.unlock_key()
         if response.status_code == 200:
             # 2. Use io.StringIO to turn raw text into a file-like object for Pandas
             csv_data = io.StringIO(response.text)

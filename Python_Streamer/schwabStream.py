@@ -1,3 +1,4 @@
+from secureAPIKey import SecureAPIKey
 import schwabdev
 from dotenv import load_dotenv
 import os
@@ -54,6 +55,8 @@ async def main():
     rate_api_key = os.getenv("ExchangeRateKey")
     db_dir = os.getenv("DB_DIR", "../Database")
 
+    api_manager = SecureAPIKey(alpha_vantage_api_key)
+
     db_state.engines = create_engines(db_dir)
 
     client = schwabdev.Client(app_key=appKey, app_secret=appSecret, tokens_db='/app/Database/tokens.json')
@@ -89,10 +92,10 @@ async def main():
     tasks = [
         asyncio.create_task(asyncFunc.update_tickers_from_db(streamer)),
         asyncio.create_task(asyncFunc.broadcast_to_redis()),
-        asyncio.create_task(asyncFunc.listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, client)),
+        asyncio.create_task(asyncFunc.listen_for_messages(streamer, api_manager, rate_api_key, client)),
         asyncio.create_task(asyncFunc.write_to_db()),
         asyncio.create_task(asyncFunc.stream_options(client)),
-        asyncio.create_task(asyncFunc.get_earnings_dates(alpha_vantage_api_key))
+        asyncio.create_task(asyncFunc.get_earnings_dates(api_manager))
     ]
 
     try:

@@ -302,15 +302,21 @@ class Company:
                     raw_exists = await self._check_db_for_ticker(table_name, raw_engine, ticker)
 
                     if not raw_exists or retrieve_new_data:
-                        await asyncio.sleep(1.05) # Alpha Vantage Rate Limit
-                        url = f"https://www.alphavantage.co/query?function={category}&symbol={ticker}&apikey={self.api_key}"
-                        response = await client.get(url)
-                        data = response.json()
-
-                        if "Error Message" in data or "Information" in data:
-                            print(f"API Limit/Error for {ticker}: {data.get('Information', 'Unknown Error')}")
+                        await self.api_key.lock_key()
+                        try:
+                            url = f"https://www.alphavantage.co/query?function={category}&symbol={ticker}&apikey={self.api_key.key}"
+                            response = await client.get(url)
+                            data = response.json()
+                            if "Error Message" in data or "Information" in data:
+                                print(f"API Limit/Error for {ticker}: {data.get('Information', 'Unknown Error')}")
+                                return False
+                        except Exception as e:
+                            print(f"API Limit/Error for {ticker}: {e}")
+                            self.api_key.unlock_key()
                             return False
-
+                        finally:
+                            await asyncio.sleep(1)
+                            self.api_key.unlock_key()
                         try:
                             # 3. Process Data
                             if category != "EARNINGS":
@@ -474,7 +480,6 @@ class Company:
     async def get_company_overviews(self):
         overview_engine = self.engines["overview"]
         ticker = self.ticker
-        api_key = self.api_key
 
 
         # 1. Check if the ticker already exists in the database
@@ -496,33 +501,37 @@ class Company:
 
         # 2. Fetch from API
         async with httpx.AsyncClient() as client:
-            url = f"https://www.alphavantage.co/query?function=OVERVIEW&symbol={ticker}&apikey={api_key}"
-            response = await client.get(url)
-            data = response.json()
+            await self.api_key.lock_key()
+            try:
+                url = f"https://www.alphavantage.co/query?function=OVERVIEW&symbol={ticker}&apikey={self.api_key.key}"
+                response = await client.get(url)
+                data = response.json()
 
-            if "Error Message" in data or "Information" in data:
-                print(f"API Error for {ticker}: RATE LIMIT EXCEEDED")
+                if "Error Message" in data or "Information" in data:
+                    print(f"API Error for {ticker}: RATE LIMIT EXCEEDED")
+                    return False
+                
+                if not data:
+                    print(f"No data found for {ticker}")
+                    return False
+            except Exception as e:
+                print(f"API Error for {ticker}: {e}")
+                self.api_key.unlock_key()
                 return False
-            
-            if not data:
-                print(f"No data found for {ticker}")
-                return False
+            finally:
+                await asyncio.sleep(1)
+                self.api_key.unlock_key()
 
-            # 3. Process into DataFrame
             new_df = pd.DataFrame([data])
             start_idx = new_df.columns.get_loc("LatestQuarter") + 1
 
-            # 2. Get the list of columns that need to be numeric
             cols_to_fix = new_df.columns[start_idx:]
 
-            # 3. Batch convert using to_numeric with 'coerce'
-            # 'coerce' turns non-numeric strings (like "None") into NaN so the float conversion works
             new_df[cols_to_fix] = new_df[cols_to_fix].apply(pd.to_numeric, errors='coerce')
             
         # 4. Save to SQL (Asynchronously)
         def sync_save(sync_conn):
-                # Using append because this is a master list of all tickers searched
-                new_df.to_sql("Overview", sync_conn, if_exists="append", index=False)
+            new_df.to_sql("Overview", sync_conn, if_exists="append", index=False)
 
         async with overview_engine.begin() as conn:
             await conn.run_sync(sync_save)
