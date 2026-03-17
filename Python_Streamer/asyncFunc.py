@@ -666,20 +666,18 @@ async def check_for_new_earnings(symbol, symbol_id, table) -> bool:
             return False
             
         report_date_str, next_fiscal_date = ticker_data
-              
     if next_fiscal_date > (last_local_fiscal or "1900-01-01"):
         if today.isoformat() > report_date_str: # String comparison is faster than parsing
-            print(f"Update needed for {symbol}: {(time.perf_counter() - start):.6f}s")
             return True
 
     return False
 
 async def cache_all_max_dates():
     global max_fiscal_lookup
-    financial_tables = ["balance", "cash", "earnings", "income"]
+    financial_tables = {"balance" : "RAW_BALANCE_SHEET", "cash": "RAW_CASH_FLOW", "earnings": "RAW_EARNINGS", "income": "RAW_INCOME_STATEMENT"}
     
-    for table in financial_tables:
-        async with db_state.engines[table].connect() as conn:
+    for table, db_name in financial_tables.items():
+        async with db_state.engines[db_name].connect() as conn:
             query = text(f"SELECT symbol_id, MAX(date) FROM {table} GROUP BY symbol_id")
             result = await conn.execute(query)
             max_fiscal_lookup[table] = dict(result.fetchall())

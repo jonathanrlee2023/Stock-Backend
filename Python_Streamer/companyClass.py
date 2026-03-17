@@ -105,6 +105,11 @@ class Company:
         self.peg = self.peg_ratio()
         self.sloan = self.sloan_ratio()
         self.hist_growth, self.forecasted_growth, self.trailing_peg, self.forward_peg = self.analyze_peg()
+
+        if self.peg is None:
+            self.eps_growth = self.calc_eps_growth()
+            if self.eps_growth <= 0: self.eps_growth = 0.0
+            else: self.peg = self.trailing_pe / self.eps_growth
         self.sector = self.company_overview["Sector"].values[0]
 
         self.earnings_date = await asyncFunc.get_furthest_date_for_stock(symbol=self.ticker)
@@ -164,49 +169,53 @@ class Company:
     def grade_stock(self):
         score = 0
         total_possible = 100
-        
-        # 1. Capital Efficiency: ROIC vs WACC (Weight: 15)
-        # Ideally ROIC > WACC. If ROIC is 2x WACC, it's an elite performer.
-        roic = self.return_on_invested_capital
-        wacc = self.wacc
-        if roic > (wacc * 2): score += 15
-        elif roic > wacc: score += 10
-        elif roic > 0: score += 5
+        try:
+            # 1. Capital Efficiency: ROIC vs WACC (Weight: 15)
+            # Ideally ROIC > WACC. If ROIC is 2x WACC, it's an elite performer.
+            roic = self.return_on_invested_capital
+            wacc = self.wacc
+            if roic > (wacc * 2): score += 15
+            elif roic > wacc: score += 10
+            elif roic > 0: score += 5
 
-        # 2. Valuation: PEG Ratio (Weight: 15)
-        # Lower is better. < 1.0 is undervalued, > 2.0 is overvalued.
-        peg = self.peg
-        if 0 < peg <= 1.0: score += 15
-        elif 1.0 < peg <= 1.5: score += 10
-        elif 1.5 < peg <= 2.0: score += 5
+            # 2. Valuation: PEG Ratio (Weight: 15)
+            # Lower is better. < 1.0 is undervalued, > 2.0 is overvalued.
+            peg = self.peg
+            if peg is not None:
+                if 0 < peg <= 1.0: score += 15
+                elif 1.0 < peg <= 1.5: score += 10
+                elif 1.5 < peg <= 2.0: score += 5
 
-        # 3. Earnings Quality: Sloan Ratio (Weight: 15)
-        # -10% to 10% is the safe zone. Outside that indicates accrual risk.
-        sloan = self.sloan
-        if -0.10 <= sloan <= 0.10: score += 15
-        elif -0.20 <= sloan <= 0.20: score += 7
 
-        # 4. Margin of Safety: Price vs Intrinsic (Weight: 20)
-        intrinsic = self.intrinsic_price
-        current = self.price_at_report
-        if intrinsic > (current * 1.3): score += 15 # 30% Margin of Safety
-        elif intrinsic > current: score += 10
+            # 3. Earnings Quality: Sloan Ratio (Weight: 15)
+            # -10% to 10% is the safe zone. Outside that indicates accrual risk.
+            sloan = self.sloan
+            if -0.10 <= sloan <= 0.10: score += 15
+            elif -0.20 <= sloan <= 0.20: score += 7
 
-        # 5. Analyst Sentiment (Weight: 15)
-        # Ratio of Buys to Sells
-        buys = self.strong_buy + self.buy
-        sells = self.strong_sell + self.sell
-        if buys > (sells * 3) and buys > 5: score += 15
-        elif buys > sells: score += 8
+            # 4. Margin of Safety: Price vs Intrinsic (Weight: 20)
+            intrinsic = self.intrinsic_price
+            current = self.price_at_report
+            if intrinsic > (current * 1.3): score += 15 # 30% Margin of Safety
+            elif intrinsic > current: score += 10
 
-        # 6. Cash Flow Strength: FCF (Weight: 15)
-        # Positive FCF is mandatory for a good grade
-        if self.fcf > 0: score += 15
+            # 5. Analyst Sentiment (Weight: 15)
+            # Ratio of Buys to Sells
+            buys = self.strong_buy + self.buy
+            sells = self.strong_sell + self.sell
+            if buys > (sells * 3) and buys > 5: score += 15
+            elif buys > sells: score += 8
 
-        hist = self.hist_growth
-        fore = self.forecasted_growth
-        if fore >= (hist * 0.75) and fore > 0: score += 10
-        elif fore > 0: score += 5
+            # 6. Cash Flow Strength: FCF (Weight: 15)
+            # Positive FCF is mandatory for a good grade
+            if self.fcf > 0: score += 15
+
+            hist = self.hist_growth
+            fore = self.forecasted_growth
+            if fore >= (hist * 0.75) and fore > 0: score += 10
+            elif fore > 0: score += 5
+        except Exception as e:
+            print("Error Grading Stock: ", e)
 
         return int(score)
     def _setup_analyst_ratings(self):
@@ -366,8 +375,8 @@ class Company:
                             return False
 
                     else:
-                        quarterly_df = await self._read_sql_to_df(table_name, engine=engine, report_type="quarterly")
-                        annual_df = await self._read_sql_to_df(table_name, engine=engine, report_type="annual")
+                        quarterly_df = await self._read_sql_to_df(table_name, engine=raw_engine, report_type="quarterly")
+                        annual_df = await self._read_sql_to_df(table_name, engine=raw_engine, report_type="annual")
                         self.data[table_name]["annual"] = annual_df
                         self.data[table_name]["quarterly"] = quarterly_df                
             else:
@@ -582,55 +591,57 @@ class Company:
         
         cash_df = self.cash_df
         income_df = self.income_df
-        cash_df["FCF"] = (cash_df["operatingCashflow"] - cash_df["capitalExpenditures"]).round(2)
-        cash_df["FCF_YoY_Growth"] = (
-        cash_df["FCF"].pct_change()
-            .replace([np.inf, -np.inf], np.nan)
-            * 100
-        ).round(2)
+        try:
+            cash_df["FCF"] = (cash_df["operatingCashflow"] - cash_df["capitalExpenditures"]).round(2)
+            cash_df["FCF_YoY_Growth"] = (
+            cash_df["FCF"].pct_change()
+                .replace([np.inf, -np.inf], np.nan)
+                * 100
+            ).round(2)
 
-        balance_df = self.balance_df
-        cash_df["FCF_Per_Share"] = (cash_df["FCF"] / balance_df["commonStockSharesOutstanding"]).round(2)
+            balance_df = self.balance_df
+            cash_df["FCF_Per_Share"] = (cash_df["FCF"] / balance_df["commonStockSharesOutstanding"]).round(2)
 
-        income_df["effectiveTaxRate"] = (
-            income_df["incomeTaxExpense"] / income_df["incomeBeforeTax"]
-        ).clip(0, 0.35).round(4)  
-        
-        balance_df["inventory"] = balance_df["inventory"].fillna(0)
+            income_df["effectiveTaxRate"] = (
+                income_df["incomeTaxExpense"] / income_df["incomeBeforeTax"]
+            ).clip(0, 0.35).round(4)  
+            
+            balance_df["inventory"] = balance_df["inventory"].fillna(0)
 
-        # 1. Define Operating Current Assets (Total Current Assets minus Cash)
-        cash_total = balance_df["cashAndShortTermInvestments"].fillna(0)
-        # If the aggregate column is 0 or missing, assume we need to sum the parts
-        mask = cash_total == 0
-        cash_total[mask] = (
-            balance_df.loc[mask, "cashAndCashEquivalentsAtCarryingValue"].fillna(0) +
-            balance_df.loc[mask, "shortTermInvestments"].fillna(0)
-        )
-
-        operating_current_assets = balance_df["totalCurrentAssets"] - cash_total
-
-        # 2. Define Operating Current Liabilities (Total Current Liabilities minus Debt)
-        operating_current_liabilities = (
-            balance_df["totalCurrentLiabilities"] 
-            - balance_df["shortTermDebt"].fillna(0)
-            - balance_df["currentDebt"].fillna(0) # Check your specific CSV header for debt
-        )
-
-        # 3. Calculate NWC Ratio
-        balance_df["NWC"] = operating_current_assets - operating_current_liabilities
-
-        balance_df["deltaNWC"] = balance_df["NWC"].diff()
-
-        if 'ebit' not in income_df.columns or income_df['ebit'].isnull().any():
-            # Method: Net Income + Interest + Taxes
-            income_df['ebit'] = (
-                income_df['netIncome'] + 
-                income_df['interestExpense'].fillna(0) + 
-                income_df['incomeTaxExpense'].fillna(0)
+            # 1. Define Operating Current Assets (Total Current Assets minus Cash)
+            cash_total = balance_df["cashAndShortTermInvestments"].fillna(0)
+            # If the aggregate column is 0 or missing, assume we need to sum the parts
+            mask = cash_total == 0
+            cash_total[mask] = (
+                balance_df.loc[mask, "cashAndCashEquivalentsAtCarryingValue"].fillna(0) +
+                balance_df.loc[mask, "shortTermInvestments"].fillna(0)
             )
-        
-        cash_df["FCFF"] = (income_df["ebit"] * (1 - income_df["effectiveTaxRate"]) + income_df["depreciationAndAmortization"] - cash_df["capitalExpenditures"] -  balance_df["deltaNWC"]).round(2)
 
+            operating_current_assets = balance_df["totalCurrentAssets"] - cash_total
+
+            # 2. Define Operating Current Liabilities (Total Current Liabilities minus Debt)
+            operating_current_liabilities = (
+                balance_df["totalCurrentLiabilities"] 
+                - balance_df["shortTermDebt"].fillna(0)
+                - balance_df["currentDebt"].fillna(0) # Check your specific CSV header for debt
+            )
+
+            # 3. Calculate NWC Ratio
+            balance_df["NWC"] = operating_current_assets - operating_current_liabilities
+
+            balance_df["deltaNWC"] = balance_df["NWC"].diff()
+
+            if 'ebit' not in income_df.columns or income_df['ebit'].isnull().any():
+                # Method: Net Income + Interest + Taxes
+                income_df['ebit'] = (
+                    income_df['netIncome'] + 
+                    income_df['interestExpense'].fillna(0) + 
+                    income_df['incomeTaxExpense'].fillna(0)
+                )
+            
+            cash_df["FCFF"] = (income_df["ebit"] * (1 - income_df["effectiveTaxRate"]) + income_df["depreciationAndAmortization"] - cash_df["capitalExpenditures"] -  balance_df["deltaNWC"]).round(2)
+        except Exception as e:
+            print(f"Error calculating FCF for {ticker}: {str(e)}")
 
         self.cash_df = cash_df
         self.income_df = income_df
@@ -700,35 +711,44 @@ class Company:
 
         company_overview = self.company_overview
 
-        beta = company_overview["Beta"].values[0]
-        sector = company_overview["Sector"].values[0]
+        try:
+            beta = company_overview["Beta"].values[0]
+            total_debt = recent_balance.iloc[-1]["shortLongTermDebtTotal"]
+            equity = company_overview["MarketCapitalization"].values[0] / 1_000_000
+            effective_tax_rate = recent_income["effectiveTaxRate"]
+            sector = company_overview["Sector"].values[0]
 
-        if abs(SECTOR_BETAS[sector] - beta) > 0.4:
-            beta = (SECTOR_BETAS[sector] + beta) / 2.0
+            if pd.isna(beta) or beta is None:
+                # Fallback to Sector Beta (Unlevered)
+                unlevered_beta = SECTOR_BETAS.get(sector, 1.0) # Default to 1.0 if sector missing
+                
+                # Re-lever it using the company's capital structure
+                debt_to_equity = total_debt / equity if equity != 0 else 0
+                beta = unlevered_beta * (1 + (1 - effective_tax_rate) * debt_to_equity)
+    
+            if abs(SECTOR_BETAS[sector] - beta) > 0.4:
+                beta = (SECTOR_BETAS[sector] + beta) / 2.0
 
 
-        cost_of_equity = RISK_FREE_RATE + beta * MARKET_RISK_PREMIUM
-        company_overview["CostOfEquity"] = cost_of_equity
+            cost_of_equity = RISK_FREE_RATE + beta * MARKET_RISK_PREMIUM
+            company_overview["CostOfEquity"] = cost_of_equity
 
-        interest_expense = abs(income_df["interestExpense"].dropna().iloc[-1])
-        if pd.isna(interest_expense):
-            interest_expense = recent_income["ebit"] - recent_income["incomeBeforeTax"]
+            interest_expense = abs(income_df["interestExpense"].dropna().iloc[-1])
+            if pd.isna(interest_expense):
+                interest_expense = recent_income["ebit"] - recent_income["incomeBeforeTax"]
 
-        average_debt = recent_balance["shortLongTermDebtTotal"].mean(skipna=True)
-        
-        effective_tax_rate = recent_income["effectiveTaxRate"]
-        
-        cost_of_debt = min(interest_expense / average_debt, 0.15)
-        
-        post_tax_cost_of_debt = cost_of_debt * (1 - effective_tax_rate)
+            average_debt = recent_balance["shortLongTermDebtTotal"].mean(skipna=True)
+            
+            cost_of_debt = min(interest_expense / average_debt, 0.15)
+            
+            post_tax_cost_of_debt = cost_of_debt * (1 - effective_tax_rate)
 
-        total_debt = recent_balance.iloc[-1]["shortLongTermDebtTotal"]
-        equity = company_overview["MarketCapitalization"].values[0] / 1_000_000
+            wacc = ((equity / (equity + total_debt)) * cost_of_equity + (total_debt / (equity + total_debt)) * post_tax_cost_of_debt) * 100
 
-        wacc = ((equity / (equity + total_debt)) * cost_of_equity + (total_debt / (equity + total_debt)) * post_tax_cost_of_debt) * 100
+            company_overview["WACC"] = wacc
 
-        company_overview["WACC"] = wacc
-
+        except Exception as e:
+            print(f"Error calculating WACC for {ticker}: {str(e)}")
         self.company_overview = company_overview
 
         return wacc.round(4)
@@ -750,35 +770,39 @@ class Company:
         income_df = self.income_df
         cash_df = self.cash_df
         balance_df = self.balance_df
+
+        try:
         
-        income_df["revGrowth"] = income_df["totalRevenue"].pct_change().replace([np.inf, -np.inf], np.nan).round(2)
-        income_df["ebitMargin"] = (
-            income_df["ebit"] / income_df["totalRevenue"]
-        ).round(4)
-        income_df["capexPctRevenue"] = (
-            cash_df["capitalExpenditures"].abs() / income_df["totalRevenue"]
-        ).round(4)
+            income_df["revGrowth"] = income_df["totalRevenue"].pct_change().replace([np.inf, -np.inf], np.nan).round(2)
+            income_df["ebitMargin"] = (
+                income_df["ebit"] / income_df["totalRevenue"]
+            ).round(4)
+            income_df["capexPctRevenue"] = (
+                cash_df["capitalExpenditures"].abs() / income_df["totalRevenue"]
+            ).round(4)
 
-        income_df["nwcPctRevenue"] = (
-            balance_df["deltaNWC"] / income_df["totalRevenue"]
-        ).round(4)
+            income_df["nwcPctRevenue"] = (
+                balance_df["deltaNWC"] / income_df["totalRevenue"]
+            ).round(4)
 
-        income_df["daPctRevenue"] = (
-            cash_df["depreciationDepletionAndAmortization"]
-            / income_df["totalRevenue"]
-        )
-        if 'ebit' not in income_df.columns or income_df['ebit'].isnull().any():
-            # Method: Net Income + Interest + Taxes
-            income_df['ebit'] = (
-                income_df['netIncome'] + 
-                income_df['interestExpense'].fillna(0) + 
-                income_df['incomeTaxExpense'].fillna(0)
+            income_df["daPctRevenue"] = (
+                cash_df["depreciationDepletionAndAmortization"]
+                / income_df["totalRevenue"]
             )
-        income_df["ebitGrowth"] = income_df["ebit"].pct_change().round(4)
+            if 'ebit' not in income_df.columns or income_df['ebit'].isnull().any():
+                # Method: Net Income + Interest + Taxes
+                income_df['ebit'] = (
+                    income_df['netIncome'] + 
+                    income_df['interestExpense'].fillna(0) + 
+                    income_df['incomeTaxExpense'].fillna(0)
+                )
+            income_df["ebitGrowth"] = income_df["ebit"].pct_change().round(4)
 
 
-        
-        balance_df["nwcRatio"] = balance_df["NWC"] / income_df["totalRevenue"]
+            
+            balance_df["nwcRatio"] = balance_df["NWC"] / income_df["totalRevenue"]
+        except Exception as e:
+            print(f"Error calculating forecast metrics for {self.ticker}: {str(e)}")
 
         self.income_df = income_df
         self.balance_df = balance_df
@@ -832,146 +856,146 @@ class Company:
         balance_df = self.balance_df
         company_overview = self.company_overview
 
-        market_cap = company_overview["MarketCapitalization"].values[0]
+        try:
+            market_cap = company_overview["MarketCapitalization"].values[0]
 
-        # 2. GET WACC
-        wacc_val = company_overview["WACC"].values[0]
-        wacc = wacc_val / 100 if wacc_val > 1 else wacc_val
-        years = 15 if market_cap > 1_000_000_000 else 10
+            # 2. GET WACC
+            wacc_val = company_overview["WACC"].values[0]
+            wacc = wacc_val / 100 if wacc_val > 1 else wacc_val
+            years = 15 if market_cap > 1_000_000_000 else 10
 
-        # 3. CALCULATE HISTORICAL AVERAGES (The "Means")
-        avg_ebit_margin = income_df["ebitMargin"].tail(5).mean(skipna=True)
-        avg_revenue = income_df["totalRevenue"].tail(5).mean(skipna=True)
-        avg_rev_growth = income_df["revGrowth"].tail(5).mean(skipna=True)
-        avg_long_term_rev_growth = income_df["revGrowth"].tail(15).mean(skipna=True)
-        avg_tax_rate = income_df["effectiveTaxRate"].tail(5).mean(skipna=True)
-        avg_nwc_ratio = balance_df["nwcRatio"].tail(5).mean(skipna=True)
+            # 3. CALCULATE HISTORICAL AVERAGES (The "Means")
+            avg_ebit_margin = income_df["ebitMargin"].tail(5).mean(skipna=True)
+            avg_revenue = income_df["totalRevenue"].tail(5).mean(skipna=True)
+            avg_rev_growth = income_df["revGrowth"].tail(5).mean(skipna=True)
+            avg_long_term_rev_growth = income_df["revGrowth"].tail(15).mean(skipna=True)
+            avg_tax_rate = income_df["effectiveTaxRate"].tail(5).mean(skipna=True)
+            avg_nwc_ratio = balance_df["nwcRatio"].tail(5).mean(skipna=True)
 
-        std_rev_growth = income_df["revGrowth"].tail(5).std()
+            # 4. STARTING VALUES & CYCLE DETECTION
+            revenue_0 = income_df["totalRevenue"].iloc[-1]
+            ebit_margin_0 = income_df["ebitMargin"].iloc[-1]
 
-        # 4. STARTING VALUES & CYCLE DETECTION
-        revenue_0 = income_df["totalRevenue"].iloc[-1]
-        ebit_margin_0 = income_df["ebitMargin"].iloc[-1]
+            sector = company_overview["Sector"].values[0]
+            industry = company_overview["Industry"].values[0]
 
-        sector = company_overview["Sector"].values[0]
-        industry = company_overview["Industry"].values[0]
+            # Detect if we are in a "Bust" (Mean Revert the Start)
+            is_down_cycle = (ebit_margin_0 < 0) or (ebit_margin_0 < avg_ebit_margin * 0.5)
 
-        # Detect if we are in a "Bust" (Mean Revert the Start)
-        is_down_cycle = (ebit_margin_0 < 0) or (ebit_margin_0 < avg_ebit_margin * 0.5)
-
-        if is_down_cycle:
-            revenue_0 = avg_revenue 
-            ebit_margin_0 = avg_ebit_margin
-            start_growth = 0.05 # Conservative mid-cycle recovery
-        else:
-            # Determine current growth blend (Revenue + EBIT)
-            if 'ebitGrowth' not in income_df.columns:
-                income_df["ebitGrowth"] = income_df["ebit"].pct_change().fillna(0).replace([np.inf, -np.inf], 0)
-            
-            ebit_growth_avg = income_df["ebitGrowth"].tail(5).mean(skipna=True)
-            actual_growth = (avg_rev_growth * 0.7) + (ebit_growth_avg * 0.3)
-            actual_growth = min(actual_growth, avg_rev_growth)
-            
-            # Cap start growth between 5% and 40% (for hyper-growth)
-            start_growth = max(min(actual_growth, 0.40), 0.05)
-
-        self.start_growth = start_growth
-        avg_ebit_growth_long_term = income_df["ebitGrowth"].tail(15).mean(skipna=True)
-        
-        long_term_growth = (avg_long_term_rev_growth * 0.7) + (avg_ebit_growth_long_term * 0.3)
-        # 5. CREATE THE MEAN REVERSION GLIDE PATHS
-        # Terminal targets
-        if sector in DEFENSIVE: terminal_growth = long_term_growth
-        elif sector in SENSITIVE: terminal_growth = max(long_term_growth / 2.0, 0.05)
-        else: terminal_growth = (long_term_growth + 0.02) / 2
-        while terminal_growth > start_growth or terminal_growth > 0.06:
-            terminal_growth = terminal_growth * 0.9
-        self.terminal_growth = terminal_growth
-
-        # See if has dividends
-        dividend_per_share = company_overview["DividendPerShare"].values[0]
-        if industry == "BANKS - DIVERSIFIED" or not pd.isna(dividend_per_share):
-            # Dividend model
-            dividend_price = self.dividend_model()
-
-        # Margin Glide Path: Move from current to 5-year average
-        # (Or use current if margin is expanding and improving)
-        if ebit_margin_0 > avg_ebit_margin * 1.2:
-            terminal_ebit_margin = (ebit_margin_0 + avg_ebit_margin) / 2
-        else:
-            terminal_ebit_margin = avg_ebit_margin
-
-        if start_growth - terminal_growth > 0.25:
-            growth_path = self.calculate_3_stage_growth(start_growth, terminal_growth, years)
-        else:
-            growth_path = np.linspace(start_growth, terminal_growth, years)
-        margin_path = np.linspace(ebit_margin_0, terminal_ebit_margin, years)
-        tax_path = np.linspace(income_df["effectiveTaxRate"].iloc[-1], avg_tax_rate, years)
-        tax_path = np.clip(tax_path, 0.10, 0.35) # Keep tax between 10% and 35%
-
-        
-        # 6. RUN THE 10-YEAR PROJECTION
-        forecast = []
-        revenue = revenue_0
-        prev_nwc = revenue_0 * avg_nwc_ratio
-        
-        capex_pct = income_df["capexPctRevenue"].iloc[-1]
-        da_pct = income_df["daPctRevenue"].iloc[-1]
-        
-        for t in range(years):
-            revenue *= (1 + growth_path[t])
-            ebit = revenue * margin_path[t]
-            nopat = ebit * (1 - tax_path[t])
-            
-            # Reinvestment Logic
-            da = revenue * da_pct
-            if t < (years - 1):
-                capex = revenue * capex_pct
+            if is_down_cycle:
+                revenue_0 = avg_revenue 
+                ebit_margin_0 = avg_ebit_margin
+                start_growth = 0.05 # Conservative mid-cycle recovery
             else:
-                capex = da * 1.1 # Terminal Year Steady State Reinvestment
+                # Determine current growth blend (Revenue + EBIT)
+                if 'ebitGrowth' not in income_df.columns:
+                    income_df["ebitGrowth"] = income_df["ebit"].pct_change().fillna(0).replace([np.inf, -np.inf], 0)
                 
-            current_nwc = revenue * avg_nwc_ratio
-            delta_nwc = current_nwc - prev_nwc
-            prev_nwc = current_nwc
+                ebit_growth_avg = income_df["ebitGrowth"].tail(5).mean(skipna=True)
+                actual_growth = (avg_rev_growth * 0.7) + (ebit_growth_avg * 0.3)
+                actual_growth = min(actual_growth, avg_rev_growth)
+                
+                # Cap start growth between 5% and 40% (for hyper-growth)
+                start_growth = max(min(actual_growth, 0.40), 0.05)
+
+            self.start_growth = start_growth
+            avg_ebit_growth_long_term = income_df["ebitGrowth"].tail(15).mean(skipna=True)
             
-            fcff = nopat + da - capex - delta_nwc
-            forecast.append({"Year": t + 1, "FCFF": fcff})
+            long_term_growth = (avg_long_term_rev_growth * 0.7) + (avg_ebit_growth_long_term * 0.3)
+            # 5. CREATE THE MEAN REVERSION GLIDE PATHS
+            # Terminal targets
+            if sector in DEFENSIVE: terminal_growth = long_term_growth
+            elif sector in SENSITIVE: terminal_growth = max(long_term_growth / 2.0, 0.05)
+            else: terminal_growth = (long_term_growth + 0.02) / 2
+            while terminal_growth > start_growth or terminal_growth > 0.06:
+                terminal_growth = terminal_growth * 0.9
+            self.terminal_growth = terminal_growth
 
-        # 7. VALUATION
-        forecast_df = pd.DataFrame(forecast)
-        forecast_df["PV_FCFF"] = forecast_df["FCFF"] / ((1 + wacc) ** forecast_df["Year"])
+            # See if has dividends
+            dividend_per_share = company_overview["DividendPerShare"].values[0]
+            if industry == "BANKS - DIVERSIFIED" or not pd.isna(dividend_per_share):
+                # Dividend model
+                dividend_price = self.dividend_model()
 
-        # Terminal Value Safety
-        terminal_fcff = forecast_df["FCFF"].iloc[-1] * (1 + terminal_growth)
-        terminal_fcff = max(terminal_fcff, revenue * 0.05) # Floor at 5% of Rev
+            # Margin Glide Path: Move from current to 5-year average
+            # (Or use current if margin is expanding and improving)
+            if ebit_margin_0 > avg_ebit_margin * 1.2:
+                terminal_ebit_margin = (ebit_margin_0 + avg_ebit_margin) / 2
+            else:
+                terminal_ebit_margin = avg_ebit_margin
 
-        # Choice of Valuation Method    
-        # Switch to Multiple for Growth/Tech
-        if start_growth > 0.12 or sector == "TECHNOLOGY":
-            target_multiple = 20.0 if start_growth < 0.25 else 25.0
-            terminal_value = terminal_fcff * target_multiple
-        else:
-            denom = max(wacc - terminal_growth, 0.01)
-            terminal_value = terminal_fcff / denom
+            if start_growth - terminal_growth > 0.25:
+                growth_path = self.calculate_3_stage_growth(start_growth, terminal_growth, years)
+            else:
+                growth_path = np.linspace(start_growth, terminal_growth, years)
+            margin_path = np.linspace(ebit_margin_0, terminal_ebit_margin, years)
+            tax_path = np.linspace(income_df["effectiveTaxRate"].iloc[-1], avg_tax_rate, years)
+            tax_path = np.clip(tax_path, 0.10, 0.35) # Keep tax between 10% and 35%
 
-        # Final Calculation
-        pv_terminal = terminal_value / ((1 + wacc) ** years)
-        enterprise_value = forecast_df["PV_FCFF"].sum() + pv_terminal
-        
-        # Net Debt
-        liquid_assets = (balance_df["cashAndCashEquivalentsAtCarryingValue"].iloc[-1] + 
-                        balance_df["shortTermInvestments"].fillna(0).iloc[-1])
-        total_debt = (balance_df["shortLongTermDebtTotal"].fillna(0).iloc[-1] + 
-                    balance_df["longTermDebt"].fillna(0).iloc[-1])
-        net_debt = total_debt - liquid_assets
-        
-        equity_value = max(enterprise_value - net_debt, 0)
-        shares = balance_df["commonStockSharesOutstanding"].iloc[-1]
-        intrinsic_price = equity_value / shares if shares > 0 else 0
-        
-        # Save back to CSV
-        company_overview["IntrinsicPrice"] = round(float(intrinsic_price), 2)
-        
+            
+            # 6. RUN THE 10-YEAR PROJECTION
+            forecast = []
+            revenue = revenue_0
+            prev_nwc = revenue_0 * avg_nwc_ratio
+            
+            capex_pct = income_df["capexPctRevenue"].iloc[-1]
+            da_pct = income_df["daPctRevenue"].iloc[-1]
+            
+            for t in range(years):
+                revenue *= (1 + growth_path[t])
+                ebit = revenue * margin_path[t]
+                nopat = ebit * (1 - tax_path[t])
+                
+                # Reinvestment Logic
+                da = revenue * da_pct
+                if t < (years - 1):
+                    capex = revenue * capex_pct
+                else:
+                    capex = da * 1.1 # Terminal Year Steady State Reinvestment
+                    
+                current_nwc = revenue * avg_nwc_ratio
+                delta_nwc = current_nwc - prev_nwc
+                prev_nwc = current_nwc
+                
+                fcff = nopat + da - capex - delta_nwc
+                forecast.append({"Year": t + 1, "FCFF": fcff})
+
+            # 7. VALUATION
+            forecast_df = pd.DataFrame(forecast)
+            forecast_df["PV_FCFF"] = forecast_df["FCFF"] / ((1 + wacc) ** forecast_df["Year"])
+
+            # Terminal Value Safety
+            terminal_fcff = forecast_df["FCFF"].iloc[-1] * (1 + terminal_growth)
+            terminal_fcff = max(terminal_fcff, revenue * 0.05) # Floor at 5% of Rev
+
+            # Choice of Valuation Method    
+            # Switch to Multiple for Growth/Tech
+            if start_growth > 0.12 or sector == "TECHNOLOGY":
+                target_multiple = 20.0 if start_growth < 0.25 else 25.0
+                terminal_value = terminal_fcff * target_multiple
+            else:
+                denom = max(wacc - terminal_growth, 0.01)
+                terminal_value = terminal_fcff / denom
+
+            # Final Calculation
+            pv_terminal = terminal_value / ((1 + wacc) ** years)
+            enterprise_value = forecast_df["PV_FCFF"].sum() + pv_terminal
+            
+            # Net Debt
+            liquid_assets = (balance_df["cashAndCashEquivalentsAtCarryingValue"].iloc[-1] + 
+                            balance_df["shortTermInvestments"].fillna(0).iloc[-1])
+            total_debt = (balance_df["shortLongTermDebtTotal"].fillna(0).iloc[-1] + 
+                        balance_df["longTermDebt"].fillna(0).iloc[-1])
+            net_debt = total_debt - liquid_assets
+            
+            equity_value = max(enterprise_value - net_debt, 0)
+            shares = balance_df["commonStockSharesOutstanding"].iloc[-1]
+            intrinsic_price = equity_value / shares if shares > 0 else 0
+            
+            # Save back to CSV
+            company_overview["IntrinsicPrice"] = round(float(intrinsic_price), 2)
+        except Exception as e:
+            print(f"Error calculating intrinsic price for {ticker}: {e}")
         self.balance_df = balance_df
         self.income_df = income_df
         self.company_overview = company_overview
@@ -1002,31 +1026,54 @@ class Company:
         ticker = self.ticker
         balance_df = self.balance_df
         income_df = self.income_df
+
+        try:
         
-        if "ROIC" in income_df.columns:
-            if income_df["ROIC"].iloc[-1] > 0:
-                Roic = income_df["ROIC"].iloc[-1]
-                return Roic
-        # Calculate Invested Capital (Debt + Equity - Cash)
-        # Note: You need to decide if you use 'Total Assets - Current Liabilities' or the financing approach below
-        invested_capital = (
-            balance_df["totalShareholderEquity"] + 
-            balance_df["shortLongTermDebtTotal"].fillna(0) - 
-            balance_df["cashAndCashEquivalentsAtCarryingValue"]
-        )
+            if "ROIC" in income_df.columns:
+                if income_df["ROIC"].iloc[-1] > 0:
+                    Roic = income_df["ROIC"].iloc[-1]
+                    return Roic
+            # Calculate Invested Capital (Debt + Equity - Cash)
+            # Note: You need to decide if you use 'Total Assets - Current Liabilities' or the financing approach below
+            invested_capital = (
+                balance_df["totalShareholderEquity"] + 
+                balance_df["shortLongTermDebtTotal"].fillna(0) - 
+                balance_df["cashAndCashEquivalentsAtCarryingValue"]
+            )
 
-        # Calculate NOPAT
-        nopat = income_df["ebit"] * (1 - income_df["effectiveTaxRate"])
+            # Calculate NOPAT
+            nopat = income_df["ebit"] * (1 - income_df["effectiveTaxRate"])
 
-        # ROIC
-        income_df["ROIC"] = (nopat / invested_capital).round(4)
+            # ROIC
+            income_df["ROIC"] = (nopat / invested_capital).round(4)
+        except Exception as e:
+            print(f"Error calculating ROIC for {ticker}: {e}")
         self.income_df = income_df
         return income_df["ROIC"].iloc[-1]
 
     def peg_ratio(self):        
         peg_ratio = self.company_overview["PEGRatio"].iloc[0]
-        # print(f"PEG Ratio for {self.ticker}: {peg_ratio}")
         return peg_ratio
+    
+    def calc_eps_growth(self) -> float:
+        income_df = self.income_df
+        company_overview = self.company_overview
+        if len(income_df) < 4:
+            return 0.0
+        
+        eps_series = income_df["netIncome"] / company_overview["SharesOutstanding"].values[0]
+        
+        current_eps = eps_series.iloc[-1]
+        initial_eps = eps_series.iloc[-4]
+        
+        if current_eps <= 0 or initial_eps <= 0:
+            return 0.0
+            
+        try:
+            cagr = (current_eps / initial_eps)**(1/3) - 1
+            return cagr * 100
+        except Exception as e:
+            return 0.0
 
     def sloan_ratio(self):
         """
@@ -1046,25 +1093,26 @@ class Company:
         """
         ticker = self.ticker
         company_overview = self.company_overview
-        if "sloanRatio" in company_overview.columns:
-            val = company_overview["sloanRatio"].iloc[0]
-            if pd.notna(val): # This handles None, NaN, and Null
-                if val > 0:
-                    # print(f"Sloan Ratio for {ticker} already calculated: {val}")
-                    return val
-        income_df = self.income_df
-        balance_df = self.balance_df
-        cash_df = self.cash_df
+        try:
+            if "sloanRatio" in company_overview.columns:
+                val = company_overview["sloanRatio"].iloc[0]
+                if pd.notna(val): # This handles None, NaN, and Null
+                    if val > 0:
+                        return val
+            income_df = self.income_df
+            balance_df = self.balance_df
+            cash_df = self.cash_df
 
-        net_income = income_df["netIncome"].iloc[-1]
-        fcf = cash_df["FCF"].iloc[-1]
-        total_assets = balance_df["totalAssets"].iloc[-1]
+            net_income = income_df["netIncome"].iloc[-1]
+            fcf = cash_df["FCF"].iloc[-1]
+            total_assets = balance_df["totalAssets"].iloc[-1]
 
-        sloan_ratio = (net_income - fcf) / total_assets
+            sloan_ratio = (net_income - fcf) / total_assets
 
-        company_overview["sloanRatio"] = sloan_ratio.round(4)
+            company_overview["sloanRatio"] = sloan_ratio.round(4)
+        except Exception as e:
+            print(f"Error calculating Sloan Ratio for {ticker}: {e}")
         self.company_overview = company_overview
-        # print(f"Sloan Ratio for {ticker}: {sloan_ratio}")
         return sloan_ratio
 
 
@@ -1107,34 +1155,63 @@ class Company:
         try:
             trailing_pe = float(company_overview["TrailingPE"].values[0])
             forward_pe = float(company_overview["ForwardPE"].values[0])
+        except Exception as e:
+            print("--- PEG Analysis Failed: Missing P/E Data ---", e)
+            total_net_income = income_df["netIncome"].tail(4).sum()
+            shares_outstanding = company_overview["SharesOutstanding"].values[0]
+
+            trailing_eps = total_net_income / shares_outstanding
+            self.trailing_pe = self.price_at_report / trailing_eps
+            forward_pe = None
+
+        try:
+            hist_g_int = historical_growth * 100
+            proj_g_int = projected_growth * 100
+
+            if hist_g_int > 0 and trailing_pe is not None:
+                trailing_peg = trailing_pe / hist_g_int
+            else:
+                trailing_peg = None
+
+            if proj_g_int > 0 and forward_pe is not None:
+                forward_peg = forward_pe / proj_g_int
+            else:
+                forward_peg = None
+                print("--- Forward PEG Analysis Failed: Projected Growth is less than 0% or no Forward P/E ---")
+
         except (ValueError, IndexError):
-            print("--- PEG Analysis Failed: Missing P/E Data ---")
             return
-
-        # print(f"Historical Growth: {historical_growth:.3f}")
-        # print(f"Projected Growth: {projected_growth:.3f}")
-        # print(f"Trailing P/E: {trailing_pe}")
-        # print(f"Forward P/E: {forward_pe}")
-        # 2. Convert Growth to Integers (e.g., 0.15 -> 15.0)
-        hist_g_int = historical_growth * 100
-        proj_g_int = projected_growth * 100
-
-        # 3. Calculate Ratios
-        if hist_g_int > 0:
-            trailing_peg = trailing_pe / hist_g_int
-        else:
-            trailing_peg = None
-
-        if proj_g_int > 0:
-            forward_peg = forward_pe / proj_g_int
-        else:
-            forward_peg = None
-            print("--- Forward PEG Analysis Failed: Projected Growth is less than 0% ---")
-
         return historical_growth, projected_growth, trailing_peg, forward_peg
 
     async def replace_with_usd(self):
         # API key for the exchange rate service
+        """
+        Replaces all non-USD currency values in the memory dictionary with their USD equivalents.
+
+        This method queries the exchange rate API service to retrieve the latest conversion rates.
+
+        It then iterates through the memory dictionary and applies the conversion rates to the numeric columns of the dataframes.
+
+        The 'reportedCurrency' column is updated to 'USD' for all dataframes.
+
+        Parameters
+
+        ----------
+        self : Company
+            The Company object containing the data to be standardized.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        This method assumes that the 'reportedCurrency' column exists in all dataframes and that the conversion rates are available in the exchange rate API service.
+
+        The method does not handle errors in the event that the API service is unavailable or returns invalid data.
+        """
+
+
         rate_url = f"https://v6.exchangerate-api.com/v6/{self.rate_api_key}/latest/USD"
         
         async with httpx.AsyncClient() as client:
@@ -1160,8 +1237,6 @@ class Company:
                 df[cols_to_convert] = df[cols_to_convert].div(conversion_factors, axis=0).round(4)
                 df['reportedCurrency'] = 'USD'
                 
-        # print(f"Currency standardization complete for {self.ticker}")
-
     
     async def save_all_to_db(self):
         """
@@ -1172,7 +1247,6 @@ class Company:
 
         # 1. Save the 4 Financial Databases
         for cat_key in db_map:
-            # Create a copy to avoid modifying the original memory dictionary directly
             annual_df = self.data[cat_key]["annual"].copy()
             quarterly_df = self.data[cat_key]["quarterly"].copy()
             
@@ -1180,14 +1254,11 @@ class Company:
             if df_to_save.empty:
                 continue
 
-            # Add the ID so the upsert logic can use it
             df_to_save["symbol_id"] = self.symbol_id
 
             engine = self.engines[cat_key]
-            # Ensure we use symbol_id as the primary key column for the delete step
             await self._upsert_to_database(engine, df_to_save, cat_key, pk_col="symbol_id")
 
-        # 2. Save the Company Overview Database (The 5th DB)
         if not self.data["overview"].empty:
             overview_df = self.data["overview"].copy()
             
@@ -1197,12 +1268,10 @@ class Company:
             overview_df["roic"] = self.return_on_invested_capital
             overview_df["timestamp"] = self.timestamp
             
-            # NEW: Inject the integer ID
             overview_df["symbol_id"] = self.symbol_id
             
             overview_engine = self.engines["overview"]
             
-            # CHANGE: Use symbol_id as the pk_col here too for a unified system
             await self._upsert_to_database(overview_engine, overview_df, "Overview", pk_col="symbol_id")
 
     async def _upsert_to_database(self, engine, df, table_name, pk_col="symbol_id"):
@@ -1210,12 +1279,10 @@ class Company:
         Handles Schema Evolution and prevents duplicates by using symbol_id.
         Ensures the transition from ticker strings to integer IDs is seamless.
         """
-        # Ensure the integer ID is present in the DataFrame before saving
         if pk_col == "symbol_id":
             df["symbol_id"] = self.symbol_id
 
         async with engine.begin() as conn:
-            # 1. Check if the table exists
             table_exists_res = await conn.execute(
                 text("SELECT name FROM sqlite_master WHERE type='table' AND name=:t"), 
                 {"t": table_name}
@@ -1223,14 +1290,12 @@ class Company:
             table_exists = table_exists_res.fetchone() is not None
             
             if table_exists:
-                # 2. Schema Migration: Check for missing columns
                 existing_cols_res = await conn.execute(text(f"PRAGMA table_info({table_name})"))
                 existing_cols_info = existing_cols_res.fetchall()
                 existing_cols_lower = [row[1].lower() for row in existing_cols_info]
 
                 for col in df.columns:
                     if col.lower() not in existing_cols_lower:
-                        # Assign correct SQLite types
                         if col.lower() == "symbol_id":
                             dtype = "INTEGER"
                         elif col.lower() in ["reportedcurrency", "report_type", "ticker", "symbol"]:
@@ -1244,24 +1309,19 @@ class Company:
                         except Exception as e:
                             print(f"Column {col} add failed (likely case conflict): {e}")
 
-                # 3. Clean Slate: Remove old entries for this company
-                # We delete by both symbol_id AND ticker during the migration phase 
-                # to ensure no duplicate rows exist under different identifiers.
                 delete_query = f"DELETE FROM {table_name} WHERE symbol_id = :sid"
                 params = {"sid": self.symbol_id}
                 
                 if "ticker" in existing_cols_lower:
                     delete_query += " OR ticker = :t"
                     params["t"] = self.ticker
-                elif "symbol" in existing_cols_lower: # For the Overview table
+                elif "symbol" in existing_cols_lower: 
                     delete_query += " OR Symbol = :t"
                     params["t"] = self.ticker
 
                 await conn.execute(text(delete_query), params)
             
-            # 4. Final Flush: Save the DataFrame
-            def sync_save(sync_conn):
-                # Using 'append' because we manually handled the 'Clean Slate' above
+            def sync_save(sync_conn):                
                 df.to_sql(table_name, sync_conn, if_exists="append", index=False)
             
             await conn.run_sync(sync_save)
