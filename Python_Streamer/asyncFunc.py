@@ -256,7 +256,7 @@ async def stream_options(client):
             await asyncio.sleep(5)
             continue
 
-        start_fetch = time.perf_counter()
+        # start_fetch = time.perf_counter()
         
         try:
             if len(option_ids) <= LIMIT:
@@ -306,11 +306,8 @@ async def stream_options(client):
                 except KeyError:
                     continue
 
-        end_time = time.perf_counter()
-        
-        # --- DIAGNOSTICS ---
-        print(f"Fetch: {fetch_done - start_fetch:.4f}s | Rename: {end_time - fetch_done:.4f}s")
-        print(f"Total: {end_time - start_fetch:.4f}s | Symbols: {len(option_ids)}")
+        # end_time = time.perf_counter()
+
         wait_time = 15 - (time.time() % 15)
         if wait_time < 0.1: wait_time = 15
         await asyncio.sleep(wait_time)
@@ -641,7 +638,7 @@ async def check_for_new_earnings(symbol, symbol_id, table) -> bool:
     """
     global earnings_lookup
     global max_fiscal_lookup
-    start = time.perf_counter()
+    # start = time.perf_counter()
     today = datetime.date.today()
 
     async def get_calendar():
@@ -675,7 +672,6 @@ async def check_for_new_earnings(symbol, symbol_id, table) -> bool:
             print(f"Update needed for {symbol}: {(time.perf_counter() - start):.6f}s")
             return True
 
-        print(f"Time to compare earnings {(time.perf_counter() - start):.6f}")  
     return False
 
 async def cache_all_max_dates():

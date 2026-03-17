@@ -46,7 +46,6 @@ CYCLICAL = ["CONSUMER CYCLICAL", "FINANCIAL SERVICES", "BASIC MATERIALS", "REAL 
 class Company:
     def __init__(self, ticker, api_key, rate_api_key, client):
         self.ticker = ticker
-        print(self.ticker)
         self.api_key = api_key
         self.rate_api_key = rate_api_key
         self.client = client

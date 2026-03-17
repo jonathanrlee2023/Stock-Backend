@@ -177,6 +177,12 @@ type StockPriceData struct {
 	AskSize int `json:"Ask Size,omitempty"`
 }
 
+type BalanceData struct {
+	Timestamp int64   `json:"timestamp"`
+	Balance   float64 `json:"Balance"`
+	Cash      float64 `json:"Cash"`
+}
+
 type StockDbData struct {
 	Timestamp int64   `json:"timestamp"`
 	Bid       float64 `json:"bid"`

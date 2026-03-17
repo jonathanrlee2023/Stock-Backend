@@ -43,7 +43,6 @@ class DataLoader:
             ) as cursor:
                 rows = await cursor.fetchall()
             if rows:
-                print(f"Time to load fiscal date price: {time.perf_counter() - start} seconds") 
                 return rows[0][0]
         
             def fetch_api():

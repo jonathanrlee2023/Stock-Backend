@@ -52,15 +52,15 @@ var upgrader = websocket.Upgrader{
 }
 
 var (
-	clients   = make(map[string]*Client)
-	clientsMu sync.RWMutex
+	Clients   = make(map[string]*Client)
+	ClientsMu sync.RWMutex
 )
 
 var ctx = context.Background()
 
 type Hub struct {
 	// Registered clients.
-	clients map[*websocket.Conn]bool
+	Clients map[*websocket.Conn]bool
 	// Inbound messages from Redis.
 	broadcast chan []byte
 	// Register requests from the HTTP handler.
@@ -74,7 +74,7 @@ func NewHub() *Hub {
 		broadcast:  make(chan []byte),
 		register:   make(chan *websocket.Conn),
 		unregister: make(chan *websocket.Conn),
-		clients:    make(map[*websocket.Conn]bool),
+		Clients:    make(map[*websocket.Conn]bool),
 	}
 }
 
@@ -126,11 +126,11 @@ func (h *Hub) Run() {
 	for {
 		select {
 		case client := <-h.register:
-			h.clients[client] = true
+			h.Clients[client] = true
 		case client := <-h.unregister:
-			delete(h.clients, client)
+			delete(h.Clients, client)
 		case message := <-h.broadcast:
-			for client := range h.clients {
+			for client := range h.Clients {
 				// Use a non-blocking write or a goroutine to prevent
 				// one slow user from stalling the entire Redis stream.
 				go func(c *websocket.Conn, msg []byte) {
@@ -224,8 +224,8 @@ func WebsocketConnectHandler(hub *Hub, openDB, balanceDB, priceDB, trackerDB *sq
 		go func() { hub.register <- ws }()
 	}
 
-	clientsMu.Lock()
-	if oldClient, exists := clients[clientID]; exists {
+	ClientsMu.Lock()
+	if oldClient, exists := Clients[clientID]; exists {
 		log.Printf("Client %s already connected — replacing connection", clientID)
 		// 1. Trigger the close
 		oldClient.Conn.Close()
@@ -234,13 +234,13 @@ func WebsocketConnectHandler(hub *Hub, openDB, balanceDB, priceDB, trackerDB *sq
 		default:
 			close(oldClient.Done)
 		}
-		delete(clients, clientID)
-		clientsMu.Unlock()
+		delete(Clients, clientID)
+		ClientsMu.Unlock()
 
 		// 2. SMALL PAUSE: allow the old goroutine to exit the select loop
 		time.Sleep(50 * time.Millisecond)
 
-		clientsMu.Lock()
+		ClientsMu.Lock()
 	}
 
 	newClient := &Client{
@@ -248,8 +248,8 @@ func WebsocketConnectHandler(hub *Hub, openDB, balanceDB, priceDB, trackerDB *sq
 		ID:   clientID,
 		Done: make(chan struct{}),
 	}
-	clients[clientID] = newClient
-	clientsMu.Unlock()
+	Clients[clientID] = newClient
+	ClientsMu.Unlock()
 
 	defer func() {
 		hub.unregister <- ws // Unregister on disconnect
@@ -259,8 +259,8 @@ func WebsocketConnectHandler(hub *Hub, openDB, balanceDB, priceDB, trackerDB *sq
 	log.Printf("Client connected: %s", clientID)
 
 	if clientID == "STOCK_CLIENT" {
-		clients[clientID].IsWriting = false
-		SendOpenPositions(balanceDB, openDB, priceDB, trackerDB, clients)
+		Clients[clientID].IsWriting = false
+		SendOpenPositions(balanceDB, openDB, priceDB, trackerDB, Clients)
 		go HandleClientWrite(newClient, openDB, balanceDB, priceDB)
 	}
 
@@ -269,15 +269,15 @@ func WebsocketConnectHandler(hub *Hub, openDB, balanceDB, priceDB, trackerDB *sq
 }
 
 func DisconnectClient(clientID string) {
-	clientsMu.Lock()
-	client, exists := clients[clientID]
+	ClientsMu.Lock()
+	client, exists := Clients[clientID]
 	if !exists {
 		log.Printf("Client %s was already removed", clientID)
-		clientsMu.Unlock()
+		ClientsMu.Unlock()
 		return
 	}
-	delete(clients, clientID)
-	clientsMu.Unlock()
+	delete(Clients, clientID)
+	ClientsMu.Unlock()
 
 	client.Conn.Close()
 	client.Close() // safe: Once ensures it's only closed once
@@ -285,10 +285,10 @@ func DisconnectClient(clientID string) {
 }
 
 func ShutdownAllClients() {
-	clientsMu.Lock()
-	defer clientsMu.Unlock()
+	ClientsMu.Lock()
+	defer ClientsMu.Unlock()
 
-	for id, client := range clients {
+	for id, client := range Clients {
 		log.Printf("Closing connection for client: %s", id)
 		client.Conn.Close()
 		client.Close()
@@ -297,7 +297,7 @@ func ShutdownAllClients() {
 		default:
 			close(client.Done)
 		}
-		delete(clients, id)
+		delete(Clients, id)
 	}
 }
 
@@ -321,13 +321,13 @@ func HandleCompanyRead(msg redis.Message) {
 		return
 	}
 	client := "STOCK_CLIENT"
-	if clients[client] == nil {
+	if Clients[client] == nil {
 		return
 	}
 
-	if err := send(clients[client], company); err != nil {
+	if err := send(Clients[client], company); err != nil {
 		errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-		_ = clients[client].Conn.WriteMessage(websocket.TextMessage, errMsg)
+		_ = Clients[client].Conn.WriteMessage(websocket.TextMessage, errMsg)
 		return
 	}
 }
@@ -342,12 +342,12 @@ func HandleOptionRead(msg redis.Message) {
 	}
 
 	client := "STOCK_CLIENT"
-	if clients[client] == nil {
+	if Clients[client] == nil {
 		return
 	}
-	if err := send(clients[client], option); err != nil {
+	if err := send(Clients[client], option); err != nil {
 		errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-		_ = clients[client].Conn.WriteMessage(websocket.TextMessage, errMsg)
+		_ = Clients[client].Conn.WriteMessage(websocket.TextMessage, errMsg)
 		return
 	}
 }
@@ -396,7 +396,7 @@ func HandleClientWrite(client *Client, openDB, balanceDB, priceDB *sql.DB) {
 		timer.Stop()
 		return
 	case t := <-timer.C:
-		processWrite(t, client, balanceDB, openDB)
+		ProcessWrite(t, client, balanceDB, openDB)
 	}
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
@@ -408,7 +408,7 @@ func HandleClientWrite(client *Client, openDB, balanceDB, priceDB *sql.DB) {
 			DisconnectClient(client.ID)
 			return
 		case t := <-ticker.C:
-			processWrite(t, client, balanceDB, openDB)
+			ProcessWrite(t, client, balanceDB, openDB)
 		}
 	}
 }
@@ -464,7 +464,7 @@ func StartStockStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request)
 }
 
 // Write to a specific client the most recent balance
-func processWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
+func ProcessWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 	// Don't write if we don't have any data
 	if len(GlobalPrices.Prices) > 0 || GlobalBalance.Balance == 0 {
 		var cash float64
@@ -552,13 +552,11 @@ func processWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 				log.Printf("Unrecognized quote type for %s: %+v", symbol, q)
 			}
 		}
-		message := StockPriceData{
-			Symbol:    "balance",
+		message := BalanceData{
+			Balance:   balance,
 			Timestamp: t.Unix(),
-			Mark:      balance,
+			Cash:      cash,
 		}
-
-		stockPrices = append(stockPrices, message)
 
 		if len(optionPrices) > 0 {
 			if err := send(client, optionPrices); err != nil {
@@ -573,6 +571,11 @@ func processWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 				_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
 				return
 			}
+		}
+		if err := send(client, message); err != nil {
+			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
+			_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
+			return
 		}
 	} else {
 		log.Printf("No data yet")

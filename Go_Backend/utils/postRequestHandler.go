@@ -156,6 +156,7 @@ func OpenSharesPositionHandler(openDB, balanceDB *sql.DB, w http.ResponseWriter,
 	if err != nil {
 		http.Error(w, "Failed to write balance", http.StatusInternalServerError)
 	}
+	ProcessWrite(time.Now(), Clients["STOCK_CLIENT"], balanceDB, openDB)
 }
 
 // Handles the closing of a position
@@ -236,4 +237,6 @@ func ClosePositionHandler(openDB, closeDB, balanceDB *sql.DB, w http.ResponseWri
 	if err != nil {
 		http.Error(w, "Failed to write balance", http.StatusInternalServerError)
 	}
+
+	ProcessWrite(time.Now(), Clients["STOCK_CLIENT"], balanceDB, openDB)
 }
