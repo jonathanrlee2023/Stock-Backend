@@ -168,7 +168,6 @@ class Company:
         return self
     def grade_stock(self):
         score = 0
-        total_possible = 100
         try:
             # 1. Capital Efficiency: ROIC vs WACC (Weight: 15)
             # Ideally ROIC > WACC. If ROIC is 2x WACC, it's an elite performer.
@@ -299,12 +298,10 @@ class Company:
                 elif category == "BALANCE_SHEET": table_name = "balance"
                 elif category == "CASH_FLOW": table_name = "cash"
                 elif category == "EARNINGS": table_name = "earnings"
-                # 1. Define the specific DB for this category
                 retrieve_new_data = await asyncFunc.check_for_new_earnings(ticker, symbol_id, table_name)
 
                 engine = self.engines[table_name]
-                # 2. Check if this ticker already has data in this specific DB
-                # Note: We check a table named 'data' inside that specific DB
+               
                 already_exists = await self._check_db_for_ticker(table_name, engine, ticker)
                 raw_engine = self.engines[f"RAW_{category}"]
                 
@@ -349,15 +346,12 @@ class Company:
                                 
                             self.data[table_name]["annual"] = annual_df
                             self.data[table_name]["quarterly"] = quarterly_df
-                            # 4. Merge Annual and Quarterly into one DataFrame for the DB
-                            # We standardized the columns so they stack perfectly
 
                             for df, r_type in [(annual_df, 'annual'), (quarterly_df, 'quarterly')]:
                                 df['ticker'] = ticker
                                 df['report_type'] = r_type
                             combined_df = pd.concat([annual_df, quarterly_df], ignore_index=True, sort=False)
                             
-                            # Ensure 'fiscalDateEnding' is renamed to 'date' if not already done
                             if 'fiscalDateEnding' in combined_df.columns:
                                 combined_df = combined_df.rename(columns={'fiscalDateEnding': 'date'})
                             

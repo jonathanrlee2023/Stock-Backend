@@ -16,6 +16,7 @@ from dbState import db_state
 from companyClass import Company
 from dataloader import DataLoader
 import stream_func
+from cache import latest_quote, earnings_lookup, max_fiscal_lookup
 
 
 stream_started = False
@@ -28,9 +29,6 @@ get_option_stats = itemgetter(*option_attributes)
 symbol_cache = {}
 r = aioredis.Redis(host='redis', port=6379, db=0)
 db_dir = os.getenv("DB_DIR", "../Database")
-
-max_fiscal_lookup = {'income': {}, 'balance': {}, 'cash': {}, 'earnings': {}}
-earnings_lookup = {}
 
 async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, client):
     """
@@ -452,33 +450,7 @@ async def get_options_and_initial_quotes(ticker, client):
 
     quote = loader.get_quote()
 
-    async with db.execute(
-        "SELECT timestamp, open, high, low, close, volume FROM HistoricalStocks WHERE symbol_id = ? ORDER BY timestamp ASC", 
-        (s_id,)
-    ) as cursor:
-        rows = await cursor.fetchall()
-
-    if rows:
-        price_history = [
-            {"timestamp": r[0], "open": r[1], "high": r[2], "low": r[3], "close": r[4], "volume": r[5]} 
-            for r in rows
-        ]
-        print(f"Loaded {ticker} history from Cache (DB)")
-    else:
-        price_history = loader.get_price_history() # Assuming this returns a list of dicts
-
-        if price_history:
-            history_records = [
-                (item['timestamp'], s_id, item['open'], item['high'], item['low'], item['close'], item['volume'])
-                for item in price_history
-            ]
-            
-            await db.executemany(
-                "INSERT OR IGNORE INTO HistoricalStocks VALUES (?, ?, ?, ?, ?, ?, ?)",
-                history_records
-            )
-            await db.commit()
-            print(f"Saved {ticker} history to DB")
+    price_history = await loader.get_recent_price_history() # Assuming this returns a list of dicts        
 
     call_option_id_list, put_option_id_list = loader.get_option_expirations()
     option_ids.extend(call_option_id_list)
@@ -681,3 +653,18 @@ async def cache_all_max_dates():
             query = text(f"SELECT symbol_id, MAX(date) FROM {table} GROUP BY symbol_id")
             result = await conn.execute(query)
             max_fiscal_lookup[table] = dict(result.fetchall())
+
+async def get_recent_quote_time():
+    priceDB = db_state.price_db
+    global latest_quote
+    result = await priceDB.execute(
+        "SELECT symbol_id, MAX(timestamp) FROM HistoricalStocks GROUP BY symbol_id"
+    )
+
+    rows = await result.fetchall()
+    
+    if rows:
+        latest_quote.update({row[0]: row[1] for row in rows})
+        
+    print(f"Synchronized cache for {len(rows)} symbols.")
+    return

@@ -1,6 +1,6 @@
 import asyncio
-import datetime
-from pprint import pprint
+from datetime import datetime, timedelta
+from cache import latest_quote
 import time
 import schwabdev
 import os
@@ -65,7 +65,25 @@ class DataLoader:
             print(f"Schwab API Error: {e}")
         return None
     
-    def get_price_history(self):
+    async def get_price_history(self):
+        s_id = self.symbol_id
+        priceDB = db_state.price_db
+        try:
+            async with priceDB.execute(
+                "SELECT timestamp, open, high, low, close, volume FROM HistoricalStocks WHERE symbol_id = ? ORDER BY timestamp ASC", 
+                (s_id,)
+            ) as cursor:
+                rows = await cursor.fetchall()
+
+            if rows:
+                price_history = [
+                    {"timestamp": r[0], "open": r[1], "high": r[2], "low": r[3], "close": r[4], "volume": r[5]} 
+                    for r in rows
+                ]
+                print(f"Loaded {self.ticker} history from Cache (DB)")
+                return price_history
+        except Exception as e:
+            print(f"Price Database Error: {e}")
         try:
             start_ms = self.get_unix_timestamp_5_years_ago()
             # One year ago in milliseconds
@@ -93,13 +111,10 @@ class DataLoader:
 
             # Iterate through candles (Schwab returns them Chronological: Oldest -> Newest)
             for candle in raw_candles:
-                # Fix the naming immediately
                 if 'datetime' in candle:
                     candle['timestamp'] = candle.pop('datetime')
                 
-                # Check if candle is within the last year
                 if candle['timestamp'] >= one_year_ago_ms:
-                    # RECENT: Keep everything
                     filtered_candles.append(candle)
                 else:
                     # OLD: Only keep every 5th candle
@@ -113,6 +128,79 @@ class DataLoader:
             print(f"Schwab API Error: {e}")
         return None
     
+    async def get_recent_price_history(self):
+        global latest_quote
+        start_ms = 0
+        today_ms = int(time.time() * 1000)
+        raw_candles = []
+        needs_update = False
+        s_id = self.symbol_id
+        
+        priceDB = db_state.price_db
+        start_ms = latest_quote.get(s_id, 0)
+        print(f"start_ms: {start_ms}")
+        if start_ms == 0: 
+            result = await priceDB.execute(
+                "SELECT timestamp, symbol_id FROM HistoricalStocks WHERE symbol_id = ? ORDER BY timestamp DESC LIMIT 1", 
+                (self.symbol_id,)
+            )
+
+            # 2. Extract the row
+            row = await result.fetchone()
+            if row:
+                start_ms = row[0]
+            else:
+                print("No rows found") 
+                raw_candles = await self.get_price_history()           
+        date_start = datetime.fromtimestamp(start_ms / 1000.0).date()
+        date_today = datetime.fromtimestamp(today_ms / 1000.0).date()
+
+        if date_start == date_today:
+            raw_candles = await self.get_price_history()
+        else:
+            print(f"Updating {self.ticker} history from {date_start} to {date_today}")
+            needs_update = True
+        
+        try:
+            if needs_update:
+                response = self.connection.price_history(
+                    symbol=self.ticker,
+                    periodType="year",
+                    frequencyType="daily",
+                    startDate=start_ms,
+                )
+                
+                if response.status_code != 200:
+                    print(f"API Error: Status {response.status_code}")
+                    return None
+                    
+                quotes = response.json()
+                new_candles = quotes.get('candles', [])
+                latest_quote[s_id] = quotes.get('previousCloseDate', 0)
+                
+                if not new_candles:
+                    return None                
+                
+                raw_candles.extend(new_candles)
+
+        except Exception as e:
+            print(f"Schwab API Error: {e}")
+        try:
+            history_records = [
+                (item.get('timestamp') or item.get('datetime'), s_id, item['open'], item['high'], item['low'], item['close'], item['volume'])
+                for item in raw_candles
+            ]
+            await priceDB.executemany(
+                "INSERT OR IGNORE INTO HistoricalStocks VALUES (?, ?, ?, ?, ?, ?, ?)",
+                history_records
+            )
+            await priceDB.commit()
+            print(f"Saved {self.ticker} history to DB")
+
+        except Exception as e:
+            print(f"Price Database Error: {e}")
+        return await self.get_price_history()
+    
     def get_quote(self):
         response = self.connection.quote(symbol_id=self.ticker).json()
         data = response[self.ticker]['quote']
@@ -121,8 +209,8 @@ class DataLoader:
     def get_option_expirations(self):
         call_option_id_list = []
         put_option_id_list = []
-        fromDate = datetime.datetime.now()
-        toDate = fromDate + datetime.timedelta(days=7)
+        fromDate = datetime.now()
+        toDate = fromDate + timedelta(days=7)
         response = self.connection.option_chains(symbol=self.ticker, strikeCount=5, optionType="ALL", toDate=toDate).json()
         call_data = response['callExpDateMap']
         put_data = response['putExpDateMap']
@@ -140,7 +228,7 @@ class DataLoader:
 
     
     def get_unix_timestamp_5_years_ago(self):
-        now = datetime.datetime.now()
+        now = datetime.now()
         
         try:
             # Subtract 5 years from the current year

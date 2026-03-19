@@ -95,7 +95,8 @@ async def main():
         asyncio.create_task(asyncFunc.listen_for_messages(streamer, api_manager, rate_api_key, client)),
         asyncio.create_task(asyncFunc.write_to_db()),
         asyncio.create_task(asyncFunc.stream_options(client)),
-        asyncio.create_task(asyncFunc.get_earnings_dates(api_manager))
+        asyncio.create_task(asyncFunc.get_earnings_dates(api_manager)),
+        asyncio.create_task(asyncFunc.get_recent_quote_time())
     ]
 
     try:
