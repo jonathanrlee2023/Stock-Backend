@@ -1,0 +1,15 @@
+# Ignore Python cache and environments
+**/__pycache__/
+*.pyc
+venv/
+.venv/
+.env
+
+# Ignore Go binaries and cache
+Go_Backend/tmp/
+bin/
+
+# Ignore Version Control and IDE settings
+.git/
+.vscode/
+.idea/
