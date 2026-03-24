@@ -104,9 +104,12 @@ class Company:
         self.hist_growth, self.forecasted_growth, self.trailing_peg, self.forward_peg = self.analyze_peg()
 
         if self.peg is None:
-            self.eps_growth = self.calc_eps_growth()
-            if self.eps_growth <= 0: self.eps_growth = 0.0
-            else: self.peg = self.trailing_pe / self.eps_growth
+            try:
+                self.eps_growth = self.calc_eps_growth()
+                if self.eps_growth <= 0: self.eps_growth = 0.0
+                else: self.peg = self.trailing_pe / self.eps_growth
+            except Exception as e:
+                print("Exception in setting PEG: ", e)
         self.sector = self.company_overview["Sector"].values[0]
 
         self.earnings_date = await asyncFunc.get_furthest_date_for_stock(symbol=self.ticker)
@@ -1153,12 +1156,13 @@ class Company:
 
             trailing_eps = total_net_income / shares_outstanding
             self.trailing_pe = self.price_at_report / trailing_eps
+            trailing_pe = self.trailing_pe
+            print(self.trailing_pe)
             forward_pe = None
 
         try:
             hist_g_int = historical_growth * 100
             proj_g_int = projected_growth * 100
-
             if hist_g_int > 0 and trailing_pe is not None:
                 trailing_peg = trailing_pe / hist_g_int
             else:

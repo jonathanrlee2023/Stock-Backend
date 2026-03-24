@@ -470,10 +470,15 @@ func ProcessWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 		var cash float64
 		var balance float64
 
-		balance = 10000.0
-		cash = 10000.0
-
 		balance, cash = GlobalBalance.Balance, GlobalBalance.Cash
+
+		if balance == 0.0 && cash == 0.0 {
+			balance = 10000.0
+			cash = 10000.0
+		}
+
+		fmt.Println("Balance: ", balance)
+		fmt.Println("Cash: ", cash)
 
 		tempPositionValue := 0.0
 

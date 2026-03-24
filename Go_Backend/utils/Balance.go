@@ -2,14 +2,20 @@ package utils
 
 import (
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"log"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 // Gets the previous day's last balance
 func GetMostRecentBalance(balanceDB *sql.DB) float64 {
 	var latestTs int64
-	err := balanceDB.QueryRow("SELECT timestamp FROM Balance ORDER BY timestamp DESC LIMIT 1").Scan(&latestTs)
+	var todayBalance float64
+	var todayCash float64
+	err := balanceDB.QueryRow("SELECT timestamp, balance, cash FROM Balance ORDER BY timestamp DESC LIMIT 1").Scan(&latestTs, &todayBalance, &todayCash)
 	if err == sql.ErrNoRows {
 		GlobalBalance.Lock()
 		GlobalBalance.Balance = 10000
@@ -18,7 +24,7 @@ func GetMostRecentBalance(balanceDB *sql.DB) float64 {
 		return 10000 // Default if DB is empty
 	}
 	currentDate := time.Unix(latestTs, 0)
-
+	fmt.Println("Current Date: ", currentDate)
 	beginningOfToday := time.Date(currentDate.Year(), currentDate.Month(), currentDate.Day(), 0, 0, 0, 0, currentDate.Location())
 
 	endOfYesterday := beginningOfToday.Unix() - 1
@@ -27,13 +33,13 @@ func GetMostRecentBalance(balanceDB *sql.DB) float64 {
 	var balance float64
 	var cash float64
 	query := `
-        SELECT balance, cash
+        SELECT balance
         FROM Balance 
         WHERE timestamp >= ? AND timestamp <= ? 
         ORDER BY timestamp DESC 
         LIMIT 1`
 
-	err = balanceDB.QueryRow(query, startOfYesterday, endOfYesterday).Scan(&balance, &cash)
+	err = balanceDB.QueryRow(query, startOfYesterday, endOfYesterday).Scan(&balance)
 
 	if err == sql.ErrNoRows {
 		log.Println("No balance found for the previous calendar day interval... Retrying")
@@ -41,13 +47,13 @@ func GetMostRecentBalance(balanceDB *sql.DB) float64 {
 			startOfYesterday = startOfYesterday - 86400
 
 			query := `
-				SELECT balance, cash
+				SELECT balance
 				FROM Balance 
 				WHERE timestamp >= ? AND timestamp <= ? 
 				ORDER BY timestamp DESC 
 				LIMIT 1`
 
-			err = balanceDB.QueryRow(query, startOfYesterday, endOfYesterday).Scan(&balance, &cash)
+			err = balanceDB.QueryRow(query, startOfYesterday, endOfYesterday).Scan(&balance)
 
 			if err == nil {
 				return balance
@@ -60,10 +66,27 @@ func GetMostRecentBalance(balanceDB *sql.DB) float64 {
 		return 10000
 	}
 
+	if balance == 0.0 && cash == 0.0 {
+		balance = 10000.0
+		cash = 10000.0
+		fmt.Println("Resetting Balance and Cash")
+	}
+
 	GlobalBalance.Lock()
-	GlobalBalance.Balance = balance
-	GlobalBalance.Cash = cash
+	GlobalBalance.Balance = todayBalance
+	GlobalBalance.Cash = todayCash
 	GlobalBalance.Unlock()
+
+	message := BalanceData{
+		Balance:   todayBalance,
+		Timestamp: time.Now().Unix(),
+		Cash:      todayCash,
+	}
+	client := Clients["STOCK_CLIENT"]
+	if err := send(client, message); err != nil {
+		errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
+		_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
+	}
 
 	return balance
 }
