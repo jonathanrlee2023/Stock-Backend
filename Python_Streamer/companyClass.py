@@ -1157,7 +1157,6 @@ class Company:
             trailing_eps = total_net_income / shares_outstanding
             self.trailing_pe = self.price_at_report / trailing_eps
             trailing_pe = self.trailing_pe
-            print(self.trailing_pe)
             forward_pe = None
 
         try:

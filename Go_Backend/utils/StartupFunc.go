@@ -116,7 +116,6 @@ func SendTrackerSymbols(trackerDB, openDB *sql.DB) ([]OptionStreamRequest, []Sto
 			}
 			now := time.Now().UTC()
 			if expDate.Before(now) {
-				log.Println("Ran")
 				toDelete = append(toDelete, id)
 				continue
 			}

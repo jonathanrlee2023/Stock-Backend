@@ -466,7 +466,7 @@ func StartStockStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request)
 // Write to a specific client the most recent balance
 func ProcessWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 	// Don't write if we don't have any data
-	if len(GlobalPrices.Prices) > 0 || GlobalBalance.Balance == 0 {
+	if len(GlobalPrices.Prices) > 0 {
 		var cash float64
 		var balance float64
 
@@ -476,9 +476,6 @@ func ProcessWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 			balance = 10000.0
 			cash = 10000.0
 		}
-
-		fmt.Println("Balance: ", balance)
-		fmt.Println("Cash: ", cash)
 
 		tempPositionValue := 0.0
 

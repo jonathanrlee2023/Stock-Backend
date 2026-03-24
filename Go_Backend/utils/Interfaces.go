@@ -112,7 +112,7 @@ type OptionPriceData struct {
 	High      float64 `json:"High"`
 	IV        float64 `json:"IV"`
 	Delta     float64 `json:"Delta"`
-	Gamma     float64 `json:"Damma"`
+	Gamma     float64 `json:"Gamma"`
 	Theta     float64 `json:"Theta"`
 	Vega      float64 `json:"Vega"`
 }

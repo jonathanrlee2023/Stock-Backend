@@ -24,14 +24,12 @@ func GetMostRecentBalance(balanceDB *sql.DB) float64 {
 		return 10000 // Default if DB is empty
 	}
 	currentDate := time.Unix(latestTs, 0)
-	fmt.Println("Current Date: ", currentDate)
 	beginningOfToday := time.Date(currentDate.Year(), currentDate.Month(), currentDate.Day(), 0, 0, 0, 0, currentDate.Location())
 
 	endOfYesterday := beginningOfToday.Unix() - 1
 	startOfYesterday := beginningOfToday.AddDate(0, 0, -7).Unix()
 
 	var balance float64
-	var cash float64
 	query := `
         SELECT balance
         FROM Balance 
@@ -66,9 +64,8 @@ func GetMostRecentBalance(balanceDB *sql.DB) float64 {
 		return 10000
 	}
 
-	if balance == 0.0 && cash == 0.0 {
+	if balance == 0.0 {
 		balance = 10000.0
-		cash = 10000.0
 		fmt.Println("Resetting Balance and Cash")
 	}
 

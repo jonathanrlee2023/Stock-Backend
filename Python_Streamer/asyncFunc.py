@@ -569,7 +569,6 @@ async def get_earnings_dates(api_key):
                     earnings_df.to_sql('earnings_calendar', conn, if_exists='append', index=False)
             
             await asyncio.to_thread(save_to_db)
-            print(f"Successfully imported {len(earnings_df)} rows.")
         else:
             print(f"Failed to fetch data: {response.status_code}")
             return
