@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from sqlalchemy import text
 import time
@@ -59,6 +60,10 @@ class Company:
         self.income_df = None
         self.balance_df = None
         self.cash_df = None
+        self.earnings_df = None
+        self.quarterly_income_df = None
+        self.quarterly_balance_df = None
+        self.quarterly_cash_df = None
         self.company_overview = None
 
 
@@ -81,8 +86,12 @@ class Company:
         self.reorder_data()
 
         self.income_df = self.data["income"]["annual"]
+        self.quarterly_income_df = self.data["income"]["quarterly"]
+        self.quarterly_balance_df = self.data["balance"]["quarterly"]
+        self.quarterly_cash_df = self.data["cash"]["quarterly"]
         self.balance_df = self.data["balance"]["annual"]
         self.cash_df = self.data["cash"]["annual"]
+        self.earnings_df = self.data["earnings"]["annual"]
         self.company_overview = self.data["overview"]
 
         if self.income_df.empty or self.balance_df.empty or self.cash_df.empty or self.company_overview.empty:
@@ -133,7 +142,13 @@ class Company:
             except:
                 return None
             
-
+        annual_income = self.prepare_df_for_go(self.income_df)
+        annual_balance = self.prepare_df_for_go(self.balance_df)
+        annual_cash = self.prepare_df_for_go(self.cash_df)
+        earnings = self.prepare_df_for_go(self.earnings_df)
+        quarterly_income = self.prepare_df_for_go(self.quarterly_income_df)
+        quarterly_balance = self.prepare_df_for_go(self.quarterly_balance_df)
+        quarterly_cash = self.prepare_df_for_go(self.quarterly_cash_df)
 
         self.final_report = {
             "Symbol": str(self.ticker),
@@ -161,12 +176,55 @@ class Company:
             "Sell": safe_int(self.sell),
             "EarningsDate": self.earnings_date,
             "Grade": self.grade_stock(),
-            "Sector": self.sector
+            "Sector": self.sector,
+            "AnnualIncome": annual_income,
+            "AnnualBalance": annual_balance,
+            "AnnualCash": annual_cash,
+            "Earnings": earnings,
+            "QuarterlyIncome": quarterly_income,
+            "QuarterlyBalance": quarterly_balance,
+            "QuarterlyCash": quarterly_cash
         }
 
         await self.save_all_to_db()
         return self
+    
+    def prepare_df_for_go(self, df: pd.DataFrame):
+        export_df = df.copy()
+
+        # 1. Identify and force numeric conversion for all non-metadata columns
+        # We exclude common string/date columns so they don't get 'coerced' to NaN
+        metadata_cols = ['date', 'ticker', 'report_type', 'reportTime', 'reportedDate', 'symbol_id', 'reportedCurrency']
+        
+        for col in export_df.columns:
+            if col not in metadata_cols:
+                # errors='coerce' turns strings like "N/A" or "-" into np.nan
+                export_df[col] = pd.to_numeric(export_df[col], errors='coerce')
+
+        # 2. Date Formatting
+        if 'date' in export_df.columns:
+            export_df['date'] = pd.to_datetime(export_df['date']).dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+        # 3. CRITICAL: Now that everything is numeric or NaN, swap NaNs for None
+        # We use a double-pass to catch both numpy and pandas null variants
+        export_df = export_df.replace({np.nan: None, np.inf: None, -np.inf: None})
+        export_df = export_df.where(pd.notnull(export_df), None)
+
+        return export_df.to_dict(orient='records')
+    
     def grade_stock(self):
+        """
+        Grades a stock based on 6 key metrics.
+
+        1. Capital Efficiency: ROIC vs WACC (Weight: 15)
+        2. Valuation: PEG Ratio (Weight: 15)
+        3. Earnings Quality: Sloan Ratio (Weight: 15)
+        4. Margin of safety: Price vs Intrinsic (Weight: 20)
+        5. Analyst Sentiment (Weight: 15)
+        6. Cash Flow Strength: FCF (Weight: 15)
+
+        Returns a score between 0 and 100. Higher scores indicate better performance.
+        """
         score = 0
         try:
             # 1. Capital Efficiency: ROIC vs WACC (Weight: 15)

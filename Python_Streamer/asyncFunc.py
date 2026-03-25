@@ -107,25 +107,19 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
 
 async def get_symbol_id(symbol):
     """Helper to get ID from cache or DB, creating it if necessary."""
-    # 1. Check RAM Cache first
     if symbol in symbol_cache:
         return symbol_cache[symbol]
 
     db = db_state.price_db
-    # 2. Check DB if not in cache
     async with db.execute("SELECT symbol_id FROM Symbols WHERE symbol = ?", (symbol,)) as cursor:
         row = await cursor.fetchone()
         if row:
             symbol_cache[symbol] = row[0]
             return row[0]
 
-    # 3. If totally new, insert it
-    # We use the cursor returned by execute to get the lastrowid
     cursor = await db.execute("INSERT INTO Symbols (symbol) VALUES (?)", (symbol,))
     new_id = cursor.lastrowid 
     
-    # Optional but recommended: commit new symbols immediately 
-    # so other tasks can see them
     await db.commit()
     
     symbol_cache[symbol] = new_id

@@ -55,22 +55,29 @@ type Company_Stats struct {
 	ForwardPEG     *float64 `json:"ForwardPEG"`
 	IntrinsicPrice *float64 `json:"IntrinsicPrice"`
 	// DividendPrice can also be None if the company has no dividend history.
-	DividendPrice *float64 `json:"DividendPrice"`
-	PriceAtReport *float64 `json:"PriceAtReport"`
-	WACC          *float64 `json:"WACC"`
-	FCFF          *float64 `json:"FCFF"`
-	FCF           *float64 `json:"FCF"`
-	FCFPerShare   *float64 `json:"FCFPerShare"`
-	NWC           *float64 `json:"NWC"`
-	PriceTarget   *float64 `json:"PriceTarget"`
-	StrongBuy     *int     `json:"StrongBuy"`
-	Buy           *int     `json:"Buy"`
-	Hold          *int     `json:"Hold"`
-	StrongSell    *int     `json:"StrongSell"`
-	Sell          *int     `json:"Sell"`
-	EarningsDate  *string  `json:"EarningsDate"`
-	Grade         *int     `json:"Grade"`
-	Sector        *string  `json:"Sector"`
+	DividendPrice    *float64             `json:"DividendPrice"`
+	PriceAtReport    *float64             `json:"PriceAtReport"`
+	WACC             *float64             `json:"WACC"`
+	FCFF             *float64             `json:"FCFF"`
+	FCF              *float64             `json:"FCF"`
+	FCFPerShare      *float64             `json:"FCFPerShare"`
+	NWC              *float64             `json:"NWC"`
+	PriceTarget      *float64             `json:"PriceTarget"`
+	StrongBuy        *int                 `json:"StrongBuy"`
+	Buy              *int                 `json:"Buy"`
+	Hold             *int                 `json:"Hold"`
+	StrongSell       *int                 `json:"StrongSell"`
+	Sell             *int                 `json:"Sell"`
+	EarningsDate     *string              `json:"EarningsDate"`
+	Grade            *int                 `json:"Grade"`
+	Sector           *string              `json:"Sector"`
+	AnnualIncome     *[]IncomeStatement   `json:"AnnualIncome"`
+	AnnualBalance    *[]BalanceSheet      `json:"AnnualBalance"`
+	AnnualCash       *[]CashFlowStatement `json:"AnnualCash"`
+	Earnings         *[]EarningsReport    `json:"Earnings"`
+	QuarterlyIncome  *[]IncomeStatement   `json:"QuarterlyIncome"`
+	QuarterlyBalance *[]BalanceSheet      `json:"QuarterlyBalance"`
+	QuarterlyCash    *[]CashFlowStatement `json:"QuarterlyCash"`
 }
 
 type OpenPositionDetails struct {
@@ -326,4 +333,151 @@ type EconomicDataResult struct {
 
 type ImpliedVolatility struct {
 	Volatility float64 `json:"volatility"`
+}
+
+type BalanceSheet struct {
+	Date                   string   `json:"date"`
+	ReportedCurrency       string   `json:"reportedCurrency"`
+	TotalAssets            *float64 `json:"totalAssets"`
+	TotalCurrentAssets     *float64 `json:"totalCurrentAssets"`
+	CashAndCashEquivalents *float64 `json:"cashAndCashEquivalents"`
+	CashAndShortTermInvest *float64 `json:"cashAndShortTermInvestments"`
+	Inventory              *float64 `json:"inventory"`
+	CurrentNetReceivables  *float64 `json:"currentNetReceivables"`
+	TotalNonCurrentAssets  *float64 `json:"totalNonCurrentAssets"`
+	PropertyPlantEquip     *float64 `json:"propertyPlantEquipment"`
+	AccumulatedDeprec      *float64 `json:"accumulatedDepreciation"`
+	IntangibleAssets       *float64 `json:"intangibleAssets"`
+	IntangibleAssetsExcl   *float64 `json:"intangibleAssetsExcludingGoodwill"`
+	Goodwill               *float64 `json:"goodwill"`
+	Investments            *float64 `json:"investments"`
+	LongTermInvestments    *float64 `json:"longTermInvestments"`
+	ShortTermInvestments   *float64 `json:"shortTermInvestments"`
+	OtherCurrentAssets     *float64 `json:"otherCurrentAssets"`
+	OtherNonCurrentAssets  *float64 `json:"otherNonCurrentAssets"`
+	TotalLiabilities       *float64 `json:"totalLiabilities"`
+	TotalCurrentLiabil     *float64 `json:"totalCurrentLiabilities"`
+	CurrentAccountsPayable *float64 `json:"currentAccountsPayable"`
+	DeferredRevenue        *float64 `json:"deferredRevenue"`
+	CurrentDebt            *float64 `json:"currentDebt"`
+	ShortTermDebt          *float64 `json:"shortTermDebt"`
+	TotalNonCurrentLiabil  *float64 `json:"totalNonCurrentLiabilities"`
+	CapitalLeaseOblig      *float64 `json:"capitalLeaseObligations"`
+	LongTermDebt           *float64 `json:"longTermDebt"`
+	CurrentLongTermDebt    *float64 `json:"currentLongTermDebt"`
+	LongTermDebtNonCurrent *float64 `json:"longTermDebtNonCurrent"`
+	ShortLongTermDebt      *float64 `json:"shortLongTermDebt"`
+	OtherCurrentLiabil     *float64 `json:"otherCurrentLiabilities"`
+	OtherNonCurrentLiabil  *float64 `json:"otherNonCurrentLiabilities"`
+	TotalShareholderEquity *float64 `json:"totalShareholderEquity"`
+	TreasuryStock          *float64 `json:"treasuryStock"`
+	RetainedEarnings       *float64 `json:"retainedEarnings"`
+	CommonStock            *float64 `json:"commonStock"`
+	CommonStockShares      *float64 `json:"commonStockSharesOutstanding"`
+
+	Ticker     string `json:"ticker"`
+	ReportType string `json:"report_type"`
+
+	NWC      *float64 `json:"NWC"`
+	DeltaNWC *float64 `json:"deltaNWC"`
+	NWCRatio *float64 `json:"nwcRatio"`
+	SymbolID float64  `json:"symbol_id"`
+}
+
+type IncomeStatement struct {
+	Date             time.Time `json:"date"`
+	ReportedCurrency string    `json:"reportedCurrency"`
+	Ticker           string    `json:"ticker"`
+	ReportType       string    `json:"report_type"`
+	SymbolID         float64   `json:"symbol_id"`
+
+	GrossProfit            *float64 `json:"grossProfit"`
+	TotalRevenue           *float64 `json:"totalRevenue"`
+	CostOfRevenue          *float64 `json:"costOfRevenue"`
+	CostOfGoodsAndServices *float64 `json:"costOfGoodsAndServices"`
+	OperatingIncome        *float64 `json:"operatingIncome"`
+	SellingGeneralAdmin    *float64 `json:"sellingGeneralAndAdministrative"`
+	ResearchAndDev         *float64 `json:"researchAndDevelopment"`
+	OperatingExpenses      *float64 `json:"operatingExpenses"`
+	InvestmentIncome       *float64 `json:"investmentIncome"`
+	NetInterestIncome      *float64 `json:"netInterestIncome"`
+	InterestIncome         *float64 `json:"interestIncome"`
+	InterestExpense        *float64 `json:"interestExpense"`
+	NonInterestIncome      *float64 `json:"nonInterestIncome"`
+	OtherNonOperatingInc   *float64 `json:"otherNonOperatingIncome"`
+	Depreciation           *float64 `json:"depreciation"`
+	DepreciationAndAmort   *float64 `json:"depreciationAndAmortization"`
+	IncomeBeforeTax        *float64 `json:"incomeBeforeTax"`
+	IncomeTaxExpense       *float64 `json:"incomeTaxExpense"`
+	InterestAndDebtExpense *float64 `json:"interestAndDebtExpense"`
+	NetIncomeFromContOps   *float64 `json:"netIncomeFromContinuingOperations"`
+	ComprehensiveIncome    *float64 `json:"comprehensiveIncome"`
+	Ebit                   *float64 `json:"ebit"`
+	Ebitda                 *float64 `json:"ebitda"`
+	NetIncome              *float64 `json:"netIncome"`
+
+	EffectiveTaxRate *float64 `json:"effectiveTaxRate"`
+	RevGrowth        *float64 `json:"revGrowth"`
+	EbitMargin       *float64 `json:"ebitMargin"`
+	CapexPctRevenue  *float64 `json:"capexPctRevenue"`
+	NwcPctRevenue    *float64 `json:"nwcPctRevenue"`
+	DaPctRevenue     *float64 `json:"daPctRevenue"`
+	EbitGrowth       *float64 `json:"ebitGrowth"`
+	Roic             *float64 `json:"roic"`
+}
+
+type CashFlowStatement struct {
+	Date             time.Time `json:"date"`
+	ReportedCurrency string    `json:"reportedCurrency"`
+	Ticker           string    `json:"ticker"`
+	ReportType       string    `json:"report_type"`
+	SymbolID         float64   `json:"symbol_id"`
+
+	OperatingCashflow       *float64 `json:"operatingCashflow"`
+	PaymentsForOperating    *float64 `json:"paymentsForOperatingActivities"`
+	ProceedsFromOperating   *float64 `json:"proceedsFromOperatingActivities"`
+	ChangeInOperatingAssets *float64 `json:"changeInOperatingAssets"`
+	ChangeInOperatingLiab   *float64 `json:"changeInOperatingLiabilities"`
+	DepreciationDepletion   *float64 `json:"depreciationDepletionAndAmortization"`
+	ChangeInReceivables     *float64 `json:"changeInReceivables"`
+	ChangeInInventory       *float64 `json:"changeInInventory"`
+	StockBasedCompensation  *float64 `json:"stockBasedCompensation"`
+
+	CapitalExpenditures     *float64 `json:"capitalExpenditures"`
+	CashflowFromInvesting   *float64 `json:"cashflowFromInvestment"`
+	CashflowFromFinancing   *float64 `json:"cashflowFromFinancing"`
+	DividendPayout          *float64 `json:"dividendPayout"`
+	DividendPayoutCommon    *float64 `json:"dividendPayoutCommonStock"`
+	DividendPayoutPreferred *float64 `json:"dividendPayoutPreferredStock"`
+
+	ProceedsFromRepurchase *float64 `json:"proceedsFromRepurchaseOfEquity"`
+	PaymentsForRepurchase  *float64 `json:"paymentsForRepurchaseOfEquity"`
+	ProceedsFromIssuance   *float64 `json:"proceedsFromIssuanceOfDebt"` // Note: often multiple issuance fields in APIs
+
+	NetIncome            *float64 `json:"netIncome"`
+	ProfitLoss           *float64 `json:"profitLoss"`
+	ChangeInCashAndEquiv *float64 `json:"changeInCashAndCashEquivalents"`
+	ChangeInExchangeRate *float64 `json:"changeInExchangeRate"`
+
+	FCF          *float64 `json:"FCF"`
+	FCFYoYGrowth *float64 `json:"FCF_yoy_growth"`
+	FCFPerShare  *float64 `json:"FCF_per_share"`
+	FCFF         *float64 `json:"FCFF"` // Free Cash Flow to Firm
+}
+
+type EarningsReport struct {
+	Date         time.Time `json:"date"`
+	Ticker       string    `json:"ticker"`
+	ReportType   string    `json:"report_type"` // e.g., "quarterly"
+	SymbolID     float64   `json:"symbol_id"`
+	ReportedDate string    `json:"reportedDate"`
+	ReportTime   string    `json:"reportTime"` // e.g., "before_market", "after_market"
+
+	// EPS Data
+	ReportedEPS  *float64 `json:"reportedEPS"`
+	EstimatedEPS *float64 `json:"estimatedEPS"`
+
+	// Surprise Data
+	Surprise           *float64 `json:"surprise"`
+	SurprisePercentage *float64 `json:"surprisePercentage"`
 }
