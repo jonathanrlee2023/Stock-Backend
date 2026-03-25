@@ -55,29 +55,30 @@ type Company_Stats struct {
 	ForwardPEG     *float64 `json:"ForwardPEG"`
 	IntrinsicPrice *float64 `json:"IntrinsicPrice"`
 	// DividendPrice can also be None if the company has no dividend history.
-	DividendPrice    *float64             `json:"DividendPrice"`
-	PriceAtReport    *float64             `json:"PriceAtReport"`
-	WACC             *float64             `json:"WACC"`
-	FCFF             *float64             `json:"FCFF"`
-	FCF              *float64             `json:"FCF"`
-	FCFPerShare      *float64             `json:"FCFPerShare"`
-	NWC              *float64             `json:"NWC"`
-	PriceTarget      *float64             `json:"PriceTarget"`
-	StrongBuy        *int                 `json:"StrongBuy"`
-	Buy              *int                 `json:"Buy"`
-	Hold             *int                 `json:"Hold"`
-	StrongSell       *int                 `json:"StrongSell"`
-	Sell             *int                 `json:"Sell"`
-	EarningsDate     *string              `json:"EarningsDate"`
-	Grade            *int                 `json:"Grade"`
-	Sector           *string              `json:"Sector"`
-	AnnualIncome     *[]IncomeStatement   `json:"AnnualIncome"`
-	AnnualBalance    *[]BalanceSheet      `json:"AnnualBalance"`
-	AnnualCash       *[]CashFlowStatement `json:"AnnualCash"`
-	Earnings         *[]EarningsReport    `json:"Earnings"`
-	QuarterlyIncome  *[]IncomeStatement   `json:"QuarterlyIncome"`
-	QuarterlyBalance *[]BalanceSheet      `json:"QuarterlyBalance"`
-	QuarterlyCash    *[]CashFlowStatement `json:"QuarterlyCash"`
+	DividendPrice     *float64             `json:"DividendPrice"`
+	PriceAtReport     *float64             `json:"PriceAtReport"`
+	WACC              *float64             `json:"WACC"`
+	FCFF              *float64             `json:"FCFF"`
+	FCF               *float64             `json:"FCF"`
+	FCFPerShare       *float64             `json:"FCFPerShare"`
+	NWC               *float64             `json:"NWC"`
+	PriceTarget       *float64             `json:"PriceTarget"`
+	StrongBuy         *int                 `json:"StrongBuy"`
+	Buy               *int                 `json:"Buy"`
+	Hold              *int                 `json:"Hold"`
+	StrongSell        *int                 `json:"StrongSell"`
+	Sell              *int                 `json:"Sell"`
+	EarningsDate      *string              `json:"EarningsDate"`
+	Grade             *int                 `json:"Grade"`
+	Sector            *string              `json:"Sector"`
+	AnnualIncome      *[]IncomeStatement   `json:"AnnualIncome"`
+	AnnualBalance     *[]BalanceSheet      `json:"AnnualBalance"`
+	AnnualCash        *[]CashFlowStatement `json:"AnnualCash"`
+	AnnualEarnings    *[]EarningsReport    `json:"AnnualEarnings"`
+	QuarterlyIncome   *[]IncomeStatement   `json:"QuarterlyIncome"`
+	QuarterlyBalance  *[]BalanceSheet      `json:"QuarterlyBalance"`
+	QuarterlyCash     *[]CashFlowStatement `json:"QuarterlyCash"`
+	QuarterlyEarnings *[]EarningsReport    `json:"QuarterlyEarnings"`
 }
 
 type OpenPositionDetails struct {

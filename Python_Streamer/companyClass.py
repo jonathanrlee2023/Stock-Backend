@@ -64,6 +64,7 @@ class Company:
         self.quarterly_income_df = None
         self.quarterly_balance_df = None
         self.quarterly_cash_df = None
+        self.quarterly_earnings_df = None
         self.company_overview = None
 
 
@@ -92,6 +93,7 @@ class Company:
         self.balance_df = self.data["balance"]["annual"]
         self.cash_df = self.data["cash"]["annual"]
         self.earnings_df = self.data["earnings"]["annual"]
+        self.quarterly_earnings_df = self.data["earnings"]["quarterly"]
         self.company_overview = self.data["overview"]
 
         if self.income_df.empty or self.balance_df.empty or self.cash_df.empty or self.company_overview.empty:
@@ -145,10 +147,12 @@ class Company:
         annual_income = self.prepare_df_for_go(self.income_df)
         annual_balance = self.prepare_df_for_go(self.balance_df)
         annual_cash = self.prepare_df_for_go(self.cash_df)
-        earnings = self.prepare_df_for_go(self.earnings_df)
+        annual_earnings = self.prepare_df_for_go(self.earnings_df)
         quarterly_income = self.prepare_df_for_go(self.quarterly_income_df)
         quarterly_balance = self.prepare_df_for_go(self.quarterly_balance_df)
         quarterly_cash = self.prepare_df_for_go(self.quarterly_cash_df)
+        quarterly_earnings = self.prepare_df_for_go(self.quarterly_earnings_df)
+
 
         self.final_report = {
             "Symbol": str(self.ticker),
@@ -180,10 +184,11 @@ class Company:
             "AnnualIncome": annual_income,
             "AnnualBalance": annual_balance,
             "AnnualCash": annual_cash,
-            "Earnings": earnings,
+            "AnnualEarnings": annual_earnings,
             "QuarterlyIncome": quarterly_income,
             "QuarterlyBalance": quarterly_balance,
-            "QuarterlyCash": quarterly_cash
+            "QuarterlyCash": quarterly_cash,
+            "QuarterlyEarnings": quarterly_earnings,
         }
 
         await self.save_all_to_db()
