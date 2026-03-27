@@ -138,7 +138,6 @@ class DataLoader:
         
         priceDB = db_state.price_db
         start_ms = latest_quote.get(s_id, 0)
-        print(f"start_ms: {start_ms}")
         if start_ms == 0: 
             result = await priceDB.execute(
                 "SELECT timestamp, symbol_id FROM HistoricalStocks WHERE symbol_id = ? ORDER BY timestamp DESC LIMIT 1", 

@@ -483,3 +483,23 @@ type EarningsReport struct {
 	Surprise           *float64 `json:"surprise"`
 	SurprisePercentage *float64 `json:"surprisePercentage"`
 }
+
+type PostData struct {
+	FileNames []string `json:"filenames"`
+}
+
+type Tracker struct {
+	ID string `json:"id"`
+}
+type Position struct {
+	ID     string  `json:"id"`
+	Price  float64 `json:"price"`
+	Amount float64 `json:"amount"`
+	PortfolioID int `json:"portfolio_id"`
+}
+
+type Portfolio struct {
+	ID int `json:"id"`
+	Name string `json:"name"`
+	Positions []Position `json:"positions"`
+}
