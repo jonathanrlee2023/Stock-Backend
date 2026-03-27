@@ -106,8 +106,8 @@ type Company_Request struct {
 	Symbol string `json:"symbol"`
 }
 type OpenPositionsMessage struct {
-	PrevBalance float64            `json:"prevBalance"`
-	OpenIDs     map[string]float64 `json:"openIdList"`
+	PrevBalance map[int]float64            `json:"prevBalance"`
+	OpenIDs     map[int]map[string]float64 `json:"openIdList"`
 	TrackerIDs  []string           `json:"trackerIdList"`
 }
 type OptionPriceData struct {
@@ -189,6 +189,7 @@ type BalanceData struct {
 	Timestamp int64   `json:"timestamp"`
 	Balance   float64 `json:"Balance"`
 	Cash      float64 `json:"Cash"`
+	PortfolioID int    `json:"PortfolioID"`
 }
 
 type StockDbData struct {

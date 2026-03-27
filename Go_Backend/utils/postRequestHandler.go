@@ -3,6 +3,7 @@ package utils
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"math"
@@ -23,6 +24,7 @@ type Position struct {
 	ID     string  `json:"id"`
 	Price  float64 `json:"price"`
 	Amount float64 `json:"amount"`
+	PortfolioID int `json:"portfolio_id"`
 }
 
 // NewTrackerHandler is an HTTP handler for creating a new tracker entry in the tracker db.
@@ -96,6 +98,7 @@ func OpenSharesPositionHandler(openDB, balanceDB *sql.DB, w http.ResponseWriter,
 	var extAmount float64
 	var extPrice float64
 
+
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "Failed to read request body", http.StatusBadRequest)
@@ -108,24 +111,33 @@ func OpenSharesPositionHandler(openDB, balanceDB *sql.DB, w http.ResponseWriter,
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
+	fmt.Println(newPosition)
+
 
 	GlobalOpenPositions.Lock()
 
-	if _, ok := GlobalOpenPositions.Positions[newPosition.ID]; ok {
-		extAmount = GlobalOpenPositions.Positions[newPosition.ID].Amount
-		extPrice = GlobalOpenPositions.Positions[newPosition.ID].Price
+	fmt.Println("Locked")
+
+	if GlobalOpenPositions.Positions[newPosition.PortfolioID] == nil {
+        GlobalOpenPositions.Positions[newPosition.PortfolioID] = make(map[string]OpenPositionDetails)
+    }
+
+	if _, ok := GlobalOpenPositions.Positions[newPosition.PortfolioID][newPosition.ID]; ok {
+		extAmount = GlobalOpenPositions.Positions[newPosition.PortfolioID][newPosition.ID].Amount
+		extPrice = GlobalOpenPositions.Positions[newPosition.PortfolioID][newPosition.ID].Price
 		totalCost := (extPrice * float64(extAmount)) + (newPosition.Price * float64(newPosition.Amount))
 		updatedAmount := extAmount + newPosition.Amount
 		updatedPrice := math.Round((totalCost/float64(updatedAmount))*100) / 100
-
-		_, err = openDB.Exec("UPDATE OpenPositions SET price = ?, amount = ? WHERE id = ?", updatedPrice, updatedAmount, newPosition.ID)
-		GlobalOpenPositions.Positions[newPosition.ID] = OpenPositionDetails{
+		fmt.Println(extAmount, extPrice, totalCost, updatedAmount, updatedPrice)
+		_, err = openDB.Exec("UPDATE OpenPositions SET price = ?, amount = ? WHERE id = ? AND portfolio_id = ?", updatedPrice, updatedAmount, newPosition.ID, newPosition.PortfolioID)
+		GlobalOpenPositions.Positions[newPosition.PortfolioID][newPosition.ID] = OpenPositionDetails{
 			Price:  updatedPrice,
 			Amount: updatedAmount,
 		}
 	} else {
-		_, err = openDB.Exec("INSERT INTO OpenPositions (id, price, amount) VALUES (?, ?, ?)", newPosition.ID, newPosition.Price, newPosition.Amount)
-		GlobalOpenPositions.Positions[newPosition.ID] = OpenPositionDetails{
+		fmt.Println("Called")
+		_, err = openDB.Exec("INSERT INTO OpenPositions (id, price, amount, portfolio_id) VALUES (?, ?, ?, ?)", newPosition.ID, newPosition.Price, newPosition.Amount, newPosition.PortfolioID)
+		GlobalOpenPositions.Positions[newPosition.PortfolioID][newPosition.ID] = OpenPositionDetails{
 			Price:  newPosition.Price,
 			Amount: newPosition.Amount,
 		}
@@ -134,11 +146,9 @@ func OpenSharesPositionHandler(openDB, balanceDB *sql.DB, w http.ResponseWriter,
 		log.Printf("Failed to write to table: %v", err)
 		return
 	}
-
-	GlobalOpenPositions.Unlock()
 	GlobalBalance.Lock()
 
-	balance, cash := GlobalBalance.Balance, GlobalBalance.Cash
+	balance, cash := GlobalBalance.Balances[newPosition.PortfolioID].Balance, GlobalBalance.Balances[newPosition.PortfolioID].Cash
 	tradeCost := newPosition.Price * float64(newPosition.Amount)
 	if len(newPosition.ID) > 6 {
 		tradeCost *= 100
@@ -147,15 +157,17 @@ func OpenSharesPositionHandler(openDB, balanceDB *sql.DB, w http.ResponseWriter,
 	newCash := cash - tradeCost
 	newBalance := balance
 
-	GlobalBalance.Balance = newBalance
-	GlobalBalance.Cash = newCash
-	GlobalBalance.Unlock()
+	GlobalBalance.Balances[newPosition.PortfolioID].Balance = newBalance
+	GlobalBalance.Balances[newPosition.PortfolioID].Cash = newCash
 
-	insertData := `INSERT INTO Balance (timestamp, balance, cash) VALUES (?, ?, ?)`
-	_, err = balanceDB.Exec(insertData, time.Now().Unix(), newBalance, newCash)
+	insertData := `INSERT INTO Balance (timestamp, balance, cash, portfolio_id) VALUES (?, ?, ?, ?)`
+	_, err = balanceDB.Exec(insertData, time.Now().Unix(), newBalance, newCash, newPosition.PortfolioID)
 	if err != nil {
 		http.Error(w, "Failed to write balance", http.StatusInternalServerError)
 	}
+	GlobalOpenPositions.Unlock()
+	GlobalBalance.Unlock()
+
 	ProcessWrite(time.Now(), Clients["STOCK_CLIENT"], balanceDB, openDB)
 }
 
@@ -175,13 +187,12 @@ func ClosePositionHandler(openDB, closeDB, balanceDB *sql.DB, w http.ResponseWri
 		return
 	}
 	GlobalOpenPositions.Lock()
-	if _, ok := GlobalOpenPositions.Positions[closePosition.ID]; !ok {
-		GlobalOpenPositions.Unlock()
+	defer GlobalOpenPositions.Unlock()
+	if _, ok := GlobalOpenPositions.Positions[closePosition.PortfolioID][closePosition.ID]; !ok {
 		http.Error(w, "Position not found", http.StatusBadRequest)
 		return
 	}
-	price, amount = GlobalOpenPositions.Positions[closePosition.ID].Price, GlobalOpenPositions.Positions[closePosition.ID].Amount
-
+	price, amount = GlobalOpenPositions.Positions[closePosition.PortfolioID][closePosition.ID].Price, GlobalOpenPositions.Positions[closePosition.PortfolioID][closePosition.ID].Amount
 	if closePosition.Amount > amount {
 		http.Error(w, "Insufficient shares", 400)
 		return
@@ -197,12 +208,12 @@ func ClosePositionHandler(openDB, closeDB, balanceDB *sql.DB, w http.ResponseWri
 	pl = math.Round(pl*100) / 100
 	remaining := amount - closePosition.Amount
 	if remaining != 0 {
-		insertData := `INSERT OR REPLACE INTO OpenPositions (id, price, amount) VALUES (?, ?, ?)`
-		_, err := openDB.Exec(insertData, closePosition.ID, price, remaining)
+		insertData := `INSERT OR REPLACE INTO OpenPositions (id, price, amount, portfolio_id) VALUES (?, ?, ?, ?)`
+		_, err := openDB.Exec(insertData, closePosition.ID, price, remaining, closePosition.PortfolioID)
 		if err != nil {
 			log.Printf("Failed to write to table: %v", err)
 		}
-		GlobalOpenPositions.Positions[closePosition.ID] = OpenPositionDetails{
+		GlobalOpenPositions.Positions[closePosition.PortfolioID][closePosition.ID] = OpenPositionDetails{
 			Price:  price,
 			Amount: remaining,
 		}
@@ -212,9 +223,8 @@ func ClosePositionHandler(openDB, closeDB, balanceDB *sql.DB, w http.ResponseWri
 			log.Printf("Failed to delete: %v", err)
 			return
 		}
-		delete(GlobalOpenPositions.Positions, closePosition.ID)
+		delete(GlobalOpenPositions.Positions[closePosition.PortfolioID], closePosition.ID)
 	}
-	GlobalOpenPositions.Unlock()
 
 	insertData := `INSERT INTO ClosePositions (id, price, amount, pl) VALUES (?, ?, ?, ?)`
 	_, err := closeDB.Exec(insertData, closePosition.ID, closePosition.Price, closePosition.Amount, pl)
@@ -222,18 +232,18 @@ func ClosePositionHandler(openDB, closeDB, balanceDB *sql.DB, w http.ResponseWri
 		log.Printf("Failed to write to table: %v", err)
 	}
 	GlobalBalance.Lock()
-	balance := GlobalBalance.Balance
-	cash := GlobalBalance.Cash
+	defer GlobalBalance.Unlock()
+	balance := GlobalBalance.Balances[closePosition.PortfolioID].Balance
+	cash := GlobalBalance.Balances[closePosition.PortfolioID].Cash
 	tradeCost := closePosition.Price * float64(closePosition.Amount)
 	if len(closePosition.ID) > 6 {
 		tradeCost *= 100
 	}
 	newCash := cash + tradeCost
-	GlobalBalance.Cash = newCash
-	GlobalBalance.Unlock()
+	GlobalBalance.Balances[closePosition.PortfolioID].Cash = newCash
 
-	insertData = `INSERT OR REPLACE INTO Balance (timestamp, balance, cash) VALUES (?, ?, ?)`
-	_, err = balanceDB.Exec(insertData, time.Now().Unix(), balance, newCash)
+	insertData = `INSERT OR REPLACE INTO Balance (timestamp, balance, cash, portfolio_id) VALUES (?, ?, ?, ?)`
+	_, err = balanceDB.Exec(insertData, time.Now().Unix(), balance, newCash, closePosition.PortfolioID)
 	if err != nil {
 		http.Error(w, "Failed to write balance", http.StatusInternalServerError)
 	}

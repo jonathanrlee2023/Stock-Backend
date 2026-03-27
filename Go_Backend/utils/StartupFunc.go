@@ -12,9 +12,9 @@ import (
 
 // Sends open position and previous balance
 func SendOpenPositions(balanceDB, openDB, priceDB, trackerDB *sql.DB, clients map[string]*Client) {
-	openIDs := make(map[string]float64)
+	openIDs := make(map[int]map[string]float64)
 	var trackerIds []string
-	prevBalance := GetMostRecentBalance(balanceDB)
+	prevBalances := GetMostRecentBalance(balanceDB)
 
 	rows, err := openDB.Query("SELECT * FROM OpenPositions")
 	if err == sql.ErrNoRows {
@@ -26,21 +26,29 @@ func SendOpenPositions(balanceDB, openDB, priceDB, trackerDB *sql.DB, clients ma
 	}
 	defer rows.Close()
 	GlobalOpenPositions.Lock()
+	defer GlobalOpenPositions.Unlock()
 
 	for rows.Next() {
 		var id string
 		var price float64
 		var amount float64
+		var portfolio_id int
 
-		err := rows.Scan(&id, &price, &amount)
+		err := rows.Scan(&id, &price, &amount, &portfolio_id)
 		if err != nil {
 			log.Println("Scan failed:", err)
 			continue
 		}
-		GlobalOpenPositions.Positions[id] = OpenPositionDetails{Price: price, Amount: amount}
-		openIDs[id] = amount
+		if GlobalOpenPositions.Positions[portfolio_id] == nil {
+			GlobalOpenPositions.Positions[portfolio_id] = make(map[string]OpenPositionDetails)
+		}
+		GlobalOpenPositions.Positions[portfolio_id][id] = OpenPositionDetails{Price: price, Amount: amount}
+
+		if openIDs[portfolio_id] == nil {
+			openIDs[portfolio_id] = make(map[string]float64)
+		}
+		openIDs[portfolio_id][id] = amount
 	}
-	GlobalOpenPositions.Unlock()
 
 	rows, err = trackerDB.Query("SELECT * FROM Tracker")
 	if err == sql.ErrNoRows {
@@ -62,9 +70,9 @@ func SendOpenPositions(balanceDB, openDB, priceDB, trackerDB *sql.DB, clients ma
 		}
 		trackerIds = append(trackerIds, id)
 	}
-
+	fmt.Println(prevBalances)
 	msg := OpenPositionsMessage{
-		PrevBalance: prevBalance,
+		PrevBalance: prevBalances,
 		OpenIDs:     openIDs,
 		TrackerIDs:  trackerIds,
 	}
@@ -74,13 +82,14 @@ func SendOpenPositions(balanceDB, openDB, priceDB, trackerDB *sql.DB, clients ma
 		log.Println("Failed to marshal open positions:", err)
 		return
 	}
-
-	err = SendToClient(clients["STOCK_CLIENT"], jsonData)
+	client := clients["STOCK_CLIENT"]
+	err = SendToClient(client, jsonData)
 	if err != nil {
 		errMsg := map[string]string{"error": err.Error()}
 		msg, _ := json.Marshal(errMsg)
 		_ = clients["STOCK_CLIENT"].SafeWrite(websocket.TextMessage, msg)
 	}
+	ProcessWrite(time.Now(), client, balanceDB, openDB)
 }
 
 // Send symbols from Tracker.db to python client
@@ -160,9 +169,9 @@ func InitSchemas(openDB, balanceDB, closeDB, trackerDB *sql.DB) {
 		db  *sql.DB
 		sql string
 	}{
-		{openDB, `CREATE TABLE IF NOT EXISTS OpenPositions (id TEXT PRIMARY KEY, price REAL, amount REAL);`},
-		{balanceDB, `CREATE TABLE IF NOT EXISTS Balance (timestamp INTEGER PRIMARY KEY, balance REAL, cash REAL);`},
-		{closeDB, `CREATE TABLE IF NOT EXISTS ClosePositions (order_number INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT, price REAL, amount REAL, pl REAL);`},
+		{openDB, `CREATE TABLE IF NOT EXISTS OpenPositions (id TEXT, price REAL, amount REAL, portfolio_id INTEGER, PRIMARY KEY (id, portfolio_id));`},
+		{balanceDB, `CREATE TABLE IF NOT EXISTS Balance (timestamp INTEGER, balance REAL, cash REAL, portfolio_id INTEGER, PRIMARY KEY (timestamp, portfolio_id));`},
+		{closeDB, `CREATE TABLE IF NOT EXISTS ClosePositions (order_number INTEGER, id TEXT, price REAL, amount REAL, pl REAL, portfolio_id INTEGER, PRIMARY KEY (order_number, portfolio_id));`},
 		{trackerDB, `CREATE TABLE IF NOT EXISTS Tracker (id TEXT PRIMARY KEY);`},
 	}
 

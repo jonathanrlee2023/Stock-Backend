@@ -23,13 +23,26 @@ type LivePrices struct {
 
 type OpenPositions struct {
 	sync.RWMutex
-	Positions map[string]OpenPositionDetails
+	Positions map[int]map[string]OpenPositionDetails
 }
 
 type Balance struct {
-	sync.RWMutex
 	Balance float64
 	Cash    float64
+}
+
+type PortfolioBalances struct {
+	sync.RWMutex
+	Balances map[int]*Balance
+}
+
+type Portfolio_IDs struct {
+	sync.RWMutex
+	IDs []int
+}
+
+var GlobalPortfolio_IDs = &Portfolio_IDs{
+	IDs: []int{},
 }
 
 var GlobalPrices = &LivePrices{
@@ -37,13 +50,13 @@ var GlobalPrices = &LivePrices{
 }
 
 var GlobalOpenPositions = &OpenPositions{
-	Positions: make(map[string]OpenPositionDetails),
+	Positions: make(map[int]map[string]OpenPositionDetails),
+}
+ 
+var GlobalBalance = &PortfolioBalances{
+	Balances: make(map[int]*Balance),
 }
 
-var GlobalBalance = &Balance{
-	Balance: 0,
-	Cash:    0,
-}
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
@@ -100,7 +113,7 @@ func ListenToRedis(ctx context.Context, rdb *redis.Client, hub *Hub, channel str
 	switch channel {
 	case "Stream_Channel":
 		for msg := range ch {
-			HandleClientRead(*msg)
+			HandleRedisRead(*msg)
 		}
 	case "Company_Channel":
 		for msg := range ch {
@@ -353,17 +366,14 @@ func HandleOptionRead(msg redis.Message) {
 }
 
 // Receives and handles a websocket message from python client and sends data to frontend
-func HandleClientRead(msg redis.Message) {
+func HandleRedisRead(msg redis.Message) {
 	var quotes map[string]MixedQuote
 	payloadBytes := []byte(msg.Payload)
 	if err := json.Unmarshal(payloadBytes, &quotes); err != nil {
-		// If it’s not a quotes payload, skip or handle other message types here
 		log.Printf("Invalid quotes JSON from Python Client: %v", err)
 		return
 	}
 	GlobalPrices.Lock()
-	// Instead of replacing the whole map, we update existing keys
-	// This preserves data if one broadcast only contains a subset of symbols
 	maps.Copy(GlobalPrices.Prices, quotes)
 	GlobalPrices.Unlock()
 }
@@ -466,11 +476,80 @@ func StartStockStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request)
 // Write to a specific client the most recent balance
 func ProcessWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 	// Don't write if we don't have any data
-	if len(GlobalPrices.Prices) > 0 {
+	GlobalPrices.RLock()
+	defer GlobalPrices.RUnlock()
+	if len(GlobalPrices.Prices) == 0 {
+		return
+	}
+    GlobalPortfolio_IDs.RLock()
+	defer GlobalPortfolio_IDs.RUnlock()
+    
+    GlobalBalance.Lock()
+    defer GlobalBalance.Unlock()
+	var now int64
+		
+	now = time.Now().Unix()
+	
+	stockPrices := make([]StockPriceData, 0, len(GlobalPrices.Prices))
+	optionPrices := make([]OptionPriceData, 0, len(GlobalPrices.Prices))
+
+	for symbol, q := range GlobalPrices.Prices {
+		switch {
+		// Equity quote if BidSize/AskSize are present
+		case q.BidSize != nil && q.AskSize != nil:
+			stock := StockPriceData{
+				Symbol:    symbol,
+				Timestamp: now,
+				Mark:      q.Mark,
+				BidPrice:  q.BidPrice,
+				AskPrice:  q.AskPrice,
+				LastPrice: q.LastPrice,
+				BidSize:   *q.BidSize,
+				AskSize:   *q.AskSize,
+			}
+
+			stockPrices = append(stockPrices, stock)
+
+		// Option quote if IV or Greeks are present
+		case q.IV != nil:
+			option := OptionPriceData{
+				Symbol:    symbol,
+				Timestamp: now,
+				Bid:       q.BidPrice,
+				Ask:       q.AskPrice,
+				Mark:      q.Mark,
+				Last:      q.LastPrice,
+				High:      *q.HighPrice,
+				IV:        *q.IV,
+				Delta:     *q.Delta,
+				Gamma:     *q.Gamma,
+				Theta:     *q.Theta,
+				Vega:      *q.Vega,
+			}
+			optionPrices = append(optionPrices, option)
+		default:
+			log.Printf("Unrecognized quote type for %s: %+v", symbol, q)
+		}
+	}
+	if len(optionPrices) > 0 {
+		if err := send(client, optionPrices); err != nil {
+			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
+			_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
+			return
+		}
+	}
+	if len(stockPrices) > 0 {
+		if err := send(client, stockPrices); err != nil {
+			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
+			_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
+			return
+		}
+	}
+	for _, pid := range GlobalPortfolio_IDs.IDs {
 		var cash float64
 		var balance float64
 
-		balance, cash = GlobalBalance.Balance, GlobalBalance.Cash
+		balance, cash = GlobalBalance.Balances[pid].Balance, GlobalBalance.Balances[pid].Cash
 
 		if balance == 0.0 && cash == 0.0 {
 			balance = 10000.0
@@ -478,13 +557,10 @@ func ProcessWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 		}
 
 		tempPositionValue := 0.0
-
-		for id, details := range GlobalOpenPositions.Positions {
+		for id, details := range GlobalOpenPositions.Positions[pid] {
 			amount := details.Amount
 
-			GlobalPrices.RLock() // Lock for reading
 			q, exists := GlobalPrices.Prices[id]
-			GlobalPrices.RUnlock()
 			var mark float64
 			if exists {
 				mark = q.Mark
@@ -499,89 +575,52 @@ func ProcessWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 			}
 		}
 
+
 		tempBalance := cash + tempPositionValue
 		balance = tempBalance
 
-		GlobalBalance.Lock()
-		GlobalBalance.Balance = balance
-		GlobalBalance.Cash = cash
-		GlobalBalance.Unlock()
-		now := time.Now().Unix()
+		GlobalBalance.Balances[pid].Balance = balance
+		GlobalBalance.Balances[pid].Cash = cash
 
-		insertData := `INSERT OR IGNORE INTO Balance (timestamp, balance, cash) VALUES (?, ?, ?)`
-		_, err := balanceDB.Exec(insertData, now, balance, cash)
-		if err != nil {
-			log.Printf("Failed to insert initial balance into table: %v", err)
-		}
-		stockPrices := make([]StockPriceData, 0, len(GlobalPrices.Prices))
-		optionPrices := make([]OptionPriceData, 0, len(GlobalPrices.Prices))
-
-		for symbol, q := range GlobalPrices.Prices {
-			switch {
-			// Equity quote if BidSize/AskSize are present
-			case q.BidSize != nil && q.AskSize != nil:
-				stock := StockPriceData{
-					Symbol:    symbol,
-					Timestamp: now,
-					Mark:      q.Mark,
-					BidPrice:  q.BidPrice,
-					AskPrice:  q.AskPrice,
-					LastPrice: q.LastPrice,
-					BidSize:   *q.BidSize,
-					AskSize:   *q.AskSize,
-				}
-
-				stockPrices = append(stockPrices, stock)
-
-			// Option quote if IV or Greeks are present
-			case q.IV != nil:
-				option := OptionPriceData{
-					Symbol:    symbol,
-					Timestamp: now,
-					Bid:       q.BidPrice,
-					Ask:       q.AskPrice,
-					Mark:      q.Mark,
-					Last:      q.LastPrice,
-					High:      *q.HighPrice,
-					IV:        *q.IV,
-					Delta:     *q.Delta,
-					Gamma:     *q.Gamma,
-					Theta:     *q.Theta,
-					Vega:      *q.Vega,
-				}
-				optionPrices = append(optionPrices, option)
-			default:
-				log.Printf("Unrecognized quote type for %s: %+v", symbol, q)
-			}
-		}
 		message := BalanceData{
 			Balance:   balance,
 			Timestamp: t.Unix(),
 			Cash:      cash,
-		}
-
-		if len(optionPrices) > 0 {
-			if err := send(client, optionPrices); err != nil {
-				errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-				_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
-				return
-			}
-		}
-		if len(stockPrices) > 0 {
-			if err := send(client, stockPrices); err != nil {
-				errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-				_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
-				return
-			}
+			PortfolioID: pid,
 		}
 		if err := send(client, message); err != nil {
 			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
 			_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
 			return
 		}
-	} else {
-		log.Printf("No data yet")
+		
 	}
+	batch, err := balanceDB.Begin()
+	if err != nil {
+		log.Printf("Failed to begin transaction: %v", err)
+		return 
+	}
+	stmt, err := batch.Prepare(`
+		INSERT OR IGNORE INTO Balance (timestamp, balance, cash, portfolio_id) 
+		VALUES (?, ?, ?, ?)
+	`)
+
+	if err != nil {
+		batch.Rollback()
+		log.Printf("Failed to prepare statement: %v", err)
+		return
+	}
+	defer stmt.Close() // ALWAYS close your statements
+	for id, data := range GlobalBalance.Balances {
+		_, err := stmt.Exec(now, data.Balance, data.Cash, id)
+		if err != nil {
+			batch.Rollback() // Cancel everything if one insert fails
+			log.Printf("Failed to insert balance: %v", err)
+			return
+		}
+	}
+
+	batch.Commit()
 }
 
 func send(client *Client, v interface{}) error {
