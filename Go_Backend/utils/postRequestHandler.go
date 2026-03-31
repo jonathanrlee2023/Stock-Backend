@@ -301,7 +301,7 @@ func NewPortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r *ht
 		_, err := stmt.Exec(position.ID, price, amount, position.PortfolioID)
 		if err != nil {
 			batch.Rollback() // Cancel everything if one insert fails
-			log.Printf("Failed to insert balance: %v", err)
+			log.Printf("Failed to insert open position: %v", err)
 			return
 		}
 	}

@@ -109,6 +109,7 @@ type OpenPositionsMessage struct {
 	PrevBalance map[int]float64            `json:"prevBalance"`
 	OpenIDs     map[int]map[string]float64 `json:"openIdList"`
 	TrackerIDs  []string           `json:"trackerIdList"`
+	PortfolioNames map[int]string `json:"portfolioNames"`
 }
 type OptionPriceData struct {
 	Symbol    string  `json:"Symbol"`

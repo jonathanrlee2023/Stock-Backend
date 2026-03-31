@@ -27,7 +27,6 @@ func SendOpenPositions(balanceDB, openDB, priceDB, trackerDB *sql.DB, clients ma
 	}
 	defer rows.Close()
 	GlobalOpenPositions.Lock()
-	defer GlobalOpenPositions.Unlock()
 
 	for rows.Next() {
 		var id string
@@ -71,12 +70,15 @@ func SendOpenPositions(balanceDB, openDB, priceDB, trackerDB *sql.DB, clients ma
 		}
 		trackerIds = append(trackerIds, id)
 	}
-	fmt.Println(prevBalances)
+	GlobalPortfolio_IDs.Lock()
 	msg := OpenPositionsMessage{
 		PrevBalance: prevBalances,
 		OpenIDs:     openIDs,
 		TrackerIDs:  trackerIds,
+		PortfolioNames: GlobalPortfolio_IDs.IDs,
 	}
+	GlobalPortfolio_IDs.Unlock()
+	GlobalOpenPositions.Unlock()
 
 	jsonData, err := json.Marshal(msg)
 	if err != nil {
