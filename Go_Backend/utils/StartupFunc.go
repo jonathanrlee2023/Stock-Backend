@@ -14,6 +14,7 @@ import (
 func SendOpenPositions(balanceDB, openDB, priceDB, trackerDB *sql.DB, clients map[string]*Client) {
 	openIDs := make(map[int]map[string]float64)
 	var trackerIds []string
+	GetPorfolioIDs(balanceDB)
 	prevBalances := GetMostRecentBalance(balanceDB)
 
 	rows, err := openDB.Query("SELECT * FROM OpenPositions")
@@ -172,7 +173,7 @@ func InitSchemas(openDB, balanceDB, closeDB, trackerDB *sql.DB) {
 		{openDB, `CREATE TABLE IF NOT EXISTS OpenPositions (id TEXT, price REAL, amount REAL, portfolio_id INTEGER, PRIMARY KEY (id, portfolio_id));`},
 		{balanceDB, `CREATE TABLE IF NOT EXISTS Balance (timestamp INTEGER, balance REAL, cash REAL, portfolio_id INTEGER, PRIMARY KEY (timestamp, portfolio_id));`},
 		{balanceDB, `CREATE TABLE IF NOT EXISTS Portfolios (portfolio_id INTEGER PRIMARY KEY, name TEXT);`},
-		{closeDB, `CREATE TABLE IF NOT EXISTS ClosePositions (order_number INTEGER, id TEXT, price REAL, amount REAL, pl REAL, portfolio_id INTEGER, PRIMARY KEY (order_number, portfolio_id));`},
+		{closeDB, `CREATE TABLE IF NOT EXISTS ClosePositions (order_number INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT, price REAL, amount REAL, pl REAL, portfolio_id INTEGER);`},
 		{trackerDB, `CREATE TABLE IF NOT EXISTS Tracker (id TEXT PRIMARY KEY);`},
 	}
 

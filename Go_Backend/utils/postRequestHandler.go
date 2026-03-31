@@ -167,7 +167,6 @@ func ClosePositionHandler(openDB, closeDB, balanceDB *sql.DB, w http.ResponseWri
 		return
 	}
 	GlobalOpenPositions.Lock()
-	defer GlobalOpenPositions.Unlock()
 	if _, ok := GlobalOpenPositions.Positions[closePosition.PortfolioID][closePosition.ID]; !ok {
 		http.Error(w, "Position not found", http.StatusBadRequest)
 		return
@@ -205,14 +204,14 @@ func ClosePositionHandler(openDB, closeDB, balanceDB *sql.DB, w http.ResponseWri
 		}
 		delete(GlobalOpenPositions.Positions[closePosition.PortfolioID], closePosition.ID)
 	}
+	GlobalOpenPositions.Unlock()
 
-	insertData := `INSERT INTO ClosePositions (id, price, amount, pl) VALUES (?, ?, ?, ?)`
-	_, err := closeDB.Exec(insertData, closePosition.ID, closePosition.Price, closePosition.Amount, pl)
+	insertData := `INSERT INTO ClosePositions (id, price, amount, pl, portfolio_id) VALUES (?, ?, ?, ?, ?)`
+	_, err := closeDB.Exec(insertData, closePosition.ID, closePosition.Price, closePosition.Amount, pl, closePosition.PortfolioID)
 	if err != nil {
 		log.Printf("Failed to write to table: %v", err)
 	}
 	GlobalBalance.Lock()
-	defer GlobalBalance.Unlock()
 	balance := GlobalBalance.Balances[closePosition.PortfolioID].Balance
 	cash := GlobalBalance.Balances[closePosition.PortfolioID].Cash
 	tradeCost := closePosition.Price * float64(closePosition.Amount)
@@ -221,13 +220,13 @@ func ClosePositionHandler(openDB, closeDB, balanceDB *sql.DB, w http.ResponseWri
 	}
 	newCash := cash + tradeCost
 	GlobalBalance.Balances[closePosition.PortfolioID].Cash = newCash
+	GlobalBalance.Unlock()
 
 	insertData = `INSERT OR REPLACE INTO Balance (timestamp, balance, cash, portfolio_id) VALUES (?, ?, ?, ?)`
 	_, err = balanceDB.Exec(insertData, time.Now().Unix(), balance, newCash, closePosition.PortfolioID)
 	if err != nil {
 		http.Error(w, "Failed to write balance", http.StatusInternalServerError)
 	}
-
 	ProcessWrite(time.Now(), Clients["STOCK_CLIENT"], balanceDB, openDB)
 }
 
@@ -241,6 +240,10 @@ func NewPortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r *ht
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
+	var balance, cash float64
+	id := newPortfolio.ID
+	exists := false
+
 	GlobalBalance.Lock()
 	defer GlobalBalance.Unlock()
 	GlobalPrices.RLock()
@@ -248,11 +251,25 @@ func NewPortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r *ht
 	GlobalOpenPositions.Lock()
 	defer GlobalOpenPositions.Unlock()
 	GlobalPortfolio_IDs.Lock()
-	GlobalPortfolio_IDs.IDs = append(GlobalPortfolio_IDs.IDs, newPortfolio.ID)
+	if _, ok := GlobalPortfolio_IDs.IDs[id]; ok {
+		exists = true
+	} else {
+		GlobalPortfolio_IDs.IDs[id] = newPortfolio.Name
+	}
 	GlobalPortfolio_IDs.Unlock()
-	GlobalOpenPositions.Positions[newPortfolio.ID] = make(map[string]OpenPositionDetails)
 
-	cash := 10000.0
+	if exists {
+		err := balanceDB.QueryRow("SELECT balance, cash FROM Balance WHERE portfolio_id = ? ORDER BY timestamp DESC LIMIT 1", id).Scan(&balance, &cash)
+		if err != nil {
+			log.Printf("Failed to read from table: %v", err)
+			balance = 10000.0
+			cash = 10000.0
+		}
+	} else {
+		GlobalOpenPositions.Positions[id] = make(map[string]OpenPositionDetails)
+		balance = 10000.0
+		cash = 10000.0
+	}
 
 	batch, err := openDB.Begin()
 	if err != nil {
@@ -263,6 +280,7 @@ func NewPortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r *ht
 		INSERT OR IGNORE INTO OpenPositions (id, price, amount, portfolio_id) 
 		VALUES (?, ?, ?, ?)
 	`)
+	defer batch.Rollback()
 
 	if err != nil {
 		batch.Rollback()
@@ -293,22 +311,31 @@ func NewPortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r *ht
 		return
 	}
 
-	if GlobalBalance.Balances[newPortfolio.ID] == nil {
-		GlobalBalance.Balances[newPortfolio.ID] = &Balance{
-			Balance: 10000.0,
-			Cash:    cash,
+	if exists {
+		if GlobalBalance.Balances[id] == nil {
+			GlobalBalance.Balances[id] = &Balance{}
 		}
+		GlobalBalance.Balances[id].Balance = balance
+		GlobalBalance.Balances[id].Cash = cash
 	}
 	
-	insertData := `INSERT INTO Balance (timestamp, balance, cash, portfolio_id) VALUES (?, ?, ?, ?)`
-	_, err = balanceDB.Exec(insertData, time.Now().Unix(), 10000.0, cash, newPortfolio.ID)
-	if err != nil {
-		http.Error(w, "Failed to write balance", http.StatusInternalServerError)
-	}
+	if !exists {
+		insertData := `INSERT INTO Balance (timestamp, balance, cash, portfolio_id) VALUES (?, ?, ?, ?)`
+		_, err = balanceDB.Exec(insertData, time.Now().Unix(), 10000.0, cash, id)
+		if err != nil {
+			http.Error(w, "Failed to write balance", http.StatusInternalServerError)
+		}
 
-	insertData = `INSERT INTO Portfolios (portfolio_id, name) VALUES (?, ?)`
-	_, err = balanceDB.Exec(insertData, newPortfolio.ID, newPortfolio.Name)
-	if err != nil {
-		http.Error(w, "Failed to write balance", http.StatusInternalServerError)
+		insertData = `INSERT INTO Portfolios (portfolio_id, name) VALUES (?, ?)`
+		_, err = balanceDB.Exec(insertData, id, newPortfolio.Name)
+		if err != nil {
+			http.Error(w, "Failed to write balance", http.StatusInternalServerError)
+		}
+	} else {
+		insertData := `INSERT INTO Balance (timestamp, balance, cash, portfolio_id) VALUES (?, ?, ?, ?)`
+		_, err = balanceDB.Exec(insertData, time.Now().Unix(), balance, cash, id)
+		if err != nil {
+			http.Error(w, "Failed to write balance", http.StatusInternalServerError)
+		}
 	}
 }

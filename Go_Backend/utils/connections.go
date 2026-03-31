@@ -38,11 +38,11 @@ type PortfolioBalances struct {
 
 type Portfolio_IDs struct {
 	sync.RWMutex
-	IDs []int
+	IDs map[int]string
 }
 
 var GlobalPortfolio_IDs = &Portfolio_IDs{
-	IDs: []int{},
+	IDs: make(map[int]string),
 }
 
 var GlobalPrices = &LivePrices{
@@ -545,10 +545,13 @@ func ProcessWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 			return
 		}
 	}
-	for _, pid := range GlobalPortfolio_IDs.IDs {
+	for pid := range GlobalPortfolio_IDs.IDs {
 		var cash float64
 		var balance float64
 
+		if GlobalBalance.Balances[pid] == nil {
+			continue
+		}
 		balance, cash = GlobalBalance.Balances[pid].Balance, GlobalBalance.Balances[pid].Cash
 
 		if balance == 0.0 && cash == 0.0 {

@@ -22,44 +22,24 @@ func GetMostRecentBalance(balanceDB *sql.DB) map[int]float64 {
 	GlobalBalance.Lock()
 	defer GlobalPortfolio_IDs.Unlock()
 	defer GlobalBalance.Unlock()
-	GlobalPortfolio_IDs.IDs = []int{}
-	found := false
-
-	rows, err := balanceDB.Query("SELECT DISTINCT portfolio_id FROM Balance ORDER BY timestamp DESC")
-	if err != nil {
-		log.Println(err)
-		return nil
+	if GlobalPortfolio_IDs.IDs == nil {
+		GlobalPortfolio_IDs.IDs = make(map[int]string)
 	}
-	defer rows.Close()
-	fmt.Println("Reached")
-	for rows.Next() {
-		found = true
-		var id int
-		if err := rows.Scan(&id); err != nil {
-			log.Println(err)
-			return nil
-		}
-		GlobalPortfolio_IDs.IDs = append(GlobalPortfolio_IDs.IDs, id)
-		if _, b := GlobalBalance.Balances[id]; !b {
-			GlobalBalance.Balances[id] = &Balance{} 
-		}
+	if GlobalBalance.Balances == nil {
+		GlobalBalance.Balances = make(map[int]*Balance)
 	}
-	if !found {
+	
+	if ok := GlobalPortfolio_IDs.IDs[1]; ok != "Main" {
 		GlobalBalance.Balances[1] = &Balance{}
 		GlobalBalance.Balances[1].Balance = 10000
 		GlobalBalance.Balances[1].Cash = 10000
 		recentBalances[1] = 10000
-		GlobalPortfolio_IDs.IDs = append(GlobalPortfolio_IDs.IDs, 1)
-		fmt.Println(recentBalances)
+		GlobalPortfolio_IDs.IDs[1] = "Main"
 		return recentBalances
 	}
 
-	if err = rows.Err(); err != nil {
-		log.Println(err)
-		return nil
-	}
-	for _, id := range GlobalPortfolio_IDs.IDs {
-		err = balanceDB.QueryRow("SELECT timestamp, balance, cash FROM Balance WHERE portfolio_id = ? ORDER BY timestamp DESC LIMIT 1", id).Scan(&latestTs, &todayBalance, &todayCash)
+	for id := range GlobalPortfolio_IDs.IDs {
+		err := balanceDB.QueryRow("SELECT timestamp, balance, cash FROM Balance WHERE portfolio_id = ? ORDER BY timestamp DESC LIMIT 1", id).Scan(&latestTs, &todayBalance, &todayCash)
 		if err == sql.ErrNoRows {
 			GlobalBalance.Balances[id] = &Balance{}
 			GlobalBalance.Balances[id].Balance = 10000
@@ -140,4 +120,39 @@ func GetMostRecentBalance(balanceDB *sql.DB) map[int]float64 {
 	fmt.Println("finished")
 
 	return recentBalances
+}
+
+func GetPorfolioIDs(balanceDB *sql.DB) {
+	found := false
+	GlobalPortfolio_IDs.Lock()
+	defer GlobalPortfolio_IDs.Unlock()	
+	GlobalPortfolio_IDs.IDs = make(map[int]string)
+
+	rows, err := balanceDB.Query("SELECT * FROM portfolios")
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		found = true
+		var pid int
+		var name string
+		if err := rows.Scan(&pid, &name); err != nil {
+			log.Println(err)
+			return
+		}
+		GlobalPortfolio_IDs.IDs[pid] = name
+		if _, b := GlobalBalance.Balances[pid]; !b {
+			GlobalBalance.Balances[pid] = &Balance{} 
+		}
+	}
+	if !found {
+		GlobalPortfolio_IDs.IDs[1] = "Main"
+		insertData := `INSERT INTO Portfolios (portfolio_id, name) VALUES (?, ?)`
+		_, err = balanceDB.Exec(insertData, 1, "Main")
+		if err != nil {
+			log.Fatalf("Failed to write to table: %v", err)
+		}
+	}
 }
