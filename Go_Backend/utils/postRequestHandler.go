@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"strconv"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -338,4 +339,48 @@ func NewPortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r *ht
 			http.Error(w, "Failed to write balance", http.StatusInternalServerError)
 		}
 	}
+}
+
+func DeletePortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "Only DELETE method is allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	id, err := strconv.Atoi(r.URL.Query().Get("id"))
+	if err != nil {
+		http.Error(w, "Unable to parse id", http.StatusBadRequest)
+		return
+	}
+	
+	GlobalPortfolio_IDs.Lock()
+	GlobalOpenPositions.Lock()
+	GlobalBalance.Lock()
+	if _, ok := GlobalPortfolio_IDs.IDs[id]; !ok {
+		http.Error(w, "Portfolio not found", http.StatusNotFound)
+		return
+	}
+
+	_, err = balanceDB.Exec("DELETE FROM Balance WHERE portfolio_id = ?", id)
+	if err != nil {
+		http.Error(w, "Failed to delete balance", http.StatusInternalServerError)
+		return
+	}
+	_, err = openDB.Exec("DELETE FROM OpenPositions WHERE portfolio_id = ?", id)
+	if err != nil {
+		http.Error(w, "Failed to delete open positions", http.StatusInternalServerError)
+		return
+	}
+	_, err = balanceDB.Exec("DELETE FROM Portfolios WHERE portfolio_id = ?", id)
+	if err != nil {
+		http.Error(w, "Failed to delete portfolio", http.StatusInternalServerError)
+		return
+	}
+	
+	delete(GlobalPortfolio_IDs.IDs, id)
+	delete(GlobalOpenPositions.Positions, id)
+	delete(GlobalBalance.Balances, id)
+	GlobalOpenPositions.Unlock()
+	GlobalBalance.Unlock()
+	GlobalPortfolio_IDs.Unlock()
 }
