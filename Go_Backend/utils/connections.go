@@ -476,16 +476,21 @@ func StartStockStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request)
 // Write to a specific client the most recent balance
 func ProcessWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 	// Don't write if we don't have any data
+	GlobalPortfolio_IDs.RLock()
+	defer GlobalPortfolio_IDs.RUnlock()
+
+	GlobalOpenPositions.RLock()
+	defer GlobalOpenPositions.RUnlock()
+
+	GlobalBalance.Lock()
+    defer GlobalBalance.Unlock()
+
 	GlobalPrices.RLock()
 	defer GlobalPrices.RUnlock()
 	if len(GlobalPrices.Prices) == 0 {
 		return
 	}
-    GlobalPortfolio_IDs.RLock()
-	defer GlobalPortfolio_IDs.RUnlock()
     
-    GlobalBalance.Lock()
-    defer GlobalBalance.Unlock()
 	var now int64
 		
 	now = time.Now().Unix()
@@ -549,6 +554,8 @@ func ProcessWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 		var cash float64
 		var balance float64
 
+		fmt.Println("PID:", pid)
+
 		if GlobalBalance.Balances[pid] == nil {
 			continue
 		}
@@ -584,6 +591,8 @@ func ProcessWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 
 		GlobalBalance.Balances[pid].Balance = balance
 		GlobalBalance.Balances[pid].Cash = cash
+
+		fmt.Println("PID:", pid, "Balance:", balance, "Cash:", cash)
 
 		message := BalanceData{
 			Balance:   balance,

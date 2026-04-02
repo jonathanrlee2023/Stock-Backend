@@ -126,6 +126,8 @@ func OpenSharesPositionHandler(openDB, balanceDB *sql.DB, w http.ResponseWriter,
 			Amount: newPosition.Amount,
 		}
 	}
+	GlobalOpenPositions.Unlock()
+
 	if err != nil {
 		log.Printf("Failed to write to table: %v", err)
 		return
@@ -146,7 +148,6 @@ func OpenSharesPositionHandler(openDB, balanceDB *sql.DB, w http.ResponseWriter,
 	if err != nil {
 		http.Error(w, "Failed to write balance", http.StatusInternalServerError)
 	}
-	GlobalOpenPositions.Unlock()
 	GlobalBalance.Unlock()
 
 	ProcessWrite(time.Now(), Clients["STOCK_CLIENT"], balanceDB, openDB)
@@ -175,6 +176,7 @@ func ClosePositionHandler(openDB, closeDB, balanceDB *sql.DB, w http.ResponseWri
 	price, amount = GlobalOpenPositions.Positions[closePosition.PortfolioID][closePosition.ID].Price, GlobalOpenPositions.Positions[closePosition.PortfolioID][closePosition.ID].Amount
 	if closePosition.Amount > amount {
 		http.Error(w, "Insufficient shares", 400)
+		GlobalOpenPositions.Unlock()
 		return
 	}
 
@@ -201,6 +203,7 @@ func ClosePositionHandler(openDB, closeDB, balanceDB *sql.DB, w http.ResponseWri
 		_, err := openDB.Exec("DELETE FROM OpenPositions WHERE id = ?", closePosition.ID)
 		if err != nil {
 			log.Printf("Failed to delete: %v", err)
+			GlobalOpenPositions.Unlock()
 			return
 		}
 		delete(GlobalOpenPositions.Positions[closePosition.PortfolioID], closePosition.ID)
@@ -245,12 +248,6 @@ func NewPortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r *ht
 	id := newPortfolio.ID
 	exists := false
 
-	GlobalBalance.Lock()
-	defer GlobalBalance.Unlock()
-	GlobalPrices.RLock()
-	defer GlobalPrices.RUnlock()
-	GlobalOpenPositions.Lock()
-	defer GlobalOpenPositions.Unlock()
 	GlobalPortfolio_IDs.Lock()
 	if _, ok := GlobalPortfolio_IDs.IDs[id]; ok {
 		exists = true
@@ -258,6 +255,14 @@ func NewPortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r *ht
 		GlobalPortfolio_IDs.IDs[id] = newPortfolio.Name
 	}
 	GlobalPortfolio_IDs.Unlock()
+
+	GlobalBalance.Lock()
+	defer GlobalBalance.Unlock()
+	GlobalPrices.RLock()
+	defer GlobalPrices.RUnlock()
+	GlobalOpenPositions.Lock()
+	defer GlobalOpenPositions.Unlock()
+	
 
 	if exists {
 		err := balanceDB.QueryRow("SELECT balance, cash FROM Balance WHERE portfolio_id = ? ORDER BY timestamp DESC LIMIT 1", id).Scan(&balance, &cash)
@@ -311,14 +316,13 @@ func NewPortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r *ht
 		log.Printf("Failed to commit transaction: %v", err)
 		return
 	}
-
-	if exists {
-		if GlobalBalance.Balances[id] == nil {
-			GlobalBalance.Balances[id] = &Balance{}
-		}
-		GlobalBalance.Balances[id].Balance = balance
-		GlobalBalance.Balances[id].Cash = cash
+	if GlobalBalance.Balances[id] == nil {
+		GlobalBalance.Balances[id] = &Balance{}
 	}
+	
+	GlobalBalance.Balances[id].Balance = balance
+	GlobalBalance.Balances[id].Cash = cash
+
 	
 	if !exists {
 		insertData := `INSERT INTO Balance (timestamp, balance, cash, portfolio_id) VALUES (?, ?, ?, ?)`
@@ -354,8 +358,11 @@ func DeletePortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r 
 	}
 	
 	GlobalPortfolio_IDs.Lock()
+	defer GlobalPortfolio_IDs.Unlock()
 	GlobalOpenPositions.Lock()
+	defer GlobalOpenPositions.Unlock()
 	GlobalBalance.Lock()
+	defer GlobalBalance.Unlock()
 	if _, ok := GlobalPortfolio_IDs.IDs[id]; !ok {
 		http.Error(w, "Portfolio not found", http.StatusNotFound)
 		return
@@ -380,7 +387,4 @@ func DeletePortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r 
 	delete(GlobalPortfolio_IDs.IDs, id)
 	delete(GlobalOpenPositions.Positions, id)
 	delete(GlobalBalance.Balances, id)
-	GlobalOpenPositions.Unlock()
-	GlobalBalance.Unlock()
-	GlobalPortfolio_IDs.Unlock()
 }
