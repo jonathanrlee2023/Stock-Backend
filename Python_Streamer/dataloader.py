@@ -201,29 +201,27 @@ class DataLoader:
         return await self.get_price_history()
     
     def get_quote(self):
-        response = self.connection.quote(symbol_id=self.ticker).json()
-        data = response[self.ticker]['quote']
-        return data
+        response = self.connection.quote(self.ticker).json()
+        return response.get(self.ticker, {}).get('quote', {})
     
     def get_option_expirations(self):
-        call_option_id_list = []
-        put_option_id_list = []
         fromDate = datetime.now()
         toDate = fromDate + timedelta(days=7)
-        response = self.connection.option_chains(symbol=self.ticker, strikeCount=5, optionType="ALL", toDate=toDate).json()
-        call_data = response['callExpDateMap']
-        put_data = response['putExpDateMap']
-        for date, contract in call_data.items():
-            for strike, options_list in contract.items():
-                # options_list is a list, e.g., [{ 'id': '...', 'symbol': '...' }]
-                if options_list: 
-                    call_option_id_list.append(options_list[0]['symbol'])
-        for date, contract in put_data.items():
-            for strike, options_list in contract.items():
-                if options_list:
-                    put_option_id_list.append(options_list[0]['symbol'])
 
-        return call_option_id_list, put_option_id_list
+        response = self.connection.option_chains(symbol=self.ticker, strikeCount=5, optionType="ALL", toDate=toDate).json()
+        
+        def extract_symbols(exp_map):
+            symbols = []
+            for date_map in exp_map.values():
+                for strike_list in date_map.values():
+                    if strike_list:
+                        symbols.append(strike_list[0]['symbol'])
+            return symbols
+
+        call_ids = extract_symbols(response.get('callExpDateMap', {}))
+        put_ids = extract_symbols(response.get('putExpDateMap', {}))
+
+        return call_ids, put_ids
 
     
     def get_unix_timestamp_5_years_ago(self):

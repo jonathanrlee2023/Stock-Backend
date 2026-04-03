@@ -123,7 +123,7 @@ class Company:
                 print("Exception in setting PEG: ", e)
         self.sector = self.company_overview["Sector"].values[0]
 
-        self.earnings_date = await asyncFunc.get_furthest_date_for_stock(symbol=self.ticker)
+        self.earnings_date = asyncFunc.get_furthest_date_for_stock(symbol_id=self.symbol_id)
 
 
         # Extract values from the loaded overview
@@ -361,7 +361,7 @@ class Company:
                 elif category == "BALANCE_SHEET": table_name = "balance"
                 elif category == "CASH_FLOW": table_name = "cash"
                 elif category == "EARNINGS": table_name = "earnings"
-                retrieve_new_data = await asyncFunc.check_for_new_earnings(ticker, symbol_id, table_name)
+                retrieve_new_data = await asyncFunc.check_for_new_earnings(symbol_id, table_name)
 
                 engine = self.engines[table_name]
                
@@ -459,7 +459,7 @@ class Company:
         # 1. Load the 4 Financial/Time-Series Databases
         for cat_key, db_file in db_map.items():
             full_path = os.path.join(db_dir, db_file)
-            retrieve_new_data = await asyncFunc.check_for_new_earnings(ticker, symbol_id, cat_key)
+            retrieve_new_data = await asyncFunc.check_for_new_earnings(symbol_id, cat_key)
             if retrieve_new_data:
                 continue
 

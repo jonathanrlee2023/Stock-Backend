@@ -554,8 +554,6 @@ func ProcessWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 		var cash float64
 		var balance float64
 
-		fmt.Println("PID:", pid)
-
 		if GlobalBalance.Balances[pid] == nil {
 			continue
 		}
@@ -592,8 +590,6 @@ func ProcessWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 		GlobalBalance.Balances[pid].Balance = balance
 		GlobalBalance.Balances[pid].Cash = cash
 
-		fmt.Println("PID:", pid, "Balance:", balance, "Cash:", cash)
-
 		message := BalanceData{
 			Balance:   balance,
 			Timestamp: t.Unix(),
@@ -622,11 +618,11 @@ func ProcessWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 		log.Printf("Failed to prepare statement: %v", err)
 		return
 	}
-	defer stmt.Close() // ALWAYS close your statements
+	defer stmt.Close()
 	for id, data := range GlobalBalance.Balances {
 		_, err := stmt.Exec(now, data.Balance, data.Cash, id)
 		if err != nil {
-			batch.Rollback() // Cancel everything if one insert fails
+			batch.Rollback()
 			log.Printf("Failed to insert balance: %v", err)
 			return
 		}

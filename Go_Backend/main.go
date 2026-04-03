@@ -121,10 +121,6 @@ func main() {
 		Handler: handler,
 	}
 
-	// utils.RunDailyAt(15, 0, 5, func() {
-	// 	totalShutdown(server)
-	// })
-
 	// Run server in a goroutine
 	go func() {
 		fmt.Println("Server is running on port 8080...")

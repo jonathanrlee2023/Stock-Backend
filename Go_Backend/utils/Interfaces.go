@@ -49,12 +49,9 @@ type Company_Stats struct {
 	ROIC             *float64 `json:"ROIC"`
 	HistGrowth       *float64 `json:"HistGrowth"`
 	ForecastedGrowth *float64 `json:"ForecastedGrowth"`
-	// Using pointers (*float64) for PEG fields because your Python code
-	// specifically returns 'None' if growth is negative.
 	TrailingPEG    *float64 `json:"TrailingPEG"`
 	ForwardPEG     *float64 `json:"ForwardPEG"`
 	IntrinsicPrice *float64 `json:"IntrinsicPrice"`
-	// DividendPrice can also be None if the company has no dividend history.
 	DividendPrice     *float64             `json:"DividendPrice"`
 	PriceAtReport     *float64             `json:"PriceAtReport"`
 	WACC              *float64             `json:"WACC"`

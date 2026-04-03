@@ -43,30 +43,13 @@ def create_engines(db_dir):
         for key, name in db_names.items()
     }
 
-async def main():
-    global tasks_started
-    if tasks_started:
-        return
-    tasks_started = True
-    load_dotenv()
-    appKey = os.getenv("appKey")
-    appSecret = os.getenv("appSecret")
-    alpha_vantage_api_key = os.getenv("AlphaVantageKey")
-    rate_api_key = os.getenv("ExchangeRateKey")
-    db_dir = os.getenv("DB_DIR", "../Database")
-
-    api_manager = SecureAPIKey(alpha_vantage_api_key)
-
+async def init_db_state(db_dir):
     db_state.engines = create_engines(db_dir)
-
-    client = schwabdev.Client(app_key=appKey, app_secret=appSecret, tokens_db='/app/Database/tokens.json')
-
-    streamer = schwabdev.Stream(client)
-
     db_state.price_db = await asyncFunc.init_db()
     db_state.earnings_db = await asyncFunc.init_earnings_db()
     db_state.tracker_db = await asyncFunc.init_tracker_db()
 
+async def verify_db_conn():
     print("Verifying database connections...")
     connection_ready = False
     retries = 0
@@ -88,6 +71,29 @@ async def main():
     if not connection_ready:
         print("CRITICAL: Database failed to stabilize. Exiting.")
         return
+
+async def main():
+    global tasks_started
+    if tasks_started:
+        return
+    tasks_started = True
+    load_dotenv()
+    appKey = os.getenv("appKey")
+    appSecret = os.getenv("appSecret")
+    alpha_vantage_api_key = os.getenv("AlphaVantageKey")
+    rate_api_key = os.getenv("ExchangeRateKey")
+    db_dir = os.getenv("DB_DIR", "../Database")
+
+    api_manager = SecureAPIKey(alpha_vantage_api_key)
+
+    await init_db_state(db_dir)
+
+    client = schwabdev.Client(app_key=appKey, app_secret=appSecret, tokens_db='/app/Database/tokens.json')
+
+    streamer = schwabdev.Stream(client)
+
+    await verify_db_conn()
+    
     print("Starting background tasks...")
     tasks = [
         asyncio.create_task(asyncFunc.update_tickers_from_db(streamer)),
