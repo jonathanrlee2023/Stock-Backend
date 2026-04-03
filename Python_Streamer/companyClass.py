@@ -7,7 +7,8 @@ import pandas as pd
 import numpy as np
 import httpx
 
-from dbState import db_state
+from appState import app_state
+from cache import exchange_rate_cache
 import asyncFunc
 from dataloader import DataLoader
 
@@ -36,18 +37,15 @@ SECTOR_BETAS = {
     "UTILITIES": 0.55               # NEE, DUK
 }
 
-
-
 DEFENSIVE = ["HEALTHCARE", "CONSUMER DEFENSIVE", "UTILITIES"]
 SENSITIVE = ["TECHNOLOGY", "COMMUNICATION SERVICES", "INDUSTRIALS", "ENERGY"]
 CYCLICAL = ["CONSUMER CYCLICAL", "FINANCIAL SERVICES", "BASIC MATERIALS", "REAL ESTATE"]
+
 class Company:
-    def __init__(self, ticker, api_key, rate_api_key, client):
+    def __init__(self, ticker, api_key, rate_api_key):
         self.ticker = ticker
         self.api_key = api_key
         self.rate_api_key = rate_api_key
-        self.client = client
-        self.engines = db_state.engines
 
         self.data = {
             "income": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
@@ -69,9 +67,11 @@ class Company:
 
 
     @classmethod
-    async def create(cls, ticker, api_key, rate_api_key, client):
+    async def create(cls, ticker, api_key, rate_api_key):
         """Asynchronous factory to create and fully initialize the instance."""
-        self = cls(ticker, api_key, rate_api_key, client)
+        self = cls(ticker, api_key, rate_api_key)
+        start_fetch = time.perf_counter()
+
         self.symbol_id = await asyncFunc.get_symbol_id(self.ticker)
 
         await self.load_all_from_dbs()
@@ -99,18 +99,21 @@ class Company:
         if self.income_df.empty or self.balance_df.empty or self.cash_df.empty or self.company_overview.empty:
             print(f"--- Initialization Aborted for {ticker}: No data available ---")
             return None
+        start_curr_price = time.perf_counter()
         self.price_at_report = await self.get_current_price()
+        end_curr_price = time.perf_counter()
+        print(f"Time to get current price: {end_curr_price - start_curr_price}")
+        self.market_cap = self.company_overview["MarketCapitalization"].values[0]
 
-
-        # 3. Perform the Math (Sync tasks)
+        start_calc = time.perf_counter()
         self.fcf, self.fcff, self.fcf_per_share, self.nwc = self.calc_fcf()
         self.wacc = self.calc_wacc()
+        
+        # 2. Projections
         self.calc_forecast_metrics()
-
-        self.market_cap = self.company_overview["MarketCapitalization"].values[0]
         self.intrinsic_price, self.dividend_price = self.fcff_forecast()
-        self.return_on_invested_capital = self.roic()
         self.peg = self.peg_ratio()
+        self.return_on_invested_capital = self.roic()
         self.sloan = self.sloan_ratio()
         self.hist_growth, self.forecasted_growth, self.trailing_peg, self.forward_peg = self.analyze_peg()
 
@@ -121,6 +124,9 @@ class Company:
                 else: self.peg = self.trailing_pe / self.eps_growth
             except Exception as e:
                 print("Exception in setting PEG: ", e)
+
+        end_calc = time.perf_counter()
+        print(f"--- Company {ticker} calculations in {round(end_calc - start_calc, 4)} seconds ---")
         self.sector = self.company_overview["Sector"].values[0]
 
         self.earnings_date = asyncFunc.get_furthest_date_for_stock(symbol_id=self.symbol_id)
@@ -143,7 +149,9 @@ class Company:
                 return int(val)
             except:
                 return None
-            
+        
+        start_prepare = time.perf_counter()
+
         annual_income = self.prepare_df_for_go(self.income_df)
         annual_balance = self.prepare_df_for_go(self.balance_df)
         annual_cash = self.prepare_df_for_go(self.cash_df)
@@ -153,7 +161,10 @@ class Company:
         quarterly_cash = self.prepare_df_for_go(self.quarterly_cash_df)
         quarterly_earnings = self.prepare_df_for_go(self.quarterly_earnings_df)
 
+        end_prepare = time.perf_counter()
+        print(f"--- Finished preparing data for {ticker} in {round(end_prepare - start_prepare, 4)} seconds ---")
 
+        start_safe = time.perf_counter()
         self.final_report = {
             "Symbol": str(self.ticker),
             "MarketCap": safe_int(self.market_cap),
@@ -190,8 +201,12 @@ class Company:
             "QuarterlyCash": quarterly_cash,
             "QuarterlyEarnings": quarterly_earnings,
         }
+        end_safe = time.perf_counter()
+        print(f"--- Finished safely saving data for {ticker} in {round(end_safe - start_safe, 4)} seconds ---")
 
         await self.save_all_to_db()
+        end_fetch = time.perf_counter()
+        print(f"--- Initialization Complete for {ticker} in {round(end_fetch-start_fetch, 8)} seconds ---")
         return self
     
     def prepare_df_for_go(self, df: pd.DataFrame):
@@ -312,7 +327,7 @@ class Company:
                 ticker=self.ticker, 
                 symbol_id=self.symbol_id,
                 fiscalDate=self.timestamp, 
-                connection=self.client
+                connection=app_state.client
             )
         
         price = await loader.load_data()
@@ -351,6 +366,8 @@ class Company:
         bool
             True if all data is fetched successfully, False otherwise
         """
+        start_fetch = time.perf_counter()
+
         categories = ["INCOME_STATEMENT", "BALANCE_SHEET", "CASH_FLOW", "EARNINGS"]
         ticker = self.ticker
         symbol_id = self.symbol_id
@@ -363,10 +380,10 @@ class Company:
                 elif category == "EARNINGS": table_name = "earnings"
                 retrieve_new_data = await asyncFunc.check_for_new_earnings(symbol_id, table_name)
 
-                engine = self.engines[table_name]
+                engine = app_state.engines[table_name]
                
                 already_exists = await self._check_db_for_ticker(table_name, engine, ticker)
-                raw_engine = self.engines[f"RAW_{category}"]
+                raw_engine = app_state.engines[f"RAW_{category}"]
                 
                 if retrieve_new_data or not already_exists:
                     raw_exists = await self._check_db_for_ticker(table_name, raw_engine, ticker)
@@ -430,20 +447,21 @@ class Company:
                         except Exception as e:
                             print(f"Error processing {category} for {ticker}: {e}")
                             return False
-
                     else:
                         quarterly_df = await self._read_sql_to_df(table_name, engine=raw_engine, report_type="quarterly")
                         annual_df = await self._read_sql_to_df(table_name, engine=raw_engine, report_type="annual")
                         self.data[table_name]["annual"] = annual_df
                         self.data[table_name]["quarterly"] = quarterly_df                
-            else:
-                await self.load_all_from_dbs()
+
+        print(f"Loaded data for {ticker} from the api in {time.perf_counter() - start_fetch:.8f} seconds")
         return True
     async def load_all_from_dbs(self):
         """
         Checks all 5 databases and loads existing data into self.data structure.
         Separates quarterly and annual data for financials.
         """
+        start_fetch = time.perf_counter()
+
         ticker = self.ticker
         symbol_id = self.symbol_id
         db_dir = os.getenv("DB_DIR", "/app/Database")
@@ -467,7 +485,7 @@ class Company:
                 print(f"File not found: {full_path}") # Debug print
                 continue
                 
-            engine = self.engines[cat_key]
+            engine = app_state.engines[cat_key]
             async with engine.connect() as conn:
                 try:
                     check_sql = f"SELECT name FROM sqlite_master WHERE type='table' AND name='{cat_key}'"
@@ -491,7 +509,7 @@ class Company:
         full_path = os.path.join(db_dir, overview_db)
 
         if os.path.exists(full_path):
-            engine = self.engines["overview"]
+            engine = app_state.engines["overview"]
             async with engine.connect() as conn:
                 try:
                     # Note: Overview uses 'Symbol' instead of 'ticker' per your current schema
@@ -503,6 +521,8 @@ class Company:
                         self.data["overview"] = overview_df
                 except Exception:
                     pass
+
+        print(f"Data loaded for {ticker} from the db in {time.perf_counter() - start_fetch:.8f} seconds")
     async def _check_db_for_ticker(self, table_name, engine, ticker):
         async with engine.connect() as conn:
             try:
@@ -545,7 +565,7 @@ class Company:
 
 
     async def get_company_overviews(self):
-        overview_engine = self.engines["overview"]
+        overview_engine = app_state.engines["overview"]
         ticker = self.ticker
 
 
@@ -1267,13 +1287,17 @@ class Company:
 
         The method does not handle errors in the event that the API service is unavailable or returns invalid data.
         """
-
-
+        global exchange_rate_cache
         rate_url = f"https://v6.exchangerate-api.com/v6/{self.rate_api_key}/latest/USD"
         
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(rate_url)
-            rates_dict = resp.json().get("conversion_rates", {})
+        if exchange_rate_cache:
+            rates_dict = exchange_rate_cache
+        else:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(rate_url)
+                rates_dict = resp.json().get("conversion_rates", {})
+
+            exchange_rate_cache = rates_dict
 
         # We iterate through our memory dictionary
         for category in ["income", "balance", "cash"]:
@@ -1300,6 +1324,7 @@ class Company:
         Final Flush: Persists data from the memory dictionary into 5 separate DB files.
         Handles 'Extra Columns' in annual data via automatic schema migration.
         """
+        start_save = time.perf_counter()
         db_map = ["income", "balance", "cash", "earnings"]
 
         # 1. Save the 4 Financial Databases
@@ -1313,7 +1338,7 @@ class Company:
 
             df_to_save["symbol_id"] = self.symbol_id
 
-            engine = self.engines[cat_key]
+            engine = app_state.engines[cat_key]
             await self._upsert_to_database(engine, df_to_save, cat_key, pk_col="symbol_id")
 
         if not self.data["overview"].empty:
@@ -1327,9 +1352,12 @@ class Company:
             
             overview_df["symbol_id"] = self.symbol_id
             
-            overview_engine = self.engines["overview"]
+            overview_engine = app_state.engines["overview"]
             
             await self._upsert_to_database(overview_engine, overview_df, "Overview", pk_col="symbol_id")
+
+        end_save = time.perf_counter()
+        print(f"--- Save All to DB Time: {end_save - start_save} ---")
 
     async def _upsert_to_database(self, engine, df, table_name, pk_col="symbol_id"):
         """

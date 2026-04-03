@@ -12,7 +12,7 @@ import requests
 import httpx
 from sqlalchemy import text
 import datetime
-from dbState import db_state
+from appState import app_state
 from companyClass import Company
 from dataloader import DataLoader
 import stream_func
@@ -42,7 +42,7 @@ async def date_refresher_task():
         
         await asyncio.sleep(3600)
 
-async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, client):
+async def listen_for_messages(alpha_vantage_api_key, rate_api_key):
     """
     Listens for incoming messages from the Redis channel 'Request_Channel'.
     When a message is received, it is parsed and checked for validity.
@@ -58,6 +58,8 @@ async def listen_for_messages(streamer, alpha_vantage_api_key, rate_api_key, cli
     """
     global stream_started
     option_ids = stream_func.option_ids
+    streamer = app_state.streamer
+    client = app_state.client
     pubsub = r.pubsub()
     await pubsub.subscribe('Request_Channel')
     try:
@@ -122,7 +124,7 @@ async def get_symbol_id(symbol):
     if symbol in symbol_cache:
         return symbol_cache[symbol]
 
-    db = db_state.price_db
+    db = app_state.price_db
     async with db.execute("SELECT symbol_id FROM Symbols WHERE symbol = ?", (symbol,)) as cursor:
         row = await cursor.fetchone()
         if row:
@@ -183,7 +185,7 @@ async def write_to_db():
 
     :return: None
     """
-    db = db_state.price_db
+    db = app_state.price_db
     async with db.execute("SELECT symbol, symbol_id FROM Symbols") as cursor:
         async for row in cursor:
             symbol_cache[row[0]] = row[1]
@@ -238,7 +240,7 @@ async def write_to_db():
 
         await db.commit()
 
-async def stream_options(client):
+async def stream_options():
     """
     Streams options from the Schwab API into the SQLite database.
 
@@ -252,6 +254,7 @@ async def stream_options(client):
     """
     option_ids = stream_func.option_ids
     new_data = stream_func.new_data
+    client = app_state.client
     LIMIT = 250 
     
     while True:
@@ -358,7 +361,7 @@ async def init_tracker_db():
 
     return db
 
-async def update_tickers_from_db(streamer):
+async def update_tickers_from_db():
     """
     Updates the list of tickers to subscribe to from the database.
     
@@ -377,7 +380,8 @@ async def update_tickers_from_db(streamer):
     -------
     None
     """
-    db = db_state.tracker_db
+    db = app_state.tracker_db
+    streamer = app_state.streamer
     async with db.execute("SELECT id FROM tracker") as cursor:
         rows = await cursor.fetchall()
         ticker_list = [row[0] for row in rows]
@@ -427,11 +431,13 @@ async def handleCompany(client, api_key, rate_key, ticker):
     -------
     None
     """
-    company = await Company.create(ticker=ticker, api_key=api_key, rate_api_key=rate_key, client=client)
+    company = await Company.create(ticker=ticker, api_key=api_key, rate_api_key=rate_key)
     if company is None:
         print("Company data not fetched properly")
         return
     await r.publish("Company_Channel", orjson.dumps(company.final_report))
+
+    del company
 
 async def get_options_and_initial_quotes(ticker, client):
     """
@@ -506,7 +512,7 @@ async def init_earnings_db():
     return db
 
 async def get_last_update_date():
-    db = db_state.earnings_db
+    db = app_state.earnings_db
     async with db.execute("SELECT MAX(reportdate) FROM earnings_calendar") as cursor:
         row = await cursor.fetchone()
         return row[0] if row else None
@@ -654,7 +660,7 @@ async def cache_all_max_dates():
                         "income": "RAW_INCOME_STATEMENT"}
     
     async def fetch_table_max(table, db_name):
-        async with db_state.engines[db_name].connect() as conn:
+        async with app_state.engines[db_name].connect() as conn:
             query = text(f"SELECT symbol_id, MAX(date) FROM {table} GROUP BY symbol_id")
             result = await conn.execute(query)
 
@@ -668,7 +674,7 @@ async def cache_all_max_dates():
         max_fiscal_lookup[table] = data
 
 async def get_recent_quote_time():
-    priceDB = db_state.price_db
+    priceDB = app_state.price_db
     global latest_quote
     async with priceDB.execute(
         "SELECT symbol_id, MAX(timestamp) FROM HistoricalStocks GROUP BY symbol_id"
@@ -680,7 +686,7 @@ async def get_recent_quote_time():
 
 async def cache_symbol_ids():
     global symbol_cache
-    async with db_state.price_db.execute(
+    async with app_state.price_db.execute(
         "SELECT symbol, symbol_id FROM Symbols"
     ) as cursor:
         result = await cursor.fetchall()

@@ -1,10 +1,12 @@
+from concurrent.futures import ProcessPoolExecutor
+
 from secureAPIKey import SecureAPIKey
 import schwabdev
 from dotenv import load_dotenv
 import os
 import asyncio
 import asyncFunc
-from dbState import db_state
+from appState import app_state
 from sqlalchemy.ext.asyncio import create_async_engine
 
 
@@ -43,11 +45,11 @@ def create_engines(db_dir):
         for key, name in db_names.items()
     }
 
-async def init_db_state(db_dir):
-    db_state.engines = create_engines(db_dir)
-    db_state.price_db = await asyncFunc.init_db()
-    db_state.earnings_db = await asyncFunc.init_earnings_db()
-    db_state.tracker_db = await asyncFunc.init_tracker_db()
+async def init_app_state(db_dir):
+    app_state.engines = create_engines(db_dir)
+    app_state.price_db = await asyncFunc.init_db()
+    app_state.earnings_db = await asyncFunc.init_earnings_db()
+    app_state.tracker_db = await asyncFunc.init_tracker_db()
 
 async def verify_db_conn():
     print("Verifying database connections...")
@@ -57,9 +59,9 @@ async def verify_db_conn():
     while not connection_ready and retries < 5:
         try:
             # We run a tiny dummy query to see if the engine responds
-            await db_state.price_db.execute("SELECT 1")
-            await db_state.earnings_db.execute("SELECT 1")
-            await db_state.tracker_db.execute("SELECT 1")
+            await app_state.price_db.execute("SELECT 1")
+            await app_state.earnings_db.execute("SELECT 1")
+            await app_state.tracker_db.execute("SELECT 1")
 
             connection_ready = True
             print("Databases are online and responding.")
@@ -86,21 +88,20 @@ async def main():
 
     api_manager = SecureAPIKey(alpha_vantage_api_key)
 
-    await init_db_state(db_dir)
+    await init_app_state(db_dir)
+    app_state.cpu_executor = ProcessPoolExecutor(max_workers=4)
+    app_state.client = schwabdev.Client(app_key=appKey, app_secret=appSecret, tokens_db='/app/Database/tokens.json')
+    app_state.streamer = schwabdev.Stream(app_state.client)
 
-    client = schwabdev.Client(app_key=appKey, app_secret=appSecret, tokens_db='/app/Database/tokens.json')
-
-    streamer = schwabdev.Stream(client)
-
-    await verify_db_conn()
+    await verify_db_conn()  
     
     print("Starting background tasks...")
     tasks = [
-        asyncio.create_task(asyncFunc.update_tickers_from_db(streamer)),
+        asyncio.create_task(asyncFunc.update_tickers_from_db()),
         asyncio.create_task(asyncFunc.broadcast_to_redis()),
-        asyncio.create_task(asyncFunc.listen_for_messages(streamer, api_manager, rate_api_key, client)),
+        asyncio.create_task(asyncFunc.listen_for_messages(api_manager, rate_api_key)),
         asyncio.create_task(asyncFunc.write_to_db()),
-        asyncio.create_task(asyncFunc.stream_options(client)),
+        asyncio.create_task(asyncFunc.stream_options()),
         asyncio.create_task(asyncFunc.get_earnings_dates(api_manager)),
         asyncio.create_task(asyncFunc.get_recent_quote_time())
     ]
@@ -115,10 +116,10 @@ async def main():
         # This part ensures the script actually exits
         print("Closing database and cleaning up tasks...")
 
-        await db_state.price_db.close()
-        await db_state.earnings_db.close()
-        await db_state.tracker_db.close()
-        for engine in db_state.engines.values():
+        await app_state.price_db.close()
+        await app_state.earnings_db.close()
+        await app_state.tracker_db.close()
+        for engine in app_state.engines.values():
             await engine.dispose()
         
         # Cancel all remaining tasks

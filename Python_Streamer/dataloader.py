@@ -5,7 +5,7 @@ import time
 import schwabdev
 import os
 from dotenv import load_dotenv
-from dbState import db_state
+from appState import app_state
 
 
 class DataLoader:
@@ -30,7 +30,7 @@ class DataLoader:
         return client
     
     async def load_data(self):
-        db = db_state.price_db
+        db = app_state.price_db
         start = time.perf_counter()
         try:
             if self.fiscalDate is None:
@@ -67,7 +67,7 @@ class DataLoader:
     
     async def get_price_history(self):
         s_id = self.symbol_id
-        priceDB = db_state.price_db
+        priceDB = app_state.price_db
         try:
             async with priceDB.execute(
                 "SELECT timestamp, open, high, low, close, volume FROM HistoricalStocks WHERE symbol_id = ? ORDER BY timestamp ASC", 
@@ -136,7 +136,7 @@ class DataLoader:
         needs_update = False
         s_id = self.symbol_id
         
-        priceDB = db_state.price_db
+        priceDB = app_state.price_db
         start_ms = latest_quote.get(s_id, 0)
         if start_ms == 0: 
             result = await priceDB.execute(

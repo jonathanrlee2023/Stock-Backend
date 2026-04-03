@@ -4,7 +4,9 @@ class AppState:
         self.price_db = None
         self.earnings_db = None
         self.tracker_db = None
-        # Add any other shared resources here
+        self.cpu_executer = None
+        self.client = None
+        self.streamer = None
 
 # Instantiate it once
-db_state = AppState()
+app_state = AppState()
