@@ -4,6 +4,7 @@ import re
 
 import orjson
 import pytz
+from appState import app_state
 
 stock_labels = {
     '1': 'Bid Price',
@@ -31,7 +32,8 @@ async def start_options_stream(ticker, price, day, month, year, type):
     file_names.append(full_symbol)
     new_data[full_symbol] = {}
 
-async def start_stock_stream(streamer, ticker):
+async def start_stock_stream(ticker):
+    streamer = app_state.streamer
     caps_ticker = ticker.upper()
     request = streamer.level_one_equities(
         caps_ticker,

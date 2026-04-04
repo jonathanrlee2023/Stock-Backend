@@ -1,5 +1,7 @@
 from concurrent.futures import ProcessPoolExecutor
 
+import httpx
+
 from secureAPIKey import SecureAPIKey
 import schwabdev
 from dotenv import load_dotenv
@@ -51,6 +53,8 @@ async def init_app_state(db_dir):
     app_state.earnings_db = await asyncFunc.init_earnings_db()
     app_state.tracker_db = await asyncFunc.init_tracker_db()
 
+    await asyncFunc.init_financial_db()
+
 async def verify_db_conn():
     print("Verifying database connections...")
     connection_ready = False
@@ -92,12 +96,16 @@ async def main():
     app_state.cpu_executor = ProcessPoolExecutor(max_workers=4)
     app_state.client = schwabdev.Client(app_key=appKey, app_secret=appSecret, tokens_db='/app/Database/tokens.json')
     app_state.streamer = schwabdev.Stream(app_state.client)
+    app_state.httpx_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(30.0),
+        limits=httpx.Limits(max_connections=20, max_keepalive_connections=10)
+    )
 
     await verify_db_conn()  
     
     print("Starting background tasks...")
     tasks = [
-        asyncio.create_task(asyncFunc.update_tickers_from_db()),
+        asyncio.create_task(asyncFunc.update_tickers_from_db(api_manager, rate_api_key)),
         asyncio.create_task(asyncFunc.broadcast_to_redis()),
         asyncio.create_task(asyncFunc.listen_for_messages(api_manager, rate_api_key)),
         asyncio.create_task(asyncFunc.write_to_db()),
@@ -121,6 +129,11 @@ async def main():
         await app_state.tracker_db.close()
         for engine in app_state.engines.values():
             await engine.dispose()
+        
+        app_state.client.close()
+        app_state.streamer.close()
+        app_state.httpx_client.close()
+        app_state.cpu_executor.shutdown()
         
         # Cancel all remaining tasks
         current_tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]

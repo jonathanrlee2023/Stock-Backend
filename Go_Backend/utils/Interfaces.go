@@ -41,7 +41,7 @@ type StockStreamRequest struct {
 	Symbol string `json:"symbol"`
 }
 
-type Company_Stats struct {
+type CompanyStats struct {
 	Symbol           string   `json:"Symbol"`
 	MarketCap        float64  `json:"MarketCap"`
 	PEG              *float64 `json:"PEG"`
@@ -339,4 +339,39 @@ type Portfolio struct {
 	ID int `json:"id"`
 	Name string `json:"name"`
 	Positions []Position `json:"positions"`
+}
+
+type LivePrices struct {
+	sync.RWMutex
+	Prices map[string]MixedQuote
+}
+
+type OpenPositions struct {
+	sync.RWMutex
+	Positions map[int]map[string]OpenPositionDetails
+}
+
+type Balance struct {
+	Balance float64
+	Cash    float64
+}
+
+type PortfolioBalances struct {
+	sync.RWMutex
+	Balances map[int]*Balance
+}
+
+type Portfolio_IDs struct {
+	sync.RWMutex
+	IDs map[int]string
+}
+
+type CompanyStatsCache struct {
+	sync.RWMutex
+	Stats map[string]CompanyStats
+}
+
+type OptionExpirationCache struct {
+	sync.RWMutex
+	Stats map[string]OptionExpiration
 }

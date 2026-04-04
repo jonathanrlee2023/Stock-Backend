@@ -8,7 +8,7 @@ import numpy as np
 import httpx
 
 from appState import app_state
-from cache import exchange_rate_cache
+from cache import exchange_rate_cache, max_fiscal_lookup, rate_limited
 import asyncFunc
 from dataloader import DataLoader
 
@@ -40,7 +40,6 @@ SECTOR_BETAS = {
 DEFENSIVE = ["HEALTHCARE", "CONSUMER DEFENSIVE", "UTILITIES"]
 SENSITIVE = ["TECHNOLOGY", "COMMUNICATION SERVICES", "INDUSTRIALS", "ENERGY"]
 CYCLICAL = ["CONSUMER CYCLICAL", "FINANCIAL SERVICES", "BASIC MATERIALS", "REAL ESTATE"]
-
 class Company:
     def __init__(self, ticker, api_key, rate_api_key):
         self.ticker = ticker
@@ -70,7 +69,6 @@ class Company:
     async def create(cls, ticker, api_key, rate_api_key):
         """Asynchronous factory to create and fully initialize the instance."""
         self = cls(ticker, api_key, rate_api_key)
-        start_fetch = time.perf_counter()
 
         self.symbol_id = await asyncFunc.get_symbol_id(self.ticker)
 
@@ -99,13 +97,10 @@ class Company:
         if self.income_df.empty or self.balance_df.empty or self.cash_df.empty or self.company_overview.empty:
             print(f"--- Initialization Aborted for {ticker}: No data available ---")
             return None
-        start_curr_price = time.perf_counter()
         self.price_at_report = await self.get_current_price()
-        end_curr_price = time.perf_counter()
-        print(f"Time to get current price: {end_curr_price - start_curr_price}")
+
         self.market_cap = self.company_overview["MarketCapitalization"].values[0]
 
-        start_calc = time.perf_counter()
         self.fcf, self.fcff, self.fcf_per_share, self.nwc = self.calc_fcf()
         self.wacc = self.calc_wacc()
         
@@ -125,8 +120,6 @@ class Company:
             except Exception as e:
                 print("Exception in setting PEG: ", e)
 
-        end_calc = time.perf_counter()
-        print(f"--- Company {ticker} calculations in {round(end_calc - start_calc, 4)} seconds ---")
         self.sector = self.company_overview["Sector"].values[0]
 
         self.earnings_date = asyncFunc.get_furthest_date_for_stock(symbol_id=self.symbol_id)
@@ -150,7 +143,6 @@ class Company:
             except:
                 return None
         
-        start_prepare = time.perf_counter()
 
         annual_income = self.prepare_df_for_go(self.income_df)
         annual_balance = self.prepare_df_for_go(self.balance_df)
@@ -161,10 +153,7 @@ class Company:
         quarterly_cash = self.prepare_df_for_go(self.quarterly_cash_df)
         quarterly_earnings = self.prepare_df_for_go(self.quarterly_earnings_df)
 
-        end_prepare = time.perf_counter()
-        print(f"--- Finished preparing data for {ticker} in {round(end_prepare - start_prepare, 4)} seconds ---")
 
-        start_safe = time.perf_counter()
         self.final_report = {
             "Symbol": str(self.ticker),
             "MarketCap": safe_int(self.market_cap),
@@ -201,12 +190,9 @@ class Company:
             "QuarterlyCash": quarterly_cash,
             "QuarterlyEarnings": quarterly_earnings,
         }
-        end_safe = time.perf_counter()
-        print(f"--- Finished safely saving data for {ticker} in {round(end_safe - start_safe, 4)} seconds ---")
 
         await self.save_all_to_db()
-        end_fetch = time.perf_counter()
-        print(f"--- Initialization Complete for {ticker} in {round(end_fetch-start_fetch, 8)} seconds ---")
+
         return self
     
     def prepare_df_for_go(self, df: pd.DataFrame):
@@ -366,163 +352,148 @@ class Company:
         bool
             True if all data is fetched successfully, False otherwise
         """
-        start_fetch = time.perf_counter()
+        global rate_limited
 
         categories = ["INCOME_STATEMENT", "BALANCE_SHEET", "CASH_FLOW", "EARNINGS"]
         ticker = self.ticker
         symbol_id = self.symbol_id
+        client = app_state.httpx_client
+        
+        for category in categories:
+            if category == "INCOME_STATEMENT": table_name = "income"
+            elif category == "BALANCE_SHEET": table_name = "balance"
+            elif category == "CASH_FLOW": table_name = "cash"
+            elif category == "EARNINGS": table_name = "earnings"
+            retrieve_new_data = await asyncFunc.check_for_new_earnings(symbol_id, table_name)
 
-        async with httpx.AsyncClient() as client:
-            for category in categories:
-                if category == "INCOME_STATEMENT": table_name = "income"
-                elif category == "BALANCE_SHEET": table_name = "balance"
-                elif category == "CASH_FLOW": table_name = "cash"
-                elif category == "EARNINGS": table_name = "earnings"
-                retrieve_new_data = await asyncFunc.check_for_new_earnings(symbol_id, table_name)
+            engine = app_state.engines[table_name]
+            
+            already_exists = await self._check_db_for_ticker(table_name, engine, ticker)
+            raw_engine = app_state.engines[f"RAW_{category}"]
+            
+            if retrieve_new_data or not already_exists:
+                raw_exists = await self._check_db_for_ticker(table_name, raw_engine, ticker)
 
-                engine = app_state.engines[table_name]
-               
-                already_exists = await self._check_db_for_ticker(table_name, engine, ticker)
-                raw_engine = app_state.engines[f"RAW_{category}"]
-                
-                if retrieve_new_data or not already_exists:
-                    raw_exists = await self._check_db_for_ticker(table_name, raw_engine, ticker)
-
-                    if not raw_exists or retrieve_new_data:
-                        await self.api_key.lock_key()
-                        try:
-                            url = f"https://www.alphavantage.co/query?function={category}&symbol={ticker}&apikey={self.api_key.key}"
-                            response = await client.get(url)
-                            data = response.json()
-                            if "Error Message" in data or "Information" in data:
-                                print(f"API Limit/Error for {ticker}: {data.get('Information', 'Unknown Error')}")
-                                return False
-                        except Exception as e:
-                            print(f"API Limit/Error for {ticker}: {e}")
+                if not raw_exists or retrieve_new_data:
+                    await self.api_key.lock_key()
+                    if self.api_key.rate_limited:
+                        await self.load_all_from_dbs()
+                        self.api_key.unlock_key()
+                        return
+                    try:
+                        url = f"https://www.alphavantage.co/query?function={category}&symbol={ticker}&apikey={self.api_key.key}"
+                        response = await client.get(url)
+                        data = response.json()
+                        if "Error Message" in data or "Information" in data:
+                            print(f"API Limit/Error for {ticker}: {data.get('Information', 'Unknown Error')}")
+                            self.api_key.rate_limit()
                             self.api_key.unlock_key()
-                            return False
-                        finally:
-                            await asyncio.sleep(1)
-                            self.api_key.unlock_key()
-                        try:
-                            # 3. Process Data
-                            if category != "EARNINGS":
-                                annual_df = pd.DataFrame(data["annualReports"])
-                                quarterly_df = pd.DataFrame(data["quarterlyReports"])
-                                
-                                annual_df = annual_df.rename(columns={'fiscalDateEnding': 'date'})
-                                quarterly_df = quarterly_df.rename(columns={'fiscalDateEnding': 'date'})
-                                
-                                # Clean and Scale (passing the correct date column name)
-                                annual_df = self._clean_financial_df(annual_df, date_col='date', scale=1_000_000)
-                                quarterly_df = self._clean_financial_df(quarterly_df, date_col='date', scale=1_000_000)
-                                
-                            else:
-                                annual_df = pd.DataFrame(data["annualEarnings"])
-                                quarterly_df = pd.DataFrame(data["quarterlyEarnings"])
-
-                                annual_df = annual_df.rename(columns={'fiscalDateEnding': 'date'})
-                                quarterly_df = quarterly_df.rename(columns={'fiscalDateEnding': 'date'})
-                                
-                            self.data[table_name]["annual"] = annual_df
-                            self.data[table_name]["quarterly"] = quarterly_df
-
-                            for df, r_type in [(annual_df, 'annual'), (quarterly_df, 'quarterly')]:
-                                df['ticker'] = ticker
-                                df['report_type'] = r_type
-                            combined_df = pd.concat([annual_df, quarterly_df], ignore_index=True, sort=False)
+                            await self.load_all_from_dbs()
+                            return
+                    except Exception as e:
+                        print(f"API Limit/Error for {ticker}: {e}")
+                        self.api_key.unlock_key()
+                        return False
+                    finally:
+                        await asyncio.sleep(1)
+                        self.api_key.unlock_key()
+                    try:
+                        # 3. Process Data
+                        if category != "EARNINGS":
+                            annual_df = pd.DataFrame(data["annualReports"])
+                            quarterly_df = pd.DataFrame(data["quarterlyReports"])
                             
-                            if 'fiscalDateEnding' in combined_df.columns:
-                                combined_df = combined_df.rename(columns={'fiscalDateEnding': 'date'})
+                            annual_df = annual_df.rename(columns={'fiscalDateEnding': 'date'})
+                            quarterly_df = quarterly_df.rename(columns={'fiscalDateEnding': 'date'})
                             
-                            async with raw_engine.connect() as conn:
-                                try:
-                                    await self._upsert_to_database(raw_engine, combined_df, table_name=table_name)
-                                   
-                                    new_max_date = quarterly_df['date'].max()
-                                    asyncFunc.max_fiscal_lookup[table_name][symbol_id] = new_max_date                                    
-                                except Exception as e:
-                                    print(f"Database table check failed for RAW_{category}.db: {e}")
-                                await conn.execute(text(f"DELETE FROM {table_name} WHERE ticker = :t"), {"t": self.ticker})
-                        except Exception as e:
-                            print(f"Error processing {category} for {ticker}: {e}")
-                            return False
-                    else:
-                        quarterly_df = await self._read_sql_to_df(table_name, engine=raw_engine, report_type="quarterly")
-                        annual_df = await self._read_sql_to_df(table_name, engine=raw_engine, report_type="annual")
+                            # Clean and Scale (passing the correct date column name)
+                            annual_df = self._clean_financial_df(annual_df, date_col='date', scale=1_000_000)
+                            quarterly_df = self._clean_financial_df(quarterly_df, date_col='date', scale=1_000_000)
+                            
+                        else:
+                            annual_df = pd.DataFrame(data["annualEarnings"])
+                            quarterly_df = pd.DataFrame(data["quarterlyEarnings"])
+
+                            annual_df = annual_df.rename(columns={'fiscalDateEnding': 'date'})
+                            quarterly_df = quarterly_df.rename(columns={'fiscalDateEnding': 'date'})
+                            
                         self.data[table_name]["annual"] = annual_df
-                        self.data[table_name]["quarterly"] = quarterly_df                
+                        self.data[table_name]["quarterly"] = quarterly_df
 
-        print(f"Loaded data for {ticker} from the api in {time.perf_counter() - start_fetch:.8f} seconds")
+                        for df, r_type in [(annual_df, 'annual'), (quarterly_df, 'quarterly')]:
+                            df['ticker'] = ticker
+                            df['report_type'] = r_type
+                        combined_df = pd.concat([annual_df, quarterly_df], ignore_index=True, sort=False)
+                        
+                        if 'fiscalDateEnding' in combined_df.columns:
+                            combined_df = combined_df.rename(columns={'fiscalDateEnding': 'date'})
+                        
+                        async with raw_engine.connect() as conn:
+                            try:
+                                await self._upsert_to_database(raw_engine, combined_df, table_name=table_name)
+                                
+                                new_max_date = quarterly_df['date'].max()
+                                asyncFunc.max_fiscal_lookup[table_name][symbol_id] = new_max_date                                    
+                            except Exception as e:
+                                print(f"Database table check failed for RAW_{category}.db: {e}")
+                            await conn.execute(text(f"DELETE FROM {table_name} WHERE ticker = :t"), {"t": self.ticker})
+                    except Exception as e:
+                        print(f"Error processing {category} for {ticker}: {e}")
+                        return False
+                else:
+                    quarterly_df = await self._read_sql_to_df(table_name, engine=raw_engine, report_type="quarterly")
+                    annual_df = await self._read_sql_to_df(table_name, engine=raw_engine, report_type="annual")
+                    self.data[table_name]["annual"] = annual_df
+                    self.data[table_name]["quarterly"] = quarterly_df                
+
         return True
     async def load_all_from_dbs(self):
         """
         Checks all 5 databases and loads existing data into self.data structure.
         Separates quarterly and annual data for financials.
         """
-        start_fetch = time.perf_counter()
-
-        ticker = self.ticker
+        await self.api_key.lock_key()
+        rate_limited = self.api_key.rate_limited
+        self.api_key.unlock_key()
         symbol_id = self.symbol_id
-        db_dir = os.getenv("DB_DIR", "/app/Database")
         
-        # Map dictionary keys to their specific database filenames
-        db_map = {
-            "income": "income_statement.db",
-            "balance": "balance_sheet.db",
-            "cash": "cash_flow.db",
-            "earnings": "earnings.db"
-        }
-
-        # 1. Load the 4 Financial/Time-Series Databases
-        for cat_key, db_file in db_map.items():
-            full_path = os.path.join(db_dir, db_file)
-            retrieve_new_data = await asyncFunc.check_for_new_earnings(symbol_id, cat_key)
-            if retrieve_new_data:
+        # 1. Parallelize the fetches
+        # Fetching from 5 files at once is faster than one by one
+        tasks = []
+        db_keys = ["income", "balance", "cash", "earnings", "overview"]
+        
+        for key in db_keys:
+            # Check if we actually need new data before bothering the DB
+            if key not in app_state.engines:
+                print(f"⚠️ Warning: Engine for '{key}' not found in app_state. Skipping.")
                 continue
+            if key != "overview":
+                if await asyncFunc.check_for_new_earnings(symbol_id, key) and not rate_limited:
+                    continue
+            tasks.append(self._fetch_category(key))
 
-            if not os.path.exists(full_path):
-                print(f"File not found: {full_path}") # Debug print
-                continue
-                
-            engine = app_state.engines[cat_key]
-            async with engine.connect() as conn:
-                try:
-                    check_sql = f"SELECT name FROM sqlite_master WHERE type='table' AND name='{cat_key}'"
-                    table_check = await conn.execute(text(check_sql))
-                    if table_check.fetchone():
-                        result = await conn.execute(
-                            text(f"SELECT * FROM {cat_key} WHERE ticker = :t"), {"t": ticker}
-                        )
-                        df = pd.DataFrame(result.fetchall(), columns=result.keys())
-                        
-                        if not df.empty:
-                            # Separate Quarterly and Annual into the internal dict
-                            # Use .copy() to ensure they are independent DataFrames in memory
-                            self.data[cat_key]["annual"] = df[df["report_type"] == "annual"].copy()
-                            self.data[cat_key]["quarterly"] = df[df["report_type"] == "quarterly"].copy()
-                except Exception as e:
-                    print(f"Database table check failed for {db_file}: {e}")
+        await asyncio.gather(*tasks)
 
-        # 2. Load the Company Overview (The 5th Database)
-        overview_db = "company_overviews.db"
-        full_path = os.path.join(db_dir, overview_db)
 
-        if os.path.exists(full_path):
-            engine = app_state.engines["overview"]
-            async with engine.connect() as conn:
-                try:
-                    # Note: Overview uses 'Symbol' instead of 'ticker' per your current schema
-                    result = await conn.execute(
-                        text(f"SELECT * FROM Overview WHERE Symbol = :t"), {"t": ticker}
-                    )
-                    overview_df = pd.DataFrame(result.fetchall(), columns=result.keys())
-                    if not overview_df.empty:
-                        self.data["overview"] = overview_df
-                except Exception:
-                    pass
+    async def _fetch_category(self, key):
+        engine = app_state.engines[key]
+        async with engine.connect() as conn:
+            # Querying by symbol_id hits the INDEX immediately
+            result = await conn.execute(
+                text(f"SELECT * FROM {key} WHERE symbol_id = :sid"), 
+                {"sid": self.symbol_id}
+            )
+            df = pd.DataFrame(result.fetchall(), columns=result.keys())
+            
+            if df.empty:
+                return
 
-        print(f"Data loaded for {ticker} from the db in {time.perf_counter() - start_fetch:.8f} seconds")
+            if key == "overview":
+                self.data["overview"] = df
+            else:
+                # Vectorized separation is faster than manual loops
+                self.data[key]["annual"] = df[df["report_type"] == "annual"]
+                self.data[key]["quarterly"] = df[df["report_type"] == "quarterly"]
     async def _check_db_for_ticker(self, table_name, engine, ticker):
         async with engine.connect() as conn:
             try:
@@ -587,35 +558,38 @@ class Company:
                 pass
 
         # 2. Fetch from API
-        async with httpx.AsyncClient() as client:
-            await self.api_key.lock_key()
-            try:
-                url = f"https://www.alphavantage.co/query?function=OVERVIEW&symbol={ticker}&apikey={self.api_key.key}"
-                response = await client.get(url)
-                data = response.json()
-
-                if "Error Message" in data or "Information" in data:
-                    print(f"API Error for {ticker}: RATE LIMIT EXCEEDED")
-                    return False
-                
-                if not data:
-                    print(f"No data found for {ticker}")
-                    return False
-            except Exception as e:
-                print(f"API Error for {ticker}: {e}")
+        client = app_state.httpx_client
+        await self.api_key.lock_key()
+        try:
+            url = f"https://www.alphavantage.co/query?function=OVERVIEW&symbol={ticker}&apikey={self.api_key.key}"
+            if self.api_key.rate_limited:
                 self.api_key.unlock_key()
                 return False
-            finally:
-                await asyncio.sleep(1)
-                self.api_key.unlock_key()
+            response = await client.get(url)
+            data = response.json()
 
-            new_df = pd.DataFrame([data])
-            start_idx = new_df.columns.get_loc("LatestQuarter") + 1
-
-            cols_to_fix = new_df.columns[start_idx:]
-
-            new_df[cols_to_fix] = new_df[cols_to_fix].apply(pd.to_numeric, errors='coerce')
+            if "Error Message" in data or "Information" in data:
+                print(f"API Error for {ticker}: RATE LIMIT EXCEEDED")
+                return False
             
+            if not data:
+                print(f"No data found for {ticker}")
+                return False
+        except Exception as e:
+            print(f"API Error for {ticker}: {e}")
+            self.api_key.unlock_key()
+            return False
+        finally:
+            await asyncio.sleep(1)
+            self.api_key.unlock_key()
+
+        new_df = pd.DataFrame([data])
+        start_idx = new_df.columns.get_loc("LatestQuarter") + 1
+
+        cols_to_fix = new_df.columns[start_idx:]
+
+        new_df[cols_to_fix] = new_df[cols_to_fix].apply(pd.to_numeric, errors='coerce')
+        
         # 4. Save to SQL (Asynchronously)
         def sync_save(sync_conn):
             new_df.to_sql("Overview", sync_conn, if_exists="append", index=False)
@@ -1293,9 +1267,10 @@ class Company:
         if exchange_rate_cache:
             rates_dict = exchange_rate_cache
         else:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(rate_url)
-                rates_dict = resp.json().get("conversion_rates", {})
+            client = app_state.httpx_client
+        
+            resp = await client.get(rate_url)
+            rates_dict = resp.json().get("conversion_rates", {})
 
             exchange_rate_cache = rates_dict
 
@@ -1324,25 +1299,30 @@ class Company:
         Final Flush: Persists data from the memory dictionary into 5 separate DB files.
         Handles 'Extra Columns' in annual data via automatic schema migration.
         """
-        start_save = time.perf_counter()
+        global max_fiscal_lookup
         db_map = ["income", "balance", "cash", "earnings"]
 
         # 1. Save the 4 Financial Databases
         for cat_key in db_map:
-            annual_df = self.data[cat_key]["annual"].copy()
-            quarterly_df = self.data[cat_key]["quarterly"].copy()
+            try:
+                annual_df = self.data[cat_key]["annual"]
+                quarterly_df = self.data[cat_key]["quarterly"]
+
+                latest_memory_date = pd.to_datetime(quarterly_df['date']).max()
+                cached_date = max_fiscal_lookup[cat_key].get(self.symbol_id)
             
-            df_to_save = pd.concat([annual_df, quarterly_df], ignore_index=True)
-            if df_to_save.empty:
-                continue
-
-            df_to_save["symbol_id"] = self.symbol_id
-
-            engine = app_state.engines[cat_key]
-            await self._upsert_to_database(engine, df_to_save, cat_key, pk_col="symbol_id")
+                if cached_date and latest_memory_date <= pd.to_datetime(cached_date):
+                    continue
+                
+                if not annual_df.empty or not quarterly_df.empty:
+                    df = pd.concat([annual_df, quarterly_df], ignore_index=True)
+                    df["symbol_id"] = self.symbol_id
+                    await self._upsert_to_database(app_state.engines[cat_key], df, cat_key)
+            except Exception as e:
+                print(f"--- Saving {cat_key} to DB Failed: {e} ---")
 
         if not self.data["overview"].empty:
-            overview_df = self.data["overview"].copy()
+            overview_df = self.data["overview"]
             
             # Inject calculated metrics
             overview_df["intrinsic_price"] = self.intrinsic_price
@@ -1352,61 +1332,25 @@ class Company:
             
             overview_df["symbol_id"] = self.symbol_id
             
-            overview_engine = app_state.engines["overview"]
-            
-            await self._upsert_to_database(overview_engine, overview_df, "Overview", pk_col="symbol_id")
+            await self._upsert_to_database(app_state.engines["overview"], overview_df, "overview")
 
-        end_save = time.perf_counter()
-        print(f"--- Save All to DB Time: {end_save - start_save} ---")
 
-    async def _upsert_to_database(self, engine, df, table_name, pk_col="symbol_id"):
+    async def _upsert_to_database(self, engine, df, table_name):
         """
         Handles Schema Evolution and prevents duplicates by using symbol_id.
         Ensures the transition from ticker strings to integer IDs is seamless.
         """
-        if pk_col == "symbol_id":
-            df["symbol_id"] = self.symbol_id
-
         async with engine.begin() as conn:
-            table_exists_res = await conn.execute(
-                text("SELECT name FROM sqlite_master WHERE type='table' AND name=:t"), 
-                {"t": table_name}
+            await conn.execute(
+                text(f"DELETE FROM {table_name} WHERE symbol_id = :sid"), 
+                {"sid": self.symbol_id}
             )
-            table_exists = table_exists_res.fetchone() is not None
-            
-            if table_exists:
-                existing_cols_res = await conn.execute(text(f"PRAGMA table_info({table_name})"))
-                existing_cols_info = existing_cols_res.fetchall()
-                existing_cols_lower = [row[1].lower() for row in existing_cols_info]
 
-                for col in df.columns:
-                    if col.lower() not in existing_cols_lower:
-                        if col.lower() == "symbol_id":
-                            dtype = "INTEGER"
-                        elif col.lower() in ["reportedcurrency", "report_type", "ticker", "symbol"]:
-                            dtype = "TEXT"
-                        else:
-                            dtype = "REAL"
-                        
-                        try:
-                            await conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {col} {dtype}"))
-                            print(f"Migration: Added column {col} ({dtype}) to {table_name}")
-                        except Exception as e:
-                            print(f"Column {col} add failed (likely case conflict): {e}")
-
-                delete_query = f"DELETE FROM {table_name} WHERE symbol_id = :sid"
-                params = {"sid": self.symbol_id}
-                
-                if "ticker" in existing_cols_lower:
-                    delete_query += " OR ticker = :t"
-                    params["t"] = self.ticker
-                elif "symbol" in existing_cols_lower: 
-                    delete_query += " OR Symbol = :t"
-                    params["t"] = self.ticker
-
-                await conn.execute(text(delete_query), params)
-            
-            def sync_save(sync_conn):                
-                df.to_sql(table_name, sync_conn, if_exists="append", index=False)
-            
-            await conn.run_sync(sync_save)
+            await conn.run_sync(lambda sync_conn: df.to_sql(
+                table_name, 
+                sync_conn, 
+                if_exists="append", 
+                index=False,
+                method="multi",
+                chunksize=500
+            ))

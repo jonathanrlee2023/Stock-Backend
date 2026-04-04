@@ -16,31 +16,6 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-type LivePrices struct {
-	sync.RWMutex
-	Prices map[string]MixedQuote
-}
-
-type OpenPositions struct {
-	sync.RWMutex
-	Positions map[int]map[string]OpenPositionDetails
-}
-
-type Balance struct {
-	Balance float64
-	Cash    float64
-}
-
-type PortfolioBalances struct {
-	sync.RWMutex
-	Balances map[int]*Balance
-}
-
-type Portfolio_IDs struct {
-	sync.RWMutex
-	IDs map[int]string
-}
-
 var GlobalPortfolio_IDs = &Portfolio_IDs{
 	IDs: make(map[int]string),
 }
@@ -57,6 +32,13 @@ var GlobalBalance = &PortfolioBalances{
 	Balances: make(map[int]*Balance),
 }
 
+var GlobalCompanyCache = &CompanyStatsCache{
+	Stats: make(map[string]CompanyStats),
+}
+
+var GlobalOptionExpiration = &OptionExpirationCache{
+	Stats: make(map[string]OptionExpiration),
+}
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
@@ -274,6 +256,7 @@ func WebsocketConnectHandler(hub *Hub, openDB, balanceDB, priceDB, trackerDB *sq
 	if clientID == "STOCK_CLIENT" {
 		Clients[clientID].IsWriting = false
 		SendOpenPositions(balanceDB, openDB, priceDB, trackerDB, Clients)
+		SendAllCached()
 		go HandleClientWrite(newClient, openDB, balanceDB, priceDB)
 	}
 
@@ -314,25 +297,41 @@ func ShutdownAllClients() {
 	}
 }
 
-func CompanyHandler(rdb *redis.Client, w http.ResponseWriter, r *http.Request) {
-	ticker := r.URL.Query().Get("ticker")
-	company_request := Company_Request{Symbol: ticker}
-	msg, err := json.Marshal(company_request)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+func SendAllCached() {
+	client := "STOCK_CLIENT"
+	GlobalCompanyCache.RLock()
+	for _, company := range GlobalCompanyCache.Stats {
+		if err := send(Clients[client], company); err != nil {
+			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
+			_ = Clients[client].Conn.WriteMessage(websocket.TextMessage, errMsg)
+			GlobalCompanyCache.RUnlock()
+			return
+		}
 	}
-	SendToRedis(msg, context.Background(), rdb, "Request_Channel")
+	GlobalCompanyCache.RUnlock()
+	GlobalOptionExpiration.RLock()
+	for _, option := range GlobalOptionExpiration.Stats {
+		if err := send(Clients[client], option); err != nil {
+			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
+			_ = Clients[client].Conn.WriteMessage(websocket.TextMessage, errMsg)
+			GlobalOptionExpiration.RUnlock()
+			return
+		}
+	}
+	GlobalOptionExpiration.RUnlock()
 }
 
 func HandleCompanyRead(msg redis.Message) {
-	var company Company_Stats
+	var company CompanyStats
 	payloadBytes := []byte(msg.Payload)
 	if err := json.Unmarshal(payloadBytes, &company); err != nil {
 		// If it’s not a quotes payload, skip or handle other message types here
 		log.Printf("Invalid quotes JSON from Python Client: %v", err)
 		return
 	}
+	GlobalCompanyCache.Lock()
+	GlobalCompanyCache.Stats[company.Symbol] = company
+	GlobalCompanyCache.Unlock()
 	client := "STOCK_CLIENT"
 	if Clients[client] == nil {
 		return
@@ -353,6 +352,10 @@ func HandleOptionRead(msg redis.Message) {
 		log.Printf("Invalid quotes JSON from Python Client: %v", err)
 		return
 	}
+
+	GlobalOptionExpiration.Lock()
+	GlobalOptionExpiration.Stats[option.Symbol] = option
+	GlobalOptionExpiration.Unlock()
 
 	client := "STOCK_CLIENT"
 	if Clients[client] == nil {
@@ -457,7 +460,38 @@ func StartOptionStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request
 // Sends a message to the python streamer to start a subscription to a certain stock
 func StartStockStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request) {
 	symbol := r.URL.Query().Get("symbol")
+	fmt.Println("StartStockStream:", symbol)
+	GlobalCompanyCache.Lock()
+	defer GlobalCompanyCache.Unlock()
+	if stats, ok := GlobalCompanyCache.Stats[symbol]; ok {
+		client := "STOCK_CLIENT"
+		if Clients[client] == nil {
+			return
+		}
 
+		if err := send(Clients[client], stats); err != nil {
+			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
+			_ = Clients[client].Conn.WriteMessage(websocket.TextMessage, errMsg)
+			return
+		}
+		delete(GlobalCompanyCache.Stats, symbol)
+	}
+	GlobalOptionExpiration.Lock()
+	defer GlobalOptionExpiration.Unlock()
+	if stats, ok := GlobalOptionExpiration.Stats[symbol]; ok {
+		client := "STOCK_CLIENT"
+		if Clients[client] == nil {
+			return
+		}
+
+		if err := send(Clients[client], stats); err != nil {
+			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
+			_ = Clients[client].Conn.WriteMessage(websocket.TextMessage, errMsg)
+			return
+		}
+		delete(GlobalOptionExpiration.Stats, symbol)
+		return
+	}
 	request := StockStreamRequest{
 		Symbol: symbol,
 	}

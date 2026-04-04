@@ -17,6 +17,7 @@ from companyClass import Company
 from dataloader import DataLoader
 import stream_func
 from cache import latest_quote, earnings_lookup, max_fiscal_lookup, symbol_cache
+from schemas import financial_schemas
 
 stream_started = False
 stream_lock = asyncio.Lock()
@@ -27,6 +28,7 @@ parsed_labels = ['Ask Price',  'Bid Price', 'Last Price', 'High Price', 'IV', 'D
 get_option_stats = itemgetter(*option_attributes)
 r = aioredis.Redis(host='redis', port=6379, db=0)
 db_dir = os.getenv("DB_DIR", "../Database")
+api_semaphore = asyncio.Semaphore(1)
 
 today = datetime.date.today()
 today_str = today.isoformat()
@@ -106,13 +108,12 @@ async def listen_for_messages(alpha_vantage_api_key, rate_api_key):
                             if not is_market_closed:
                                 asyncio.create_task(
                                     stream_func.start_stock_stream(
-                                        streamer=streamer,
                                         ticker=symbol,
                                     )
                                 )
                         await asyncio.gather(
-                            get_options_and_initial_quotes(symbol, client),
-                            handleCompany(client, alpha_vantage_api_key, rate_api_key, symbol)
+                            get_options_and_initial_quotes(symbol),
+                            handleCompany(alpha_vantage_api_key, rate_api_key, symbol)
                         )
                 except requests.exceptions.ReadTimeout:
                     print("Timeout connecting to Schwab API.")
@@ -177,6 +178,21 @@ async def init_db():
 
     return db
 
+
+async def init_financial_db():
+    for table, schema in financial_schemas.items():
+        engine = app_state.engines.get(table)
+        if not engine:
+            print(f"⚠️ Warning: No engine found for table '{table}'")
+            continue
+            
+        async with engine.begin() as conn:
+            try:
+                for statement in schema.split(';'):
+                    if statement.strip():
+                        await conn.execute(text(statement))
+            except Exception as e:
+                print(f"❌ Failed to initialize {table}: {e}")
 async def write_to_db():
     """
     Write data to the database. This function is designed to run in a loop and be called
@@ -361,7 +377,7 @@ async def init_tracker_db():
 
     return db
 
-async def update_tickers_from_db():
+async def update_tickers_from_db(api_manager, rate_api_key):
     """
     Updates the list of tickers to subscribe to from the database.
     
@@ -390,6 +406,7 @@ async def update_tickers_from_db():
         print("No tickers found in tracker.db")
         return
     tasks = []
+    companies = []
     if ticker_list:
         for ticker in ticker_list:
             if len(ticker) > 8: 
@@ -404,7 +421,8 @@ async def update_tickers_from_db():
                         type=parsed["type"]
                     ))
             else: # Stock logic
-                tasks.append(stream_func.start_stock_stream(streamer=streamer, ticker=ticker))
+                tasks.append(stream_func.start_stock_stream(ticker))
+                companies.append(ticker)
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
     
@@ -412,7 +430,20 @@ async def update_tickers_from_db():
             if isinstance(res, Exception):
                 print(f"Failed to subscribe to {ticker}: {res}")
 
-async def handleCompany(client, api_key, rate_key, ticker):
+        if companies:
+            tasks = []
+            for company in companies:
+                tasks.append(throttled_handle_company(api_manager, rate_api_key, company))
+                tasks.append(get_options_and_initial_quotes(company))
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+async def throttled_handle_company(api_manager, rate_api_key, ticker):
+    async with api_semaphore:
+        print(f"📡 Fetching data for {ticker}...")
+        await handleCompany(api_manager, rate_api_key, ticker)
+        return
+
+async def handleCompany(api_key, rate_key, ticker):
     """
     Handles a company request by fetching the company's data and publishing the final report to the Redis channel.
 
@@ -439,7 +470,7 @@ async def handleCompany(client, api_key, rate_key, ticker):
 
     del company
 
-async def get_options_and_initial_quotes(ticker, client):
+async def get_options_and_initial_quotes(ticker):
     """
     Fetches the one time data for a given ticker and publishes it to the "One_Time_Data_Channel" Redis channel.
 
@@ -454,8 +485,9 @@ async def get_options_and_initial_quotes(ticker, client):
     -------
     None
     """
+    client = app_state.client
     if symbol_cache.get(ticker) is None:
-        s_id = await get_symbol_id(ticker, client)
+        s_id = await get_symbol_id(ticker)
     else: s_id = symbol_cache[ticker]
     option_ids = stream_func.option_ids
     file_names = stream_func.file_names
@@ -549,16 +581,16 @@ async def get_earnings_dates(api_key):
             should_fetch = True
     await cache_all_max_dates()
     if should_fetch:
-        async with httpx.AsyncClient() as client:
-            await api_key.lock_key()
-            try:
-                url = f"https://www.alphavantage.co/query?function=EARNINGS_CALENDAR&horizon=3month&apikey={api_key.key}"
-                response = await client.get(url)
-            except Exception as e:
-                print(f"Error fetching earnings calendar: {e}")
-                return
-            finally:
-                api_key.unlock_key()
+        client = app_state.httpx_client
+        await api_key.lock_key()
+        try:
+            url = f"https://www.alphavantage.co/query?function=EARNINGS_CALENDAR&horizon=3month&apikey={api_key.key}"
+            response = await client.get(url)
+        except Exception as e:
+            print(f"Error fetching earnings calendar: {e}")
+            return
+        finally:
+            api_key.unlock_key()
         if response.status_code == 200:
             csv_data = io.StringIO(response.text)
             df = pd.read_csv(csv_data)

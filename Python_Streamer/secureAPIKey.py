@@ -5,6 +5,7 @@ class SecureAPIKey:
         self._key = initial_key
         # Switch to asyncio Lock
         self._lock = asyncio.Lock()
+        self.rate_limited = False
 
     async def lock_key(self):
         # Must use await here!
@@ -13,6 +14,9 @@ class SecureAPIKey:
     def unlock_key(self):
         if self._lock.locked():
             self._lock.release()
+
+    def rate_limit(self):
+        self.rate_limited = True
 
     @property
     def key(self):

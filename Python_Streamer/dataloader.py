@@ -162,6 +162,9 @@ class DataLoader:
         
         try:
             if needs_update:
+                start_ms += 86400000
+                if self.is_data_fresh(start_ms):
+                    return await self.get_price_history()
                 response = self.connection.price_history(
                     symbol=self.ticker,
                     periodType="year",
@@ -170,15 +173,14 @@ class DataLoader:
                 )
                 
                 if response.status_code != 200:
-                    print(f"API Error: Status {response.status_code}")
-                    return None
+                    print(f"API Error: Status {response.status_code} {response.content}")
+                    return await self.get_price_history()
                     
                 quotes = response.json()
                 new_candles = quotes.get('candles', [])
                 latest_quote[s_id] = quotes.get('previousCloseDate', 0)
-                
                 if not new_candles:
-                    return None                
+                    return await self.get_price_history()                
                 
                 raw_candles.extend(new_candles)
 
@@ -199,6 +201,33 @@ class DataLoader:
         except Exception as e:
             print(f"Price Database Error: {e}")
         return await self.get_price_history()
+    
+    def is_data_fresh(self, last_db_ts):
+        if not last_db_ts:
+            return False
+            
+        now = datetime.now()
+        last_date = datetime.fromtimestamp(last_db_ts / 1000.0).date()
+        today = now.date()
+        
+        # 1. If last entry is today, we are fresh (for Daily bars)
+        if last_date >= today:
+            return True
+            
+        # 2. Weekend Logic: If today is Saturday(5) or Sunday(6)
+        # and we have Friday's data, we are fresh.
+        weekday = now.weekday()
+        if weekday == 5: # Saturday
+            return last_date >= (today - timedelta(days=1))
+        if weekday == 6: # Sunday
+            return last_date >= (today - timedelta(days=2))
+            
+        # 3. Monday Morning Logic: If it's before market open (9:30 AM ET)
+        # and we have Friday's data, we are fresh.
+        if weekday == 0 and now.hour < 10: # Rough check for pre-market
+            return last_date >= (today - timedelta(days=3))
+
+        return False
     
     def get_quote(self):
         response = self.connection.quote(self.ticker).json()

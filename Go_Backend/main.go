@@ -103,9 +103,6 @@ func main() {
 	mux.HandleFunc("/closeTracker", func(w http.ResponseWriter, r *http.Request) {
 		utils.RemoveTrackerHandler(trackerDB, w, r)
 	})
-	mux.HandleFunc("/companyStats", func(w http.ResponseWriter, r *http.Request) {
-		utils.CompanyHandler(rdb, w, r)
-	})
 	mux.HandleFunc("/newPortfolio", func(w http.ResponseWriter, r *http.Request) {
 		utils.NewPortfolioHandler(balanceDB, openDB, w, r)
 	})

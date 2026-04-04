@@ -7,6 +7,7 @@ class AppState:
         self.cpu_executer = None
         self.client = None
         self.streamer = None
+        self.httpx_client = None
 
 # Instantiate it once
 app_state = AppState()
