@@ -16,7 +16,7 @@ from appState import app_state
 from companyClass import Company
 from dataloader import DataLoader
 import stream_func
-from cache import latest_quote, earnings_lookup, max_fiscal_lookup, symbol_cache
+from cache import latest_quote, earnings_lookup, max_fiscal_lookup, symbol_cache, last_checked_cache
 from schemas import financial_schemas
 
 stream_started = False
@@ -28,7 +28,8 @@ parsed_labels = ['Ask Price',  'Bid Price', 'Last Price', 'High Price', 'IV', 'D
 get_option_stats = itemgetter(*option_attributes)
 r = aioredis.Redis(host='redis', port=6379, db=0)
 db_dir = os.getenv("DB_DIR", "../Database")
-api_semaphore = asyncio.Semaphore(1)
+alpha_vantage_semaphore = asyncio.Semaphore(1)
+schwab_api_semaphore = asyncio.Semaphore(5)
 
 today = datetime.date.today()
 today_str = today.isoformat()
@@ -174,6 +175,20 @@ async def init_db():
 
     await db.execute("CREATE INDEX IF NOT EXISTS idx_options_symbol ON Options (symbol_id, timestamp)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_stocks_symbol ON Stocks (symbol_id, timestamp)")
+    await db.commit()
+
+    return db
+
+async def init_last_checked_db():
+    db_path = os.path.join(db_dir, 'LastChecked.db')
+    db = await aiosqlite.connect(db_path)
+    await db.execute("PRAGMA journal_mode=WAL")
+    await db.execute("PRAGMA synchronous=NORMAL")
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS last_checked (
+            symbol_id INTEGER PRIMARY KEY, last_checked_date DATE
+        )
+    """)
     await db.commit()
 
     return db
@@ -397,7 +412,6 @@ async def update_tickers_from_db(api_manager, rate_api_key):
     None
     """
     db = app_state.tracker_db
-    streamer = app_state.streamer
     async with db.execute("SELECT id FROM tracker") as cursor:
         rows = await cursor.fetchall()
         ticker_list = [row[0] for row in rows]
@@ -407,40 +421,53 @@ async def update_tickers_from_db(api_manager, rate_api_key):
         return
     tasks = []
     companies = []
-    if ticker_list:
-        for ticker in ticker_list:
-            if len(ticker) > 8: 
-                parsed = stream_func.parse_option(ticker)
-                if parsed:
-                    tasks.append(stream_func.start_options_stream(
-                        ticker=parsed["ticker"],
-                        price=parsed["price"],
-                        day=parsed["day"],
-                        month=parsed["month"],
-                        year=parsed["year"],
-                        type=parsed["type"]
-                    ))
-            else: # Stock logic
-                tasks.append(stream_func.start_stock_stream(ticker))
-                companies.append(ticker)
+    valid_tickers = []
+    for ticker in ticker_list:
+        if len(ticker) > 8: 
+            parsed = stream_func.parse_option(ticker)
+            if parsed:
+                tasks.append(stream_func.start_options_stream(
+                    ticker=parsed["ticker"],
+                    price=parsed["price"],
+                    day=parsed["day"],
+                    month=parsed["month"],
+                    year=parsed["year"],
+                    type=parsed["type"]
+                ))
+                valid_tickers.append(ticker)
+        else: 
+            tasks.append(stream_func.start_stock_stream(ticker))
+            companies.append(ticker)
+            valid_tickers.append(ticker)
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-    
-        for ticker, res in zip(ticker_list, results):
-            if isinstance(res, Exception):
-                print(f"Failed to subscribe to {ticker}: {res}")
+    results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        if companies:
-            tasks = []
-            for company in companies:
-                tasks.append(throttled_handle_company(api_manager, rate_api_key, company))
-                tasks.append(get_options_and_initial_quotes(company))
-            await asyncio.gather(*tasks, return_exceptions=True)
+    for ticker, res in zip(valid_tickers, results):
+        if isinstance(res, Exception):
+            print(f"Failed to subscribe to {ticker}: {res}")
+
+    if not companies:
+        return
+    tasks = []
+    schwab_tasks = [throttled_get_options_and_initial_quotes(c) for c in companies]
+    await asyncio.gather(*schwab_tasks, return_exceptions=True)
+
+    # Phase 3: Alpha Vantage fundamentals (slow, serialized)
+    av_tasks = [throttled_handle_company(api_manager, rate_api_key, c) for c in companies]
+    await asyncio.gather(*av_tasks, return_exceptions=True)
 
 async def throttled_handle_company(api_manager, rate_api_key, ticker):
-    async with api_semaphore:
-        print(f"📡 Fetching data for {ticker}...")
+    async with alpha_vantage_semaphore:
+        print(f"📡 Fetching company data for {ticker}...")
         await handleCompany(api_manager, rate_api_key, ticker)
+        await asyncio.sleep(0.1)
+        return
+    
+async def throttled_get_options_and_initial_quotes(ticker):
+    async with schwab_api_semaphore:
+        print(f"📡 Fetching initial data for {ticker}...")
+        await get_options_and_initial_quotes(ticker)
+
         return
 
 async def handleCompany(api_key, rate_key, ticker):
@@ -663,7 +690,25 @@ async def check_for_new_earnings(symbol_id, table) -> bool:
     global max_fiscal_lookup
     # start = time.perf_counter()
     global today
+    global last_checked_cache
+
+    if symbol_id in last_checked_cache:
+        last_checked_date = last_checked_cache[symbol_id]
+        
+        days_since_check = (today - last_checked_date).days
+        
+        if days_since_check < 7:
+            return False
     
+    last_checked_cache[symbol_id] = today
+    try:
+        await app_state.last_checked_db.execute(
+            "INSERT OR REPLACE INTO last_checked (symbol_id, last_checked_date) VALUES (?, ?)",
+            (symbol_id, today.isoformat())
+        )
+        await app_state.last_checked_db.commit()
+    except Exception as e:
+        print(f"Error updating last checked date for symbol_id {symbol_id}: {e}")
     last_local_fiscal = max_fiscal_lookup[table].get(symbol_id, None)
 
     if last_local_fiscal is None:
@@ -725,3 +770,10 @@ async def cache_symbol_ids():
         symbol_cache.update(dict(result))
 
     return
+
+async def last_checked_cacher():
+    db = app_state.last_checked_db
+    global last_checked_cache
+    async with db.execute("SELECT symbol_id, last_checked_date FROM last_checked") as cursor:
+        rows = await cursor.fetchall()
+        last_checked_cache = dict(rows)

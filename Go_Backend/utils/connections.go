@@ -298,27 +298,36 @@ func ShutdownAllClients() {
 }
 
 func SendAllCached() {
-	client := "STOCK_CLIENT"
+	client := Clients["STOCK_CLIENT"]
+	GlobalOpenPositions.RLock()
+	defer GlobalOpenPositions.RUnlock()
 	GlobalCompanyCache.RLock()
-	for _, company := range GlobalCompanyCache.Stats {
-		if err := send(Clients[client], company); err != nil {
-			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-			_ = Clients[client].Conn.WriteMessage(websocket.TextMessage, errMsg)
-			GlobalCompanyCache.RUnlock()
-			return
-		}
-	}
-	GlobalCompanyCache.RUnlock()
+	defer GlobalCompanyCache.RUnlock()
 	GlobalOptionExpiration.RLock()
-	for _, option := range GlobalOptionExpiration.Stats {
-		if err := send(Clients[client], option); err != nil {
-			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-			_ = Clients[client].Conn.WriteMessage(websocket.TextMessage, errMsg)
-			GlobalOptionExpiration.RUnlock()
-			return
+	defer GlobalOptionExpiration.RUnlock()
+
+	checked := make(map[string]struct{})
+	for _, positions := range GlobalOpenPositions.Positions {
+		for symbol := range positions {
+			if _, ok := checked[symbol]; !ok {
+				checked[symbol] = struct{}{}
+				if stats, ok := GlobalCompanyCache.Stats[symbol]; ok {
+					if err := send(client, stats); err != nil {
+						errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
+						_ = client.SafeWrite(websocket.TextMessage, errMsg)
+						return
+					}
+				}
+				if stats, ok := GlobalOptionExpiration.Stats[symbol]; ok {
+					if err := send(client, stats); err != nil {
+						errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
+						_ = client.SafeWrite(websocket.TextMessage, errMsg)
+						return
+					}
+				}	
+			}
 		}
 	}
-	GlobalOptionExpiration.RUnlock()
 }
 
 func HandleCompanyRead(msg redis.Message) {
@@ -339,7 +348,7 @@ func HandleCompanyRead(msg redis.Message) {
 
 	if err := send(Clients[client], company); err != nil {
 		errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-		_ = Clients[client].Conn.WriteMessage(websocket.TextMessage, errMsg)
+		_ = Clients[client].SafeWrite(websocket.TextMessage, errMsg)
 		return
 	}
 }
@@ -363,7 +372,7 @@ func HandleOptionRead(msg redis.Message) {
 	}
 	if err := send(Clients[client], option); err != nil {
 		errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-		_ = Clients[client].Conn.WriteMessage(websocket.TextMessage, errMsg)
+		_ = Clients[client].SafeWrite(websocket.TextMessage, errMsg)
 		return
 	}
 }
@@ -460,18 +469,13 @@ func StartOptionStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request
 // Sends a message to the python streamer to start a subscription to a certain stock
 func StartStockStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request) {
 	symbol := r.URL.Query().Get("symbol")
-	fmt.Println("StartStockStream:", symbol)
+	client := Clients["STOCK_CLIENT"]
 	GlobalCompanyCache.Lock()
 	defer GlobalCompanyCache.Unlock()
 	if stats, ok := GlobalCompanyCache.Stats[symbol]; ok {
-		client := "STOCK_CLIENT"
-		if Clients[client] == nil {
-			return
-		}
-
-		if err := send(Clients[client], stats); err != nil {
+		if err := send(client, stats); err != nil {
 			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-			_ = Clients[client].Conn.WriteMessage(websocket.TextMessage, errMsg)
+			_ = client.SafeWrite(websocket.TextMessage, errMsg)
 			return
 		}
 		delete(GlobalCompanyCache.Stats, symbol)
@@ -479,14 +483,9 @@ func StartStockStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request)
 	GlobalOptionExpiration.Lock()
 	defer GlobalOptionExpiration.Unlock()
 	if stats, ok := GlobalOptionExpiration.Stats[symbol]; ok {
-		client := "STOCK_CLIENT"
-		if Clients[client] == nil {
-			return
-		}
-
-		if err := send(Clients[client], stats); err != nil {
+		if err := send(client, stats); err != nil {
 			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-			_ = Clients[client].Conn.WriteMessage(websocket.TextMessage, errMsg)
+			_ = client.SafeWrite(websocket.TextMessage, errMsg)
 			return
 		}
 		delete(GlobalOptionExpiration.Stats, symbol)
@@ -573,14 +572,14 @@ func ProcessWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 	if len(optionPrices) > 0 {
 		if err := send(client, optionPrices); err != nil {
 			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-			_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
+			_ = client.SafeWrite(websocket.TextMessage, errMsg)
 			return
 		}
 	}
 	if len(stockPrices) > 0 {
 		if err := send(client, stockPrices); err != nil {
 			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-			_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
+			_ = client.SafeWrite(websocket.TextMessage, errMsg)
 			return
 		}
 	}
@@ -632,7 +631,7 @@ func ProcessWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 		}
 		if err := send(client, message); err != nil {
 			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-			_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
+			_ = client.SafeWrite(websocket.TextMessage, errMsg)
 			return
 		}
 		

@@ -6,6 +6,7 @@ import schwabdev
 import os
 from dotenv import load_dotenv
 from appState import app_state
+from cache import last_checked_cache
 
 
 class DataLoader:
@@ -89,7 +90,7 @@ class DataLoader:
             # One year ago in milliseconds
             one_year_ago_ms = int((time.time() - (365 * 24 * 60 * 60)) * 1000)
 
-            response = self.connection.price_history(
+            response = await asyncio.to_thread(self.connection.price_history,
                 symbol=self.ticker,
                 periodType="year",
                 frequencyType="daily",
@@ -206,10 +207,17 @@ class DataLoader:
         if not last_db_ts:
             return False
             
-        now = datetime.now()
+        global last_checked_cache
+        if self.symbol_id in last_checked_cache:
+            last_checked_date = last_checked_cache[self.symbol_id]
+            
+            days_since_check = (today - last_checked_date).days
+            
+            if days_since_check < 7:
+                return False
         last_date = datetime.fromtimestamp(last_db_ts / 1000.0).date()
-        today = now.date()
-        
+        now = datetime.now()   
+        today = now.date()     
         # 1. If last entry is today, we are fresh (for Daily bars)
         if last_date >= today:
             return True

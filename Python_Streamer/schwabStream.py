@@ -52,6 +52,7 @@ async def init_app_state(db_dir):
     app_state.price_db = await asyncFunc.init_db()
     app_state.earnings_db = await asyncFunc.init_earnings_db()
     app_state.tracker_db = await asyncFunc.init_tracker_db()
+    app_state.last_checked_db = await asyncFunc.init_last_checked_db()
 
     await asyncFunc.init_financial_db()
 
@@ -111,7 +112,8 @@ async def main():
         asyncio.create_task(asyncFunc.write_to_db()),
         asyncio.create_task(asyncFunc.stream_options()),
         asyncio.create_task(asyncFunc.get_earnings_dates(api_manager)),
-        asyncio.create_task(asyncFunc.get_recent_quote_time())
+        asyncio.create_task(asyncFunc.get_recent_quote_time()),
+        asyncio.create_task(asyncFunc.last_checked_cacher())
     ]
 
     try:
