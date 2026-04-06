@@ -16,7 +16,7 @@ from appState import app_state
 from companyClass import Company
 from dataloader import DataLoader
 import stream_func
-from cache import latest_quote, earnings_lookup, max_fiscal_lookup, symbol_cache, last_checked_cache
+from cache import latest_quote, earnings_lookup, max_fiscal_lookup, symbol_cache, last_checked_cache, POPULAR_ETFS
 from schemas import financial_schemas
 
 stream_started = False
@@ -489,11 +489,18 @@ async def handleCompany(api_key, rate_key, ticker):
     -------
     None
     """
-    company = await Company.create(ticker=ticker, api_key=api_key, rate_api_key=rate_key)
-    if company is None:
-        print("Company data not fetched properly")
+    if ticker in POPULAR_ETFS:
+        print(f"⚠️ Skipping {ticker} as it's a popular ETF with no financials.")
         return
-    await r.publish("Company_Channel", orjson.dumps(company.final_report))
+    try:
+        company = await Company.create(ticker=ticker, api_key=api_key, rate_api_key=rate_key)
+        if company is None:
+            print("Company data not fetched properly")
+            return
+    
+        await r.publish("Company_Channel", orjson.dumps(company.final_report))
+    except Exception as e:
+        print(f"Error publishing company data for {ticker}: {e}")
 
     del company
 
@@ -522,14 +529,17 @@ async def get_options_and_initial_quotes(ticker):
     put_option_id_list = []
     
     loader = DataLoader(ticker=ticker, symbol_id=s_id, connection=client)
+    try:
+        tasks = [
+            asyncio.to_thread(loader.get_quote),
+            loader.get_recent_price_history(), 
+            asyncio.to_thread(loader.get_option_expirations)
+        ]
 
-    tasks = [
-        asyncio.to_thread(loader.get_quote),
-        loader.get_recent_price_history(), 
-        asyncio.to_thread(loader.get_option_expirations)
-    ]
-
-    quote, price_history, (call_option_id_list, put_option_id_list) = await asyncio.gather(*tasks)
+        quote, price_history, (call_option_id_list, put_option_id_list) = await asyncio.gather(*tasks)
+    except Exception as e:
+        print(f"Error fetching initial data for {ticker}: {e}")
+        return
 
     all_options = call_option_id_list + put_option_id_list
     option_ids.extend(all_options)
@@ -694,6 +704,11 @@ async def check_for_new_earnings(symbol_id, table) -> bool:
 
     if symbol_id in last_checked_cache:
         last_checked_date = last_checked_cache[symbol_id]
+
+        if isinstance(last_checked_date, str):
+            last_checked_date = datetime.date.fromisoformat(last_checked_date)
+        else:
+            last_checked_date = last_checked_date
         
         days_since_check = (today - last_checked_date).days
         

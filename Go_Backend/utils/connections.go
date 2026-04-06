@@ -16,30 +16,6 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-var GlobalPortfolio_IDs = &Portfolio_IDs{
-	IDs: make(map[int]string),
-}
-
-var GlobalPrices = &LivePrices{
-	Prices: make(map[string]MixedQuote),
-}
-
-var GlobalOpenPositions = &OpenPositions{
-	Positions: make(map[int]map[string]OpenPositionDetails),
-}
- 
-var GlobalBalance = &PortfolioBalances{
-	Balances: make(map[int]*Balance),
-}
-
-var GlobalCompanyCache = &CompanyStatsCache{
-	Stats: make(map[string]CompanyStats),
-}
-
-var GlobalOptionExpiration = &OptionExpirationCache{
-	Stats: make(map[string]OptionExpiration),
-}
-
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		return true // allow all connections; adjust for production!
@@ -305,6 +281,8 @@ func SendAllCached() {
 	defer GlobalCompanyCache.RUnlock()
 	GlobalOptionExpiration.RLock()
 	defer GlobalOptionExpiration.RUnlock()
+	GlobalCacheLimit.Lock()
+	defer GlobalCacheLimit.Unlock()
 
 	checked := make(map[string]struct{})
 	for _, positions := range GlobalOpenPositions.Positions {
@@ -323,11 +301,17 @@ func SendAllCached() {
 						errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
 						_ = client.SafeWrite(websocket.TextMessage, errMsg)
 						return
+					} else {
 					}
 				}	
+				GlobalCacheLimit.Queue = append(GlobalCacheLimit.Queue, symbol)
+				if _, exists := GlobalCacheLimit.InQueue[symbol]; !exists {
+					GlobalCacheLimit.InQueue[symbol] = struct{}{}
+					GlobalCacheLimit.Queue = append(GlobalCacheLimit.Queue, symbol)
+				}
 			}
 		}
-	}
+	}	
 }
 
 func HandleCompanyRead(msg redis.Message) {
@@ -340,7 +324,20 @@ func HandleCompanyRead(msg redis.Message) {
 	}
 	GlobalCompanyCache.Lock()
 	GlobalCompanyCache.Stats[company.Symbol] = company
+
+	GlobalCacheLimit.Lock()
+	if _, exists := GlobalCacheLimit.InQueue[company.Symbol]; !exists {
+		GlobalCacheLimit.InQueue[company.Symbol] = struct{}{}
+		GlobalCacheLimit.Queue = append(GlobalCacheLimit.Queue, company.Symbol)
+		if len(GlobalCacheLimit.Queue) > GlobalCacheLimit.Limit {
+			oldest := GlobalCacheLimit.Queue[0]
+			GlobalCacheLimit.Queue = GlobalCacheLimit.Queue[1:]
+			delete(GlobalCompanyCache.Stats, oldest)
+		}
+	}
+	
 	GlobalCompanyCache.Unlock()
+	GlobalCacheLimit.Unlock()
 	client := "STOCK_CLIENT"
 	if Clients[client] == nil {
 		return
@@ -364,7 +361,20 @@ func HandleOptionRead(msg redis.Message) {
 
 	GlobalOptionExpiration.Lock()
 	GlobalOptionExpiration.Stats[option.Symbol] = option
+
+	GlobalCacheLimit.Lock()
+	if _, exists := GlobalCacheLimit.InQueue[option.Symbol]; !exists {
+		GlobalCacheLimit.InQueue[option.Symbol] = struct{}{}
+		GlobalCacheLimit.Queue = append(GlobalCacheLimit.Queue, option.Symbol)
+		if len(GlobalCacheLimit.Queue) > GlobalCacheLimit.Limit {
+			oldest := GlobalCacheLimit.Queue[0]
+			GlobalCacheLimit.Queue = GlobalCacheLimit.Queue[len(GlobalCacheLimit.Queue) - GlobalCacheLimit.Limit:]
+			delete(GlobalCompanyCache.Stats, oldest)
+		}
+	}
 	GlobalOptionExpiration.Unlock()
+
+	GlobalCacheLimit.Unlock()
 
 	client := "STOCK_CLIENT"
 	if Clients[client] == nil {
@@ -478,7 +488,6 @@ func StartStockStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request)
 			_ = client.SafeWrite(websocket.TextMessage, errMsg)
 			return
 		}
-		delete(GlobalCompanyCache.Stats, symbol)
 	}
 	GlobalOptionExpiration.Lock()
 	defer GlobalOptionExpiration.Unlock()
@@ -488,7 +497,6 @@ func StartStockStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request)
 			_ = client.SafeWrite(websocket.TextMessage, errMsg)
 			return
 		}
-		delete(GlobalOptionExpiration.Stats, symbol)
 		return
 	}
 	request := StockStreamRequest{

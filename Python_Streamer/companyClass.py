@@ -387,12 +387,10 @@ class Company:
                         if "Error Message" in data or "Information" in data:
                             print(f"API Limit/Error for {ticker}: {data.get('Information', 'Unknown Error')}")
                             self.api_key.rate_limit()
-                            self.api_key.unlock_key()
                             await self.load_all_from_dbs()
                             return
                     except Exception as e:
                         print(f"API Limit/Error for {ticker}: {e}")
-                        self.api_key.unlock_key()
                         return False
                     finally:
                         await asyncio.sleep(1)
@@ -428,15 +426,13 @@ class Company:
                         if 'fiscalDateEnding' in combined_df.columns:
                             combined_df = combined_df.rename(columns={'fiscalDateEnding': 'date'})
                         
-                        async with raw_engine.connect() as conn:
-                            try:
-                                await self._upsert_to_database(raw_engine, combined_df, table_name=table_name)
-                                
-                                new_max_date = quarterly_df['date'].max()
-                                asyncFunc.max_fiscal_lookup[table_name][symbol_id] = new_max_date                                    
-                            except Exception as e:
-                                print(f"Database table check failed for RAW_{category}.db: {e}")
-                            await conn.execute(text(f"DELETE FROM {table_name} WHERE ticker = :t"), {"t": self.ticker})
+                        try:
+                            await self._upsert_to_database(raw_engine, combined_df, table_name=table_name)
+                            
+                            new_max_date = quarterly_df['date'].max()
+                            asyncFunc.max_fiscal_lookup[table_name][symbol_id] = new_max_date                                    
+                        except Exception as e:
+                            print(f"Database table check failed for RAW_{category}.db: {e}")
                     except Exception as e:
                         print(f"Error processing {category} for {ticker}: {e}")
                         return False
@@ -452,9 +448,14 @@ class Company:
         Checks all 5 databases and loads existing data into self.data structure.
         Separates quarterly and annual data for financials.
         """
-        await self.api_key.lock_key()
-        rate_limited = self.api_key.rate_limited
-        self.api_key.unlock_key()
+        rate_limited = False
+        if self.api_key.rate_limited:
+            rate_limited = True
+        else:
+            async with self.api_key._lock:
+                if self.api_key.rate_limited:
+                    rate_limited = True
+        
         symbol_id = self.symbol_id
         
         # 1. Parallelize the fetches

@@ -8,7 +8,11 @@ from dotenv import load_dotenv
 from appState import app_state
 from cache import last_checked_cache
 
-
+HOLIDAYS = {
+    "2026-01-01", "2026-01-19", "2026-02-16", 
+    "2026-04-03", "2026-05-25", "2026-06-19", 
+    "2026-07-03", "2026-09-07", "2026-11-26", "2026-12-25"
+}
 class DataLoader:
     def __init__(self, ticker, symbol_id, connection, fiscalDate=None):
         self.fiscalDate = fiscalDate
@@ -81,7 +85,6 @@ class DataLoader:
                     {"timestamp": r[0], "open": r[1], "high": r[2], "low": r[3], "close": r[4], "volume": r[5]} 
                     for r in rows
                 ]
-                print(f"Loaded {self.ticker} history from Cache (DB)")
                 return price_history
         except Exception as e:
             print(f"Price Database Error: {e}")
@@ -150,7 +153,6 @@ class DataLoader:
             if row:
                 start_ms = row[0]
             else:
-                print("No rows found") 
                 raw_candles = await self.get_price_history()           
         date_start = datetime.fromtimestamp(start_ms / 1000.0).date()
         date_today = datetime.fromtimestamp(today_ms / 1000.0).date()
@@ -158,14 +160,14 @@ class DataLoader:
         if date_start == date_today:
             raw_candles = await self.get_price_history()
         else:
+            start_ms += 86400000
+            if self.is_data_fresh(start_ms):
+                return await self.get_price_history()
             print(f"Updating {self.ticker} history from {date_start} to {date_today}")
             needs_update = True
         
         try:
             if needs_update:
-                start_ms += 86400000
-                if self.is_data_fresh(start_ms):
-                    return await self.get_price_history()
                 response = self.connection.price_history(
                     symbol=self.ticker,
                     periodType="year",
@@ -203,37 +205,46 @@ class DataLoader:
             print(f"Price Database Error: {e}")
         return await self.get_price_history()
     
+    def get_last_trading_day(self, target_date):
+        """Finds the most recent day the market should have been open."""
+        if isinstance(target_date, str):
+            check_date = datetime.fromisoformat(target_date).date()
+        else:
+            check_date = target_date
+        # If it's early Monday morning, start looking from yesterday (Sunday)
+        if datetime.now().hour < 10 and check_date.weekday() == 0:
+            check_date -= timedelta(days=1)
+
+        while True:
+            # If it's a weekend (Sat=5, Sun=6) or a holiday, keep looking back
+            if check_date.weekday() >= 5 or check_date.isoformat() in HOLIDAYS:
+                check_date -= timedelta(days=1)
+            else:
+                return check_date
+    
     def is_data_fresh(self, last_db_ts):
         if not last_db_ts:
             return False
             
         global last_checked_cache
+        now = datetime.now()   
+        today = now.date()
+        
         if self.symbol_id in last_checked_cache:
             last_checked_date = last_checked_cache[self.symbol_id]
-            
-            days_since_check = (today - last_checked_date).days
-            
-            if days_since_check < 7:
-                return False
-        last_date = datetime.fromtimestamp(last_db_ts / 1000.0).date()
-        now = datetime.now()   
-        today = now.date()     
-        # 1. If last entry is today, we are fresh (for Daily bars)
-        if last_date >= today:
+            if isinstance(last_checked_date, str):
+                last_checked_date = datetime.fromisoformat(last_checked_date).date()
+            else:
+                last_checked_date = last_checked_date
+            if (today - last_checked_date).days < 3:
+                return True 
+
+        last_stored_date = datetime.fromtimestamp(last_db_ts / 1000.0).date()
+        expected_latest_date = self.get_last_trading_day(today)
+
+        if last_stored_date >= expected_latest_date:
+            print(f"✅ {self.ticker} is fresh. Last trading day was {expected_latest_date}")
             return True
-            
-        # 2. Weekend Logic: If today is Saturday(5) or Sunday(6)
-        # and we have Friday's data, we are fresh.
-        weekday = now.weekday()
-        if weekday == 5: # Saturday
-            return last_date >= (today - timedelta(days=1))
-        if weekday == 6: # Sunday
-            return last_date >= (today - timedelta(days=2))
-            
-        # 3. Monday Morning Logic: If it's before market open (9:30 AM ET)
-        # and we have Friday's data, we are fresh.
-        if weekday == 0 and now.hour < 10: # Rough check for pre-market
-            return last_date >= (today - timedelta(days=3))
 
         return False
     

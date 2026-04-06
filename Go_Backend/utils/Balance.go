@@ -3,7 +3,6 @@ package utils
 import (
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"log"
 	"time"
 
@@ -116,8 +115,6 @@ func GetMostRecentBalance(balanceDB *sql.DB) map[int]float64 {
 			_ = client.Conn.WriteMessage(websocket.TextMessage, errMsg)
 		}
 	}
-
-	fmt.Println("finished")
 
 	return recentBalances
 }

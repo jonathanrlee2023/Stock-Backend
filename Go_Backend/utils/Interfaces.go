@@ -375,3 +375,10 @@ type OptionExpirationCache struct {
 	sync.RWMutex
 	Stats map[string]OptionExpiration
 }
+
+type CacheLimit struct {
+	sync.RWMutex
+	Limit int
+	Queue []string
+	InQueue map[string]struct{}
+}

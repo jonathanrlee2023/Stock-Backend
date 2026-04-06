@@ -3,7 +3,6 @@ package utils
 import (
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"math"
@@ -113,7 +112,6 @@ func OpenSharesPositionHandler(openDB, balanceDB *sql.DB, w http.ResponseWriter,
 		totalCost := (extPrice * float64(extAmount)) + (newPosition.Price * float64(newPosition.Amount))
 		updatedAmount := extAmount + newPosition.Amount
 		updatedPrice := math.Round((totalCost/float64(updatedAmount))*100) / 100
-		fmt.Println(extAmount, extPrice, totalCost, updatedAmount, updatedPrice)
 		_, err = openDB.Exec("UPDATE OpenPositions SET price = ?, amount = ? WHERE id = ? AND portfolio_id = ?", updatedPrice, updatedAmount, newPosition.ID, newPosition.PortfolioID)
 		GlobalOpenPositions.Positions[newPosition.PortfolioID][newPosition.ID] = OpenPositionDetails{
 			Price:  updatedPrice,

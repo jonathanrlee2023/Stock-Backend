@@ -98,7 +98,7 @@ async def main():
     app_state.client = schwabdev.Client(app_key=appKey, app_secret=appSecret, tokens_db='/app/Database/tokens.json')
     app_state.streamer = schwabdev.Stream(app_state.client)
     app_state.httpx_client = httpx.AsyncClient(
-        timeout=httpx.Timeout(30.0),
+        timeout=httpx.Timeout(5.0),
         limits=httpx.Limits(max_connections=20, max_keepalive_connections=10)
     )
 
