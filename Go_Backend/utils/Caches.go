@@ -29,3 +29,7 @@ var GlobalCacheLimit = &CacheLimit{
 	Queue:   []string{},
 	InQueue: make(map[string]struct{}),
 }
+
+var GlobalUserID = &UserID{
+	ID: 0,
+}

@@ -36,26 +36,26 @@ func main() {
 
 	priceDB, err := utils.InitDB(priceDBPath)
 	if err != nil {
-		log.Fatalf("Error initializing database: %v", err)
+		log.Printf("Error initializing database: %v", err)
 	}
 	openDB, err := utils.InitDB(openDBPath)
 	if err != nil {
-		log.Fatalf("Error initializing database: %v", err)
+		log.Printf("Error initializing database: %v", err)
 	}
 	balanceDB, err := utils.InitDB(balanceDBPath)
 	if err != nil {
-		log.Fatalf("Error initializing database: %v", err)
+		log.Printf("Error initializing database: %v", err)
 	}
 	closeDB, err := utils.InitDB(closeDBPath)
 	if err != nil {
-		log.Fatalf("Error initializing database: %v", err)
+		log.Printf("Error initializing database: %v", err)
 	}
 	trackerDB, err := utils.InitDB(trackerDBPath)
 
 	if err != nil {
-		log.Fatalf("Error initializing database: %v", err)
+		log.Printf("Error initializing database: %v", err)
 	}
-
+	utils.DeleteTable(balanceDB, "Users")
 	utils.InitSchemas(openDB, balanceDB, closeDB, trackerDB)
 
 	// Start Redis Container
@@ -69,7 +69,7 @@ func main() {
 	pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer pingCancel()
 	if err := rdb.Ping(pingCtx).Err(); err != nil {
-		log.Fatalf("Redis started but not responding: %v", err)
+		log.Printf("Redis started but not responding: %v", err)
 	}
 
 	hub := utils.NewHub()
@@ -122,7 +122,7 @@ func main() {
 	go func() {
 		fmt.Println("Server is running on port 8080...")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("ListenAndServe(): %v", err)
+			log.Printf("ListenAndServe(): %v", err)
 		}
 	}()
 

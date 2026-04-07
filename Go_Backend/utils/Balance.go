@@ -38,7 +38,7 @@ func GetMostRecentBalance(balanceDB *sql.DB) map[int]float64 {
 	}
 
 	for id := range GlobalPortfolio_IDs.IDs {
-		err := balanceDB.QueryRow("SELECT timestamp, balance, cash FROM Balance WHERE portfolio_id = ? ORDER BY timestamp DESC LIMIT 1", id).Scan(&latestTs, &todayBalance, &todayCash)
+		err := balanceDB.QueryRow("SELECT timestamp, balance, cash FROM Balance WHERE portfolio_id = ? AND user_id = ? ORDER BY timestamp DESC LIMIT 1", id, GlobalUserID.ID).Scan(&latestTs, &todayBalance, &todayCash)
 		if err == sql.ErrNoRows {
 			GlobalBalance.Balances[id] = &Balance{}
 			GlobalBalance.Balances[id].Balance = 10000
@@ -54,11 +54,11 @@ func GetMostRecentBalance(balanceDB *sql.DB) map[int]float64 {
 		query := `
 			SELECT balance
 			FROM Balance 
-			WHERE timestamp >= ? AND timestamp <= ? AND portfolio_id = ? 
+			WHERE timestamp >= ? AND timestamp <= ? AND portfolio_id = ? AND user_id = ?
 			ORDER BY timestamp DESC 
 			LIMIT 1`
 
-		err = balanceDB.QueryRow(query, startOfYesterday, endOfYesterday, id).Scan(&balance)
+		err = balanceDB.QueryRow(query, startOfYesterday, endOfYesterday, id, GlobalUserID.ID).Scan(&balance)
 
 		if err == sql.ErrNoRows {
 			log.Println("No balance found for the previous calendar day interval... Retrying")
@@ -68,11 +68,11 @@ func GetMostRecentBalance(balanceDB *sql.DB) map[int]float64 {
 				query := `
 					SELECT balance
 					FROM Balance 
-					WHERE timestamp >= ? AND timestamp <= ? AND portfolio_id = ? 
+					WHERE timestamp >= ? AND timestamp <= ? AND portfolio_id = ? AND user_id = ?
 					ORDER BY timestamp DESC 
 					LIMIT 1`
 
-				err = balanceDB.QueryRow(query, startOfYesterday, endOfYesterday, id).Scan(&balance)
+				err = balanceDB.QueryRow(query, startOfYesterday, endOfYesterday, id, GlobalUserID.ID).Scan(&balance)
 
 				if err != sql.ErrNoRows {
 					recentBalances[id] = balance
@@ -125,7 +125,7 @@ func GetPorfolioIDs(balanceDB *sql.DB) {
 	defer GlobalPortfolio_IDs.Unlock()	
 	GlobalPortfolio_IDs.IDs = make(map[int]string)
 
-	rows, err := balanceDB.Query("SELECT * FROM portfolios")
+	rows, err := balanceDB.Query("SELECT * FROM portfolios WHERE user_id = ?", GlobalUserID.ID)
 	if err != nil {
 		log.Println(err)
 		return
@@ -146,10 +146,10 @@ func GetPorfolioIDs(balanceDB *sql.DB) {
 	}
 	if !found {
 		GlobalPortfolio_IDs.IDs[1] = "Main"
-		insertData := `INSERT INTO Portfolios (portfolio_id, name) VALUES (?, ?)`
-		_, err = balanceDB.Exec(insertData, 1, "Main")
+		insertData := `INSERT INTO Portfolios (portfolio_id, name, user_id) VALUES (?, ?, ?)`
+		_, err = balanceDB.Exec(insertData, 1, "Main", GlobalUserID.ID)
 		if err != nil {
-			log.Fatalf("Failed to write to table: %v", err)
+			log.Printf("Failed to write to table: %v", err)
 		}
 	}
 }

@@ -382,3 +382,12 @@ type CacheLimit struct {
 	Queue []string
 	InQueue map[string]struct{}
 }
+
+type Credentials struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type UserID struct {
+	ID int
+}

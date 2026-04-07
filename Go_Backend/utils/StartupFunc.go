@@ -173,8 +173,19 @@ func InitSchemas(openDB, balanceDB, closeDB, trackerDB *sql.DB) {
 		sql string
 	}{
 		{openDB, `CREATE TABLE IF NOT EXISTS OpenPositions (id TEXT, price REAL, amount REAL, portfolio_id INTEGER, PRIMARY KEY (id, portfolio_id));`},
-		{balanceDB, `CREATE TABLE IF NOT EXISTS Balance (timestamp INTEGER, balance REAL, cash REAL, portfolio_id INTEGER, PRIMARY KEY (timestamp, portfolio_id));`},
-		{balanceDB, `CREATE TABLE IF NOT EXISTS Portfolios (portfolio_id INTEGER PRIMARY KEY, name TEXT);`},
+		{balanceDB, `CREATE TABLE IF NOT EXISTS Balance (timestamp INTEGER, balance REAL, cash REAL, portfolio_id INTEGER, user_id INTEGER, PRIMARY KEY (timestamp, portfolio_id, user_id));`},
+		{balanceDB, `CREATE TABLE IF NOT EXISTS Users (
+			user_id INTEGER PRIMARY KEY AUTOINCREMENT, 
+			username TEXT UNIQUE, 
+			password TEXT, 
+			active INTEGER DEFAULT 1
+		);`},
+		{balanceDB, `CREATE TABLE IF NOT EXISTS Portfolios (
+			portfolio_id INTEGER, 
+			user_id INTEGER, 
+			name TEXT, 
+			PRIMARY KEY (portfolio_id, user_id)
+		);`},
 		{closeDB, `CREATE TABLE IF NOT EXISTS ClosePositions (order_number INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT, price REAL, amount REAL, pl REAL, portfolio_id INTEGER);`},
 		{trackerDB, `CREATE TABLE IF NOT EXISTS Tracker (id TEXT PRIMARY KEY);`},
 	}
@@ -183,5 +194,12 @@ func InitSchemas(openDB, balanceDB, closeDB, trackerDB *sql.DB) {
 		if _, err := s.db.Exec(s.sql); err != nil {
 			log.Printf("Schema init error: %v", err)
 		}
+	}
+}
+
+func DeleteTable(balanceDB *sql.DB, tableName string) {
+	_, err := balanceDB.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s;", tableName))
+	if err != nil {
+		log.Printf("Failed to delete table %s: %v", tableName, err)
 	}
 }

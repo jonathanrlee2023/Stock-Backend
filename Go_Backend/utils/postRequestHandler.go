@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"golang.org/x/crypto/bcrypt"
 	_ "modernc.org/sqlite"
 )
 
@@ -41,7 +42,7 @@ func NewTrackerHandler(trackerDB *sql.DB, w http.ResponseWriter, r *http.Request
 	insertData := `INSERT OR REPLACE INTO Tracker (id) VALUES (?)`
 	_, err = trackerDB.Exec(insertData, newTracker.ID)
 	if err != nil {
-		log.Fatalf("Failed to write to table: %v", err)
+		log.Printf("Failed to write to table: %v", err)
 	}
 }
 
@@ -385,4 +386,73 @@ func DeletePortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r 
 	delete(GlobalPortfolio_IDs.IDs, id)
 	delete(GlobalOpenPositions.Positions, id)
 	delete(GlobalBalance.Balances, id)
+}
+
+func LoginHandler(balanceDB *sql.DB, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var creds Credentials
+	if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	var password string
+	var userID int
+	err := balanceDB.QueryRow("SELECT user_id, password FROM Users WHERE username = ?", creds.Username).Scan(&userID, &password)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "User not found", http.StatusNotFound)
+		} else {
+			http.Error(w, "Database error", http.StatusInternalServerError)
+		}
+		return
+	}
+	if !CheckPasswordHash(creds.Password, password) {
+		http.Error(w, "Invalid password", http.StatusUnauthorized)
+		return
+	}
+	GlobalUserID.ID = userID
+	w.WriteHeader(http.StatusOK)
+}
+
+func CreateUserHandler(balanceDB *sql.DB, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var creds Credentials
+	if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	hashedPassword, err := HashPassword(creds.Password)
+	if err != nil {
+		http.Error(w, "Error hashing password", http.StatusInternalServerError)
+		return
+	}
+	_, err = balanceDB.Exec("INSERT INTO Users (username, password) VALUES (?, ?)", creds.Username, hashedPassword)
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	var userID int
+	err = balanceDB.QueryRow("SELECT user_id FROM Users WHERE username = ?", creds.Username).Scan(&userID)
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	GlobalUserID.ID = userID
+	w.WriteHeader(http.StatusOK)
+}
+
+func HashPassword(password string) (string, error) {
+	bytes, err := bcrypt.GenerateFromPassword([]byte(password), 14)
+	return string(bytes), err
+}
+
+func CheckPasswordHash(password, hash string) bool {
+	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+	return err == nil
 }
