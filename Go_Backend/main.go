@@ -55,8 +55,8 @@ func main() {
 	if err != nil {
 		log.Printf("Error initializing database: %v", err)
 	}
-	utils.DeleteTable(balanceDB, "Users")
 	utils.InitSchemas(openDB, balanceDB, closeDB, trackerDB)
+
 
 	// Start Redis Container
 	utils.StartRedisContainer()
@@ -108,6 +108,12 @@ func main() {
 	})
 	mux.HandleFunc("/deletePortfolio", func(w http.ResponseWriter, r *http.Request) {
 		utils.DeletePortfolioHandler(balanceDB, openDB, w, r)
+	})
+	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
+		utils.LoginHandler(balanceDB, w, r)
+	})
+	mux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
+		utils.CreateUserHandler(balanceDB, w, r)
 	})
 
 

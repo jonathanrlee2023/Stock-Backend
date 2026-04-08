@@ -13,6 +13,9 @@ type Client struct {
 	Mu        sync.Mutex
 	Done      chan struct{}
 	once      sync.Once
+	Balance   PortfolioBalances
+	OpenPositions OpenPositions
+	PortfolioIDs Portfolio_IDs
 	IsWriting bool
 }
 
@@ -389,5 +392,6 @@ type Credentials struct {
 }
 
 type UserID struct {
+	ClientID string
 	ID int
 }

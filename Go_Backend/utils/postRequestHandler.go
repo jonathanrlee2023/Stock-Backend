@@ -81,10 +81,14 @@ func OpenSharesPositionHandler(openDB, balanceDB *sql.DB, w http.ResponseWriter,
 		return
 	}
 
+	client := Clients[GlobalUserID.ClientID]
+
 	var newPosition Position
 	var extAmount float64
 	var extPrice float64
 
+	userID := GlobalUserID.ID
+	clientID := GlobalUserID.ClientID
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -98,40 +102,40 @@ func OpenSharesPositionHandler(openDB, balanceDB *sql.DB, w http.ResponseWriter,
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
-	GlobalOpenPositions.Lock()
+	client.OpenPositions.Lock()
 
-	if GlobalOpenPositions.Positions[newPosition.PortfolioID] == nil {
-        GlobalOpenPositions.Positions[newPosition.PortfolioID] = make(map[string]OpenPositionDetails)
+	if client.OpenPositions.Positions[newPosition.PortfolioID] == nil {
+        client.OpenPositions.Positions[newPosition.PortfolioID] = make(map[string]OpenPositionDetails)
     }
 
-	balance, cash := GlobalBalance.Balances[newPosition.PortfolioID].Balance, GlobalBalance.Balances[newPosition.PortfolioID].Cash
+	balance, cash := client.Balance.Balances[newPosition.PortfolioID].Balance, client.Balance.Balances[newPosition.PortfolioID].Cash
 
 
-	if _, ok := GlobalOpenPositions.Positions[newPosition.PortfolioID][newPosition.ID]; ok {
-		extAmount = GlobalOpenPositions.Positions[newPosition.PortfolioID][newPosition.ID].Amount
-		extPrice = GlobalOpenPositions.Positions[newPosition.PortfolioID][newPosition.ID].Price
+	if _, ok := client.OpenPositions.Positions[newPosition.PortfolioID][newPosition.ID]; ok {
+		extAmount = client.OpenPositions.Positions[newPosition.PortfolioID][newPosition.ID].Amount
+		extPrice = client.OpenPositions.Positions[newPosition.PortfolioID][newPosition.ID].Price
 		totalCost := (extPrice * float64(extAmount)) + (newPosition.Price * float64(newPosition.Amount))
 		updatedAmount := extAmount + newPosition.Amount
 		updatedPrice := math.Round((totalCost/float64(updatedAmount))*100) / 100
-		_, err = openDB.Exec("UPDATE OpenPositions SET price = ?, amount = ? WHERE id = ? AND portfolio_id = ?", updatedPrice, updatedAmount, newPosition.ID, newPosition.PortfolioID)
-		GlobalOpenPositions.Positions[newPosition.PortfolioID][newPosition.ID] = OpenPositionDetails{
+		_, err = openDB.Exec("UPDATE OpenPositions SET price = ?, amount = ? WHERE id = ? AND portfolio_id = ? AND user_id = ?", updatedPrice, updatedAmount, newPosition.ID, newPosition.PortfolioID, userID)
+		client.OpenPositions.Positions[newPosition.PortfolioID][newPosition.ID] = OpenPositionDetails{
 			Price:  updatedPrice,
 			Amount: updatedAmount,
 		}
 	} else {
-		_, err = openDB.Exec("INSERT INTO OpenPositions (id, price, amount, portfolio_id) VALUES (?, ?, ?, ?)", newPosition.ID, newPosition.Price, newPosition.Amount, newPosition.PortfolioID)
-		GlobalOpenPositions.Positions[newPosition.PortfolioID][newPosition.ID] = OpenPositionDetails{
+		_, err = openDB.Exec("INSERT INTO OpenPositions (id, price, amount, portfolio_id, user_id) VALUES (?, ?, ?, ?, ?)", newPosition.ID, newPosition.Price, newPosition.Amount, newPosition.PortfolioID, userID)
+		client.OpenPositions.Positions[newPosition.PortfolioID][newPosition.ID] = OpenPositionDetails{
 			Price:  newPosition.Price,
 			Amount: newPosition.Amount,
 		}
 	}
-	GlobalOpenPositions.Unlock()
+	client.OpenPositions.Unlock()
 
 	if err != nil {
 		log.Printf("Failed to write to table: %v", err)
 		return
 	}
-	GlobalBalance.Lock()
+	client.Balance.Lock()
 
 	tradeCost := newPosition.Price * float64(newPosition.Amount)
 	if len(newPosition.ID) > 6 {
@@ -140,16 +144,16 @@ func OpenSharesPositionHandler(openDB, balanceDB *sql.DB, w http.ResponseWriter,
 
 	newCash := cash - tradeCost
 
-	GlobalBalance.Balances[newPosition.PortfolioID].Cash = newCash
+	client.Balance.Balances[newPosition.PortfolioID].Cash = newCash
 
-	insertData := `INSERT INTO Balance (timestamp, balance, cash, portfolio_id) VALUES (?, ?, ?, ?)`
-	_, err = balanceDB.Exec(insertData, time.Now().Unix(), balance, newCash, newPosition.PortfolioID)
+	insertData := `INSERT INTO Balance (timestamp, balance, cash, portfolio_id, user_id) VALUES (?, ?, ?, ?, ?)`
+	_, err = balanceDB.Exec(insertData, time.Now().Unix(), balance, newCash, newPosition.PortfolioID, userID)
 	if err != nil {
 		http.Error(w, "Failed to write balance", http.StatusInternalServerError)
 	}
-	GlobalBalance.Unlock()
+	client.Balance.Unlock()
 
-	ProcessWrite(time.Now(), Clients["STOCK_CLIENT"], balanceDB, openDB)
+	ProcessWrite(time.Now(), Clients[clientID], balanceDB, openDB)
 }
 
 // Handles the closing of a position
@@ -163,19 +167,24 @@ func ClosePositionHandler(openDB, closeDB, balanceDB *sql.DB, w http.ResponseWri
 	var price float64
 	var amount float64
 
+	userID := GlobalUserID.ID
+	clientID := GlobalUserID.ClientID
+
+	client := Clients[clientID]
+
 	if err := json.NewDecoder(r.Body).Decode(&closePosition); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
-	GlobalOpenPositions.Lock()
-	if _, ok := GlobalOpenPositions.Positions[closePosition.PortfolioID][closePosition.ID]; !ok {
+	client.OpenPositions.Lock()
+	if _, ok := client.OpenPositions.Positions[closePosition.PortfolioID][closePosition.ID]; !ok {
 		http.Error(w, "Position not found", http.StatusBadRequest)
 		return
 	}
-	price, amount = GlobalOpenPositions.Positions[closePosition.PortfolioID][closePosition.ID].Price, GlobalOpenPositions.Positions[closePosition.PortfolioID][closePosition.ID].Amount
+	price, amount = client.OpenPositions.Positions[closePosition.PortfolioID][closePosition.ID].Price, client.OpenPositions.Positions[closePosition.PortfolioID][closePosition.ID].Amount
 	if closePosition.Amount > amount {
 		http.Error(w, "Insufficient shares", 400)
-		GlobalOpenPositions.Unlock()
+		client.OpenPositions.Unlock()
 		return
 	}
 
@@ -189,48 +198,48 @@ func ClosePositionHandler(openDB, closeDB, balanceDB *sql.DB, w http.ResponseWri
 	pl = math.Round(pl*100) / 100
 	remaining := amount - closePosition.Amount
 	if remaining != 0 {
-		insertData := `INSERT OR REPLACE INTO OpenPositions (id, price, amount, portfolio_id) VALUES (?, ?, ?, ?)`
-		_, err := openDB.Exec(insertData, closePosition.ID, price, remaining, closePosition.PortfolioID)
+		insertData := `INSERT OR REPLACE INTO OpenPositions (id, price, amount, portfolio_id, user_id) VALUES (?, ?, ?, ?, ?)`
+		_, err := openDB.Exec(insertData, closePosition.ID, price, remaining, closePosition.PortfolioID, userID)
 		if err != nil {
 			log.Printf("Failed to write to table: %v", err)
 		}
-		GlobalOpenPositions.Positions[closePosition.PortfolioID][closePosition.ID] = OpenPositionDetails{
+		client.OpenPositions.Positions[closePosition.PortfolioID][closePosition.ID] = OpenPositionDetails{
 			Price:  price,
 			Amount: remaining,
 		}
 	} else {
-		_, err := openDB.Exec("DELETE FROM OpenPositions WHERE id = ?", closePosition.ID)
+		_, err := openDB.Exec("DELETE FROM OpenPositions WHERE id = ? AND user_id = ? AND portfolio_id = ?", closePosition.ID, userID, closePosition.PortfolioID)
 		if err != nil {
 			log.Printf("Failed to delete: %v", err)
-			GlobalOpenPositions.Unlock()
+			client.OpenPositions.Unlock()
 			return
 		}
-		delete(GlobalOpenPositions.Positions[closePosition.PortfolioID], closePosition.ID)
+		delete(client.OpenPositions.Positions[closePosition.PortfolioID], closePosition.ID)
 	}
-	GlobalOpenPositions.Unlock()
+	client.OpenPositions.Unlock()
 
-	insertData := `INSERT INTO ClosePositions (id, price, amount, pl, portfolio_id) VALUES (?, ?, ?, ?, ?)`
-	_, err := closeDB.Exec(insertData, closePosition.ID, closePosition.Price, closePosition.Amount, pl, closePosition.PortfolioID)
+	insertData := `INSERT INTO ClosePositions (id, price, amount, pl, portfolio_id, user_id) VALUES (?, ?, ?, ?, ?, ?)`
+	_, err := closeDB.Exec(insertData, closePosition.ID, closePosition.Price, closePosition.Amount, pl, closePosition.PortfolioID, userID)
 	if err != nil {
 		log.Printf("Failed to write to table: %v", err)
 	}
-	GlobalBalance.Lock()
-	balance := GlobalBalance.Balances[closePosition.PortfolioID].Balance
-	cash := GlobalBalance.Balances[closePosition.PortfolioID].Cash
+	client.Balance.Lock()
+	balance := client.Balance.Balances[closePosition.PortfolioID].Balance
+	cash := client.Balance.Balances[closePosition.PortfolioID].Cash
 	tradeCost := closePosition.Price * float64(closePosition.Amount)
 	if len(closePosition.ID) > 6 {
 		tradeCost *= 100
 	}
 	newCash := cash + tradeCost
-	GlobalBalance.Balances[closePosition.PortfolioID].Cash = newCash
-	GlobalBalance.Unlock()
+	client.Balance.Balances[closePosition.PortfolioID].Cash = newCash
+	client.Balance.Unlock()
 
-	insertData = `INSERT OR REPLACE INTO Balance (timestamp, balance, cash, portfolio_id) VALUES (?, ?, ?, ?)`
-	_, err = balanceDB.Exec(insertData, time.Now().Unix(), balance, newCash, closePosition.PortfolioID)
+	insertData = `INSERT OR REPLACE INTO Balance (timestamp, balance, cash, portfolio_id, user_id) VALUES (?, ?, ?, ?, ?)`
+	_, err = balanceDB.Exec(insertData, time.Now().Unix(), balance, newCash, closePosition.PortfolioID, userID)
 	if err != nil {
 		http.Error(w, "Failed to write balance", http.StatusInternalServerError)
 	}
-	ProcessWrite(time.Now(), Clients["STOCK_CLIENT"], balanceDB, openDB)
+	ProcessWrite(time.Now(), client, balanceDB, openDB)
 }
 
 func NewPortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r *http.Request) {
@@ -245,33 +254,36 @@ func NewPortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r *ht
 	}
 	var balance, cash float64
 	id := newPortfolio.ID
+	userID := GlobalUserID.ID
+
+	client := Clients[GlobalUserID.ClientID]
 	exists := false
 
-	GlobalPortfolio_IDs.Lock()
-	if _, ok := GlobalPortfolio_IDs.IDs[id]; ok {
+	client.PortfolioIDs.Lock()
+	if _, ok := client.PortfolioIDs.IDs[id]; ok {
 		exists = true
 	} else {
-		GlobalPortfolio_IDs.IDs[id] = newPortfolio.Name
+		client.PortfolioIDs.IDs[id] = newPortfolio.Name
 	}
-	GlobalPortfolio_IDs.Unlock()
+	client.PortfolioIDs.Unlock()
 
-	GlobalBalance.Lock()
-	defer GlobalBalance.Unlock()
+	client.Balance.Lock()
+	defer client.Balance.Unlock()
 	GlobalPrices.RLock()
 	defer GlobalPrices.RUnlock()
-	GlobalOpenPositions.Lock()
-	defer GlobalOpenPositions.Unlock()
+	client.OpenPositions.Lock()
+	defer client.OpenPositions.Unlock()
 	
 
 	if exists {
-		err := balanceDB.QueryRow("SELECT balance, cash FROM Balance WHERE portfolio_id = ? ORDER BY timestamp DESC LIMIT 1", id).Scan(&balance, &cash)
+		err := balanceDB.QueryRow("SELECT balance, cash FROM Balance WHERE portfolio_id = ? AND user_id = ? ORDER BY timestamp DESC LIMIT 1", id, userID).Scan(&balance, &cash)
 		if err != nil {
 			log.Printf("Failed to read from table: %v", err)
 			balance = 10000.0
 			cash = 10000.0
 		}
 	} else {
-		GlobalOpenPositions.Positions[id] = make(map[string]OpenPositionDetails)
+		client.OpenPositions.Positions[id] = make(map[string]OpenPositionDetails)
 		balance = 10000.0
 		cash = 10000.0
 	}
@@ -282,8 +294,8 @@ func NewPortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r *ht
 		return 
 	}
 	stmt, err := batch.Prepare(`
-		INSERT OR IGNORE INTO OpenPositions (id, price, amount, portfolio_id) 
-		VALUES (?, ?, ?, ?)
+		INSERT OR IGNORE INTO OpenPositions (id, price, amount, portfolio_id, user_id) 
+		VALUES (?, ?, ?, ?, ?)
 	`)
 	defer batch.Rollback()
 
@@ -299,11 +311,11 @@ func NewPortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r *ht
 		amount := position.Amount
 		tradeCost := price * amount
 		cash -= tradeCost
-		GlobalOpenPositions.Positions[position.PortfolioID][position.ID] = OpenPositionDetails{
+		client.OpenPositions.Positions[position.PortfolioID][position.ID] = OpenPositionDetails{
 			Price:  price,
 			Amount: amount,
 		}
-		_, err := stmt.Exec(position.ID, price, amount, position.PortfolioID)
+		_, err := stmt.Exec(position.ID, price, amount, position.PortfolioID, userID)
 		if err != nil {
 			batch.Rollback() // Cancel everything if one insert fails
 			log.Printf("Failed to insert open position: %v", err)
@@ -315,29 +327,29 @@ func NewPortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r *ht
 		log.Printf("Failed to commit transaction: %v", err)
 		return
 	}
-	if GlobalBalance.Balances[id] == nil {
-		GlobalBalance.Balances[id] = &Balance{}
+	if client.Balance.Balances[id] == nil {
+		client.Balance.Balances[id] = &Balance{}
 	}
 	
-	GlobalBalance.Balances[id].Balance = balance
-	GlobalBalance.Balances[id].Cash = cash
+	client.Balance.Balances[id].Balance = balance
+	client.Balance.Balances[id].Cash = cash
 
 	
 	if !exists {
-		insertData := `INSERT INTO Balance (timestamp, balance, cash, portfolio_id) VALUES (?, ?, ?, ?)`
-		_, err = balanceDB.Exec(insertData, time.Now().Unix(), 10000.0, cash, id)
+		insertData := `INSERT INTO Balance (timestamp, balance, cash, portfolio_id, user_id) VALUES (?, ?, ?, ?, ?)`
+		_, err = balanceDB.Exec(insertData, time.Now().Unix(), 10000.0, cash, id, userID)
 		if err != nil {
 			http.Error(w, "Failed to write balance", http.StatusInternalServerError)
 		}
 
-		insertData = `INSERT INTO Portfolios (portfolio_id, name) VALUES (?, ?)`
-		_, err = balanceDB.Exec(insertData, id, newPortfolio.Name)
+		insertData = `INSERT INTO Portfolios (portfolio_id, name, user_id) VALUES (?, ?, ?)`
+		_, err = balanceDB.Exec(insertData, id, newPortfolio.Name, userID)
 		if err != nil {
 			http.Error(w, "Failed to write balance", http.StatusInternalServerError)
 		}
 	} else {
-		insertData := `INSERT INTO Balance (timestamp, balance, cash, portfolio_id) VALUES (?, ?, ?, ?)`
-		_, err = balanceDB.Exec(insertData, time.Now().Unix(), balance, cash, id)
+		insertData := `INSERT INTO Balance (timestamp, balance, cash, portfolio_id, user_id) VALUES (?, ?, ?, ?, ?)`
+		_, err = balanceDB.Exec(insertData, time.Now().Unix(), balance, cash, id, userID)
 		if err != nil {
 			http.Error(w, "Failed to write balance", http.StatusInternalServerError)
 		}
@@ -355,37 +367,40 @@ func DeletePortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r 
 		http.Error(w, "Unable to parse id", http.StatusBadRequest)
 		return
 	}
+
+	userID := GlobalUserID.ID
+	client := Clients[GlobalUserID.ClientID]
 	
-	GlobalPortfolio_IDs.Lock()
-	defer GlobalPortfolio_IDs.Unlock()
-	GlobalOpenPositions.Lock()
-	defer GlobalOpenPositions.Unlock()
-	GlobalBalance.Lock()
-	defer GlobalBalance.Unlock()
-	if _, ok := GlobalPortfolio_IDs.IDs[id]; !ok {
+	client.PortfolioIDs.Lock()
+	defer client.PortfolioIDs.Unlock()
+	client.OpenPositions.Lock()
+	defer client.OpenPositions.Unlock()
+	client.Balance.Lock()
+	defer client.Balance.Unlock()
+	if _, ok := client.PortfolioIDs.IDs[id]; !ok {
 		http.Error(w, "Portfolio not found", http.StatusNotFound)
 		return
 	}
 
-	_, err = balanceDB.Exec("DELETE FROM Balance WHERE portfolio_id = ?", id)
+	_, err = balanceDB.Exec("DELETE FROM Balance WHERE portfolio_id = ? AND user_id = ?", id, userID)
 	if err != nil {
 		http.Error(w, "Failed to delete balance", http.StatusInternalServerError)
 		return
 	}
-	_, err = openDB.Exec("DELETE FROM OpenPositions WHERE portfolio_id = ?", id)
+	_, err = openDB.Exec("DELETE FROM OpenPositions WHERE portfolio_id = ? AND user_id = ?", id, userID)
 	if err != nil {
 		http.Error(w, "Failed to delete open positions", http.StatusInternalServerError)
 		return
 	}
-	_, err = balanceDB.Exec("DELETE FROM Portfolios WHERE portfolio_id = ?", id)
+	_, err = balanceDB.Exec("DELETE FROM Portfolios WHERE portfolio_id = ? AND user_id = ?", id, userID)
 	if err != nil {
 		http.Error(w, "Failed to delete portfolio", http.StatusInternalServerError)
 		return
 	}
 	
-	delete(GlobalPortfolio_IDs.IDs, id)
-	delete(GlobalOpenPositions.Positions, id)
-	delete(GlobalBalance.Balances, id)
+	delete(client.PortfolioIDs.IDs, id)
+	delete(client.OpenPositions.Positions, id)
+	delete(client.Balance.Balances, id)
 }
 
 func LoginHandler(balanceDB *sql.DB, w http.ResponseWriter, r *http.Request) {
@@ -410,11 +425,21 @@ func LoginHandler(balanceDB *sql.DB, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !CheckPasswordHash(creds.Password, password) {
-		http.Error(w, "Invalid password", http.StatusUnauthorized)
-		return
-	}
-	GlobalUserID.ID = userID
-	w.WriteHeader(http.StatusOK)
+        http.Error(w, "Invalid password", http.StatusUnauthorized)
+        return
+    }
+
+    GlobalUserID.ID = userID
+
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(http.StatusOK)
+
+    response := map[string]interface{}{
+        "user_id": userID,
+        "message": "Login successful",
+    }
+
+    json.NewEncoder(w).Encode(response)
 }
 
 func CreateUserHandler(balanceDB *sql.DB, w http.ResponseWriter, r *http.Request) {
@@ -439,6 +464,18 @@ func CreateUserHandler(balanceDB *sql.DB, w http.ResponseWriter, r *http.Request
 	}
 	var userID int
 	err = balanceDB.QueryRow("SELECT user_id FROM Users WHERE username = ?", creds.Username).Scan(&userID)
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+
+	_, err = balanceDB.Exec("INSERT INTO Portfolios (portfolio_id, name, user_id) VALUES (?, ?, ?)", 1, "Main", userID)
+	if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+
+	_, err = balanceDB.Exec("INSERT INTO Balance (timestamp, balance, cash, portfolio_id, user_id) VALUES (?, ?, ?, ?, ?)", time.Now().Unix(), 10000, 10000, 1, userID)
 	if err != nil {
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return

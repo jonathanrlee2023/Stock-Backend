@@ -9,6 +9,9 @@ import (
 	"maps"
 	"net/http"
 	"os/exec"
+	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -226,13 +229,35 @@ func WebsocketConnectHandler(hub *Hub, openDB, balanceDB, priceDB, trackerDB *sq
 		hub.unregister <- ws // Unregister on disconnect
 		DisconnectClient(clientID)
 	}()
+	var clientFormat = regexp.MustCompile(`^STOCK_CLIENT_\d+$`)
+	id, err := getIDFromClient(clientID)
+	if err != nil {
+		log.Printf("Invalid client ID format: %s", clientID)
+		return
+	}
+	if clientFormat.MatchString(clientID) {
+		if GlobalUserID.ID != 0 {
+			if GlobalUserID.ClientID != clientID {
+				newClient.Balance.Lock()
+				newClient.Balance.Balances = make(map[int]*Balance)
+				newClient.Balance.Unlock()
+				GlobalUserID.ClientID = clientID
+				GlobalUserID.ID = id
+				newClient.PortfolioIDs.Lock()
+				newClient.PortfolioIDs.IDs = make(map[int]string)
+				newClient.PortfolioIDs.Unlock()
+				newClient.OpenPositions.Lock()
+				newClient.OpenPositions.Positions = make(map[int]map[string]OpenPositionDetails)
+				newClient.OpenPositions.Unlock()
+				log.Printf("Client switched: %s, new user ID: %d", clientID, id)
+			}
+		}
+		GlobalUserID.ClientID = clientID
+		log.Printf("Client connected: %s", clientID)
 
-	log.Printf("Client connected: %s", clientID)
-
-	if clientID == "STOCK_CLIENT" {
-		Clients[clientID].IsWriting = false
-		SendOpenPositions(balanceDB, openDB, priceDB, trackerDB, Clients)
-		SendAllCached()
+		newClient.IsWriting = false
+		SendOpenPositions(balanceDB, openDB, priceDB, trackerDB, newClient, id)
+		SendAllCached(clientID)
 		go HandleClientWrite(newClient, openDB, balanceDB, priceDB)
 	}
 
@@ -240,6 +265,13 @@ func WebsocketConnectHandler(hub *Hub, openDB, balanceDB, priceDB, trackerDB *sq
 
 }
 
+func getIDFromClient(clientId string) (int, error) {
+    parts := strings.Split(clientId, "_")
+    
+    idStr := parts[len(parts)-1]
+    
+    return strconv.Atoi(idStr)
+}
 func DisconnectClient(clientID string) {
 	ClientsMu.Lock()
 	client, exists := Clients[clientID]
@@ -273,10 +305,10 @@ func ShutdownAllClients() {
 	}
 }
 
-func SendAllCached() {
-	client := Clients["STOCK_CLIENT"]
-	GlobalOpenPositions.RLock()
-	defer GlobalOpenPositions.RUnlock()
+func SendAllCached(clientID string) {
+	client := Clients[clientID]
+	client.OpenPositions.RLock()
+	defer client.OpenPositions.RUnlock()
 	GlobalCompanyCache.RLock()
 	defer GlobalCompanyCache.RUnlock()
 	GlobalOptionExpiration.RLock()
@@ -285,7 +317,7 @@ func SendAllCached() {
 	defer GlobalCacheLimit.Unlock()
 
 	checked := make(map[string]struct{})
-	for _, positions := range GlobalOpenPositions.Positions {
+	for _, positions := range client.OpenPositions.Positions {
 		for symbol := range positions {
 			if _, ok := checked[symbol]; !ok {
 				checked[symbol] = struct{}{}
@@ -338,7 +370,7 @@ func HandleCompanyRead(msg redis.Message) {
 	
 	GlobalCompanyCache.Unlock()
 	GlobalCacheLimit.Unlock()
-	client := "STOCK_CLIENT"
+	client := GlobalUserID.ClientID
 	if Clients[client] == nil {
 		return
 	}
@@ -376,7 +408,7 @@ func HandleOptionRead(msg redis.Message) {
 
 	GlobalCacheLimit.Unlock()
 
-	client := "STOCK_CLIENT"
+	client := GlobalUserID.ClientID
 	if Clients[client] == nil {
 		return
 	}
@@ -479,7 +511,7 @@ func StartOptionStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request
 // Sends a message to the python streamer to start a subscription to a certain stock
 func StartStockStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request) {
 	symbol := r.URL.Query().Get("symbol")
-	client := Clients["STOCK_CLIENT"]
+	client := Clients[GlobalUserID.ClientID]
 	GlobalCompanyCache.Lock()
 	defer GlobalCompanyCache.Unlock()
 	if stats, ok := GlobalCompanyCache.Stats[symbol]; ok {
@@ -516,17 +548,19 @@ func StartStockStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request)
 
 // Write to a specific client the most recent balance
 func ProcessWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
-	GlobalOpenPositions.RLock()
-	defer GlobalOpenPositions.RUnlock()
+	client.OpenPositions.RLock()
+	defer client.OpenPositions.RUnlock()
 
-	GlobalBalance.Lock()
-    defer GlobalBalance.Unlock()
+	client.Balance.Lock()
+    defer client.Balance.Unlock()
 
 	GlobalPrices.RLock()
 	defer GlobalPrices.RUnlock()
 	if len(GlobalPrices.Prices) == 0 {
 		return
 	}
+
+	userID := GlobalUserID.ID
     
 	var now int64
 		
@@ -587,14 +621,14 @@ func ProcessWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 			return
 		}
 	}
-	for pid := range GlobalOpenPositions.Positions {
+	for pid := range client.OpenPositions.Positions {
 		var cash float64
 		var balance float64
 
-		if GlobalBalance.Balances[pid] == nil {
+		if client.Balance.Balances[pid] == nil {
 			continue
 		}
-		balance, cash = GlobalBalance.Balances[pid].Balance, GlobalBalance.Balances[pid].Cash
+		balance, cash = client.Balance.Balances[pid].Balance, client.Balance.Balances[pid].Cash
 
 		if balance == 0.0 && cash == 0.0 {
 			balance = 10000.0
@@ -602,7 +636,7 @@ func ProcessWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 		}
 
 		tempPositionValue := 0.0
-		for id, details := range GlobalOpenPositions.Positions[pid] {
+		for id, details := range client.OpenPositions.Positions[pid] {
 			amount := details.Amount
 
 			q, exists := GlobalPrices.Prices[id]
@@ -624,8 +658,8 @@ func ProcessWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 		tempBalance := cash + tempPositionValue
 		balance = tempBalance
 
-		GlobalBalance.Balances[pid].Balance = balance
-		GlobalBalance.Balances[pid].Cash = cash
+		client.Balance.Balances[pid].Balance = balance
+		client.Balance.Balances[pid].Cash = cash
 
 		message := BalanceData{
 			Balance:   balance,
@@ -646,8 +680,8 @@ func ProcessWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 		return 
 	}
 	stmt, err := batch.Prepare(`
-		INSERT OR IGNORE INTO Balance (timestamp, balance, cash, portfolio_id) 
-		VALUES (?, ?, ?, ?)
+		INSERT OR IGNORE INTO Balance (timestamp, balance, cash, portfolio_id, user_id) 
+		VALUES (?, ?, ?, ?, ?)
 	`)
 
 	if err != nil {
@@ -656,8 +690,8 @@ func ProcessWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 		return
 	}
 	defer stmt.Close()
-	for id, data := range GlobalBalance.Balances {
-		_, err := stmt.Exec(now, data.Balance, data.Cash, id)
+	for id, data := range client.Balance.Balances {
+		_, err := stmt.Exec(now, data.Balance, data.Cash, id, userID)
 		if err != nil {
 			batch.Rollback()
 			log.Printf("Failed to insert balance: %v", err)
