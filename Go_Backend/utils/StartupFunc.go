@@ -14,8 +14,12 @@ import (
 func SendOpenPositions(balanceDB, openDB, priceDB, trackerDB *sql.DB, targetClient *Client, userID int) {
 	openIDs := make(map[int]map[string]float64)
 	var trackerIds []string
-	GetPorfolioIDs(balanceDB, userID)
+	GetPorfolioIDs(balanceDB, userID, targetClient)
 	prevBalances := GetMostRecentBalance(balanceDB, userID)
+
+	if targetClient.OpenPositions.Positions == nil {
+        targetClient.OpenPositions.Positions = make(map[int]map[string]OpenPositionDetails)
+    }
 
 	rows, err := openDB.Query("SELECT id, price, amount, portfolio_id FROM OpenPositions WHERE user_id = ?", userID)
 	if err == sql.ErrNoRows {

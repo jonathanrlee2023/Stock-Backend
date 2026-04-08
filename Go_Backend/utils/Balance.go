@@ -129,32 +129,46 @@ func GetMostRecentBalance(balanceDB *sql.DB, userID int) map[int]float64 {
 	return recentBalances
 }
 
-func GetPorfolioIDs(balanceDB *sql.DB, userID int) {
-	found := false
-	client := Clients[GlobalUserID.ClientID]
-	client.PortfolioIDs.Lock()
-	defer client.PortfolioIDs.Unlock()	
-	client.PortfolioIDs.IDs = make(map[int]string)
+func GetPorfolioIDs(balanceDB *sql.DB, userID int, client *Client) {
+    if client == nil {
+        log.Println("Error: GetPorfolioIDs called with nil client")
+        return
+    }
 
-	rows, err := balanceDB.Query("SELECT portfolio_id, name FROM Portfolios WHERE user_id = ?", userID)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-	defer rows.Close()
-	for rows.Next() {
-		found = true
-		var pid int
-		var name string
-		if err := rows.Scan(&pid, &name); err != nil {
-			log.Println(err)
-			return
-		}
-		client.PortfolioIDs.IDs[pid] = name
-		if _, b := client.Balance.Balances[pid]; !b {
-			client.Balance.Balances[pid] = &Balance{} 
-		}
-	}
+    found := false
+    
+    client.PortfolioIDs.Lock()
+    defer client.PortfolioIDs.Unlock()  
+
+    if client.PortfolioIDs.IDs == nil {
+        client.PortfolioIDs.IDs = make(map[int]string)
+    }
+    if client.Balance.Balances == nil {
+        client.Balance.Balances = make(map[int]*Balance)
+    }
+
+    rows, err := balanceDB.Query("SELECT portfolio_id, name FROM Portfolios WHERE user_id = ?", userID)
+    if err != nil {
+        log.Println(err)
+        return
+    }
+    defer rows.Close()
+
+    for rows.Next() {
+        found = true
+        var pid int
+        var name string
+        if err := rows.Scan(&pid, &name); err != nil {
+            log.Println(err)
+            return
+        }
+        
+        client.PortfolioIDs.IDs[pid] = name
+        
+        if _, exists := client.Balance.Balances[pid]; !exists {
+            client.Balance.Balances[pid] = &Balance{} 
+        }
+    }
 	if !found {
 		client.PortfolioIDs.IDs[1] = "Main"
 		insertData := `INSERT INTO Portfolios (portfolio_id, name, user_id) VALUES (?, ?, ?)`
