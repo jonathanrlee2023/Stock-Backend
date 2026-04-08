@@ -5,3 +5,16 @@
 .env
 **/ .env
 Database/
+
+# Python Virtual Environments
+venv/
+.venv/
+env/
+bin/
+include/
+lib/
+
+# Python Bytecode/Cache
+__pycache__/
+*.py[cod]
+*$py.class
