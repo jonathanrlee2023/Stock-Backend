@@ -1,29 +1,34 @@
-# .gitlab-ci.yml
-
 stages:
   - lint
   - test
 
-variables:
-  GO_VERSION: "1.25"
-  PYTHON_VERSION: "3.13"
-
-# Cache dependencies between runs — saves 30-60s per job
 cache:
   key:
     files:
       - Go_Backend/go.sum
       - Python_Streamer/requirements.txt
+      - Python_Streamer/requirements-dev.txt
   paths:
     - Go_Backend/.go-cache/
     - Python_Streamer/.pip-cache/
 
 go:lint:
   stage: lint
-  image: golang:1.25-alpine
+  image: golang:1.25-bookworm
   script:
     - cd Go_Backend
     - go vet ./...
+  only:
+    changes:
+      - Go_Backend/**/*
+
+go:security:
+  stage: lint
+  image: golang:1.25-bookworm
+  script:
+    - go install golang.org/x/vuln/cmd/govulncheck@latest
+    - cd Go_Backend
+    - govulncheck ./...
   only:
     changes:
       - Go_Backend/**/*
@@ -34,11 +39,10 @@ go:test:
   variables:
     GOPATH: $CI_PROJECT_DIR/Go_Backend/.go-cache
     CGO_ENABLED: "1"
-    GO_ENV: "test"
   script:
     - cd Go_Backend
     - go test ./... -race -timeout 60s -cover
-  coverage: '/coverage: \d+\.\d+/'
+  coverage: '/coverage: (\d+\.\d+)%/'
   only:
     changes:
       - Go_Backend/**/*
@@ -53,16 +57,25 @@ python:lint:
     changes:
       - Python_Streamer/**/*
 
+python:security:
+  stage: lint
+  image: python:3.13-slim
+  script:
+    - pip install pip-audit -q
+    - pip-audit -r Python_Streamer/requirements.txt
+  only:
+    changes:
+      - Python_Streamer/**/*
+
 python:test:
   stage: test
   image: python:3.13-slim
   variables:
     PIP_CACHE_DIR: $CI_PROJECT_DIR/Python_Streamer/.pip-cache
-    PYTHONPATH: "."
+    PYTHONPATH: $CI_PROJECT_DIR/Python_Streamer
   before_script:
     - cd Python_Streamer
-    - pip install -r requirements.txt --break-system-packages -q
-    - pip install pytest pytest-asyncio -q
+    - pip install --cache-dir $PIP_CACHE_DIR -r requirements.txt -r requirements-dev.txt -q
   script:
     - pytest tests/ -v --tb=short --asyncio-mode=auto
   only:

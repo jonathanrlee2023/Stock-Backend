@@ -8,4 +8,3 @@ httpx
 pandas
 numpy
 pytz
-pytest
