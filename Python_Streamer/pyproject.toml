@@ -1,0 +1,17 @@
+[tool.ruff]
+# Increase line length to 120 (standard is 88)
+line-length = 120
+
+[tool.ruff.lint]
+# Select the rules you want (E = Error, F = Pyflakes)
+select = ["E", "F"]
+# Ignore specific annoying ones for now
+ignore = [
+    "F401", # Unused imports (we're still coding!)
+    "F841", # Unused variables
+    "E501", # Line length (our mocks are huge)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Be even lazier in the tests folder
+"tests/*" = ["F841", "E501"]

@@ -10,5 +10,6 @@ class AppState:
         self.streamer = None
         self.httpx_client = None
 
+
 # Instantiate it once
 app_state = AppState()

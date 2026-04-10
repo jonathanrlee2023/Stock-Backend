@@ -1,5 +1,5 @@
 financial_schemas = {
-    'income': """
+    "income": """
         CREATE TABLE IF NOT EXISTS income (
             symbol_id BIGINT NOT NULL,
             ticker TEXT,
@@ -22,7 +22,7 @@ financial_schemas = {
         );
         CREATE INDEX IF NOT EXISTS idx_income_symbol_id ON income(symbol_id);
     """,
-    'balance': """
+    "balance": """
         CREATE TABLE IF NOT EXISTS balance (
             symbol_id BIGINT NOT NULL,
             ticker TEXT,
@@ -73,7 +73,7 @@ financial_schemas = {
 
         CREATE INDEX IF NOT EXISTS idx_balance_symbol_id ON balance(symbol_id);
             """,
-    'cash': """
+    "cash": """
         CREATE TABLE IF NOT EXISTS cash (
             symbol_id BIGINT NOT NULL,
             ticker TEXT,
@@ -118,8 +118,7 @@ financial_schemas = {
 
         CREATE INDEX IF NOT EXISTS idx_cash_symbol_id ON cash(symbol_id);
             """,
-    'earnings': 
-    """
+    "earnings": """
         CREATE TABLE IF NOT EXISTS earnings (
             symbol_id BIGINT NOT NULL,
             ticker TEXT,
@@ -137,8 +136,7 @@ financial_schemas = {
 
         CREATE INDEX IF NOT EXISTS idx_earnings_symbol_id ON earnings(symbol_id);
             """,
-    'overview': 
-    """
+    "overview": """
        CREATE TABLE IF NOT EXISTS overview (
             symbol_id INTEGER NOT NULL,
             Symbol TEXT NOT NULL,
@@ -209,5 +207,5 @@ financial_schemas = {
         );
 
         CREATE INDEX IF NOT EXISTS idx_overview_symbol_id ON overview(symbol_id);
-            """
+            """,
 }

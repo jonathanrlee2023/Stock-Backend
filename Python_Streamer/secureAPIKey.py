@@ -1,5 +1,6 @@
 import asyncio
 
+
 class SecureAPIKey:
     def __init__(self, initial_key: str):
         self._key = initial_key

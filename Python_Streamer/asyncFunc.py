@@ -9,7 +9,6 @@ import orjson
 from redis import asyncio as aioredis
 import aiosqlite
 import requests
-import httpx
 from sqlalchemy import text
 import datetime
 from appState import app_state
@@ -22,16 +21,28 @@ stream_started = False
 stream_lock = asyncio.Lock()
 is_weekday_business_hours_central = stream_func.is_weekday_business_hours_central()
 is_market_closed = stream_func.is_market_closed()
-option_attributes = ['askPrice', 'bidPrice', 'lastPrice', 'highPrice', 'volatility', 'delta', 'gamma', 'theta', 'vega', 'mark']
-parsed_labels = ['Ask Price',  'Bid Price', 'Last Price', 'High Price', 'IV', 'Delta', 'Gamma', 'Theta', 'Vega', 'Mark']
+option_attributes = [
+    "askPrice",
+    "bidPrice",
+    "lastPrice",
+    "highPrice",
+    "volatility",
+    "delta",
+    "gamma",
+    "theta",
+    "vega",
+    "mark",
+]
+parsed_labels = ["Ask Price", "Bid Price", "Last Price", "High Price", "IV", "Delta", "Gamma", "Theta", "Vega", "Mark"]
 get_option_stats = itemgetter(*option_attributes)
-r = aioredis.Redis(host='redis', port=6379, db=0)
+r = aioredis.Redis(host="redis", port=6379, db=0)
 db_dir = os.getenv("DB_DIR", "../Database")
 alpha_vantage_semaphore = asyncio.Semaphore(1)
 schwab_api_semaphore = asyncio.Semaphore(5)
 
 today = datetime.date.today()
 today_str = today.isoformat()
+
 
 async def date_refresher_task():
     global today, today_str
@@ -41,8 +52,9 @@ async def date_refresher_task():
         if now != today:
             today = now
             today_str = now.isoformat()
-        
+
         await asyncio.sleep(3600)
+
 
 async def listen_for_messages(alpha_vantage_api_key, rate_api_key):
     """
@@ -61,9 +73,8 @@ async def listen_for_messages(alpha_vantage_api_key, rate_api_key):
     global stream_started
     option_ids = stream_func.option_ids
     streamer = app_state.streamer
-    client = app_state.client
     pubsub = r.pubsub()
-    await pubsub.subscribe('Request_Channel')
+    await pubsub.subscribe("Request_Channel")
     try:
         if await r.ping():
             print("✅ Redis Connection Successful!")
@@ -79,7 +90,7 @@ async def listen_for_messages(alpha_vantage_api_key, rate_api_key):
                     stream_started = True
         if message is not None:
             data = orjson.loads(message["data"])
-            
+
             if "Status" in data:
                 continue
             else:
@@ -95,16 +106,11 @@ async def listen_for_messages(alpha_vantage_api_key, rate_api_key):
                             if not is_market_closed:
                                 asyncio.create_task(
                                     stream_func.start_options_stream(
-                                        ticker=symbol,
-                                        price=price,
-                                        day=day,
-                                        month=month,
-                                        year=year,
-                                        type=option_type
+                                        ticker=symbol, price=price, day=day, month=month, year=year, type=option_type
                                     )
-                                )                            
+                                )
                     else:
-                        if symbol not in streamer.subscriptions.get('LEVELONE_EQUITIES', {}):
+                        if symbol not in streamer.subscriptions.get("LEVELONE_EQUITIES", {}):
                             if not is_market_closed:
                                 asyncio.create_task(
                                     stream_func.start_stock_stream(
@@ -113,12 +119,13 @@ async def listen_for_messages(alpha_vantage_api_key, rate_api_key):
                                 )
                         await asyncio.gather(
                             get_options_and_initial_quotes(symbol),
-                            handleCompany(alpha_vantage_api_key, rate_api_key, symbol)
+                            handleCompany(alpha_vantage_api_key, rate_api_key, symbol),
                         )
                 except requests.exceptions.ReadTimeout:
                     print("Timeout connecting to Schwab API.")
                 except Exception as e:
                     print("Stream handling error:", e)
+
 
 async def get_symbol_id(symbol):
     """Helper to get ID from cache or DB, creating it if necessary."""
@@ -133,15 +140,16 @@ async def get_symbol_id(symbol):
             return row[0]
 
     cursor = await db.execute("INSERT INTO Symbols (symbol) VALUES (?)", (symbol,))
-    new_id = cursor.lastrowid 
-    
+    new_id = cursor.lastrowid
+
     await db.commit()
-    
+
     symbol_cache[symbol] = new_id
     return new_id
 
+
 async def init_db():
-    db_path = os.path.join(db_dir, 'PriceData.db')
+    db_path = os.path.join(db_dir, "PriceData.db")
     db = await aiosqlite.connect(db_path)
     await db.execute("PRAGMA journal_mode=WAL")
     await db.execute("PRAGMA synchronous=NORMAL")
@@ -178,8 +186,9 @@ async def init_db():
 
     return db
 
+
 async def init_last_checked_db():
-    db_path = os.path.join(db_dir, 'LastChecked.db')
+    db_path = os.path.join(db_dir, "LastChecked.db")
     db = await aiosqlite.connect(db_path)
     await db.execute("PRAGMA journal_mode=WAL")
     await db.execute("PRAGMA synchronous=NORMAL")
@@ -199,14 +208,16 @@ async def init_financial_db():
         if not engine:
             print(f"⚠️ Warning: No engine found for table '{table}'")
             continue
-            
+
         async with engine.begin() as conn:
             try:
-                for statement in schema.split(';'):
+                for statement in schema.split(";"):
                     if statement.strip():
                         await conn.execute(text(statement))
             except Exception as e:
                 print(f"❌ Failed to initialize {table}: {e}")
+
+
 async def write_to_db():
     """
     Write data to the database. This function is designed to run in a loop and be called
@@ -223,12 +234,12 @@ async def write_to_db():
     while True:
         write_interval = 300
         wait_time = write_interval - (time.time() % write_interval)
-        if wait_time < 0.1: wait_time = write_interval
+        if wait_time < 0.1:
+            wait_time = write_interval
         await asyncio.sleep(wait_time)
-        timestamp = int(time.time())    
-        
-        snapshot = {name: stream_func.new_data[name] for name in stream_func.file_names 
-                   if name in stream_func.new_data}
+        timestamp = int(time.time())
+
+        snapshot = {name: stream_func.new_data[name] for name in stream_func.file_names if name in stream_func.new_data}
 
         option_records = []
         stock_records = []
@@ -239,36 +250,47 @@ async def write_to_db():
                     s_id = symbol_cache[name]
                 else:
                     s_id = await get_symbol_id(name)
-                if len(name) > 8: # Option logic
-                    option_records.append((
-                        timestamp, s_id, data.get("Mark"), data.get("Bid Price"),
-                        data.get("Ask Price"), data.get("Last Price"), data.get("High Price"),
-                        data.get("IV"), data.get("Delta"), data.get("Gamma"),
-                        data.get("Theta"), data.get("Vega")
-                    ))
-                else: # Stock logic
-                    stock_records.append((
-                        timestamp, s_id, data.get("Mark"), data.get("Bid Price"),
-                        data.get("Ask Price"), data.get("Last Price"), 
-                        data.get("Bid Size"), data.get("Ask Size")
-                    ))
+                if len(name) > 8:  # Option logic
+                    option_records.append(
+                        (
+                            timestamp,
+                            s_id,
+                            data.get("Mark"),
+                            data.get("Bid Price"),
+                            data.get("Ask Price"),
+                            data.get("Last Price"),
+                            data.get("High Price"),
+                            data.get("IV"),
+                            data.get("Delta"),
+                            data.get("Gamma"),
+                            data.get("Theta"),
+                            data.get("Vega"),
+                        )
+                    )
+                else:  # Stock logic
+                    stock_records.append(
+                        (
+                            timestamp,
+                            s_id,
+                            data.get("Mark"),
+                            data.get("Bid Price"),
+                            data.get("Ask Price"),
+                            data.get("Last Price"),
+                            data.get("Bid Size"),
+                            data.get("Ask Size"),
+                        )
+                    )
             except KeyError as e:
                 print(f"Skipping {name}: Missing key {e}")
 
-
         if option_records:
-            await db.executemany(
-                "INSERT OR IGNORE INTO Options VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", 
-                option_records
-            )
-        
+            await db.executemany("INSERT OR IGNORE INTO Options VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", option_records)
+
         if stock_records:
-            await db.executemany(
-                "INSERT OR IGNORE INTO Stocks VALUES (?,?,?,?,?,?,?,?)", 
-                stock_records
-            )
+            await db.executemany("INSERT OR IGNORE INTO Stocks VALUES (?,?,?,?,?,?,?,?)", stock_records)
 
         await db.commit()
+
 
 async def stream_options():
     """
@@ -285,34 +307,31 @@ async def stream_options():
     option_ids = stream_func.option_ids
     new_data = stream_func.new_data
     client = app_state.client
-    LIMIT = 250 
-    
+    LIMIT = 250
+
     while True:
         if not option_ids:
             await asyncio.sleep(5)
             continue
 
         # start_fetch = time.perf_counter()
-        
+
         try:
             if len(option_ids) <= LIMIT:
                 response = await asyncio.to_thread(client.quotes, option_ids)
                 # GUARD: Verify response is valid and not empty
                 if response.status_code != 200 or not response.content:
                     print(f"API Error: Status {response.status_code} | Length: {len(response.content)}")
-                    await asyncio.sleep(5) 
+                    await asyncio.sleep(5)
                     continue
                 all_responses = [response.content]
             else:
-                batches = [option_ids[i:i + LIMIT] for i in range(0, len(option_ids), LIMIT)]
+                batches = [option_ids[i : i + LIMIT] for i in range(0, len(option_ids), LIMIT)]
                 tasks = [asyncio.to_thread(client.quotes, b) for b in batches]
                 responses = await asyncio.gather(*tasks)
-                
-                all_responses = [
-                    r.content for r in responses 
-                    if r.status_code == 200 and r.content
-                ]
-                
+
+                all_responses = [r.content for r in responses if r.status_code == 200 and r.content]
+
                 if not all_responses:
                     continue
         except Exception as e:
@@ -321,10 +340,10 @@ async def stream_options():
             continue
 
         # fetch_done = time.perf_counter()
-        
+
         local_fetcher = get_option_stats
         local_new_data = new_data
-        
+
         for raw_content in all_responses:
             batch_data = orjson.loads(raw_content)
 
@@ -333,22 +352,33 @@ async def stream_options():
                     t = local_new_data[symbol]
                 except KeyError:
                     t = local_new_data[symbol] = {}
-                
+
                 try:
-                    v = local_fetcher(details['quote'])
+                    v = local_fetcher(details["quote"])
                     # Fastest way to assign: Multiple assignment
-                    t['Bid Price'], t['Ask Price'], t['Last Price'], t['High Price'], \
-                    t['IV'], t['Delta'], t['Gamma'], t['Theta'], t['Vega'], t['Mark'] = v
+                    (
+                        t["Bid Price"],
+                        t["Ask Price"],
+                        t["Last Price"],
+                        t["High Price"],
+                        t["IV"],
+                        t["Delta"],
+                        t["Gamma"],
+                        t["Theta"],
+                        t["Vega"],
+                        t["Mark"],
+                    ) = v
                 except KeyError:
                     continue
 
         # end_time = time.perf_counter()
 
         wait_time = 15 - (time.time() % 15)
-        if wait_time < 0.1: wait_time = 15
+        if wait_time < 0.1:
+            wait_time = 15
         await asyncio.sleep(wait_time)
-    
-    
+
+
 async def broadcast_to_redis():
     """
     Broadcasts the current snapshot of data to the Redis channel named "Stream_Channel".
@@ -356,34 +386,31 @@ async def broadcast_to_redis():
     and then broadcast the snapshot. This is done to ensure that Redis receives updates
     at a consistent interval.
     """
-    new_data = stream_func.new_data
-    file_names = stream_func.file_names 
+    file_names = stream_func.file_names
     while True:
         try:
             current_data = stream_func.new_data.copy()
             file_names = list(stream_func.file_names)
 
             if file_names:
-                snapshot = {
-                    name: current_data[name] 
-                    for name in file_names 
-                    if name in current_data
-                }
+                snapshot = {name: current_data[name] for name in file_names if name in current_data}
                 if snapshot:
                     await r.publish("Stream_Channel", orjson.dumps(snapshot))
 
             wait_time = 15 - (time.time() % 15)
-            if wait_time < 0.1: wait_time = 15
+            if wait_time < 0.1:
+                wait_time = 15
             await asyncio.sleep(wait_time)
         except aioredis.ConnectionError:
             print("❌ Connection lost. Retrying in 5 seconds...")
             await asyncio.sleep(5)
         except Exception as e:
             print(f"⚠️ Unexpected error: {e}")
-            await asyncio.sleep(1) # Prevent tight-looping on errors
-        
+            await asyncio.sleep(1)  # Prevent tight-looping on errors
+
+
 async def init_tracker_db():
-    db_path = os.path.join(db_dir, 'Tracker.db')
+    db_path = os.path.join(db_dir, "Tracker.db")
     db = await aiosqlite.connect(db_path)
     await db.execute("PRAGMA journal_mode=WAL")
     await db.execute("PRAGMA synchronous=NORMAL")
@@ -391,21 +418,22 @@ async def init_tracker_db():
 
     return db
 
+
 async def update_tickers_from_db(api_manager, rate_api_key):
     """
     Updates the list of tickers to subscribe to from the database.
-    
+
     Retrieves all tickers from the database and subscribes to them.
-    
+
     If the ticker is an option, it is parsed into its constituent parts
     and added to the list of options to subscribe to. If the ticker is
     a stock, it is added to the list of stocks to subscribe to.
-    
+
     Parameters
     ----------
     streamer : Streamer
         The streamer object to use for subscribing to the tickers.
-    
+
     Returns
     -------
     None
@@ -414,7 +442,7 @@ async def update_tickers_from_db(api_manager, rate_api_key):
     async with db.execute("SELECT id FROM tracker") as cursor:
         rows = await cursor.fetchall()
         ticker_list = [row[0] for row in rows]
-    
+
     if not ticker_list:
         print("No tickers found in tracker.db")
         return
@@ -422,19 +450,21 @@ async def update_tickers_from_db(api_manager, rate_api_key):
     companies = []
     valid_tickers = []
     for ticker in ticker_list:
-        if len(ticker) > 8: 
+        if len(ticker) > 8:
             parsed = stream_func.parse_option(ticker)
             if parsed:
-                tasks.append(stream_func.start_options_stream(
-                    ticker=parsed["ticker"],
-                    price=parsed["price"],
-                    day=parsed["day"],
-                    month=parsed["month"],
-                    year=parsed["year"],
-                    type=parsed["type"]
-                ))
+                tasks.append(
+                    stream_func.start_options_stream(
+                        ticker=parsed["ticker"],
+                        price=parsed["price"],
+                        day=parsed["day"],
+                        month=parsed["month"],
+                        year=parsed["year"],
+                        type=parsed["type"],
+                    )
+                )
                 valid_tickers.append(ticker)
-        else: 
+        else:
             tasks.append(stream_func.start_stock_stream(ticker))
             companies.append(ticker)
             valid_tickers.append(ticker)
@@ -455,19 +485,22 @@ async def update_tickers_from_db(api_manager, rate_api_key):
     av_tasks = [throttled_handle_company(api_manager, rate_api_key, c) for c in companies]
     await asyncio.gather(*av_tasks, return_exceptions=True)
 
+
 async def throttled_handle_company(api_manager, rate_api_key, ticker):
     async with alpha_vantage_semaphore:
         print(f"📡 Fetching company data for {ticker}...")
         await handleCompany(api_manager, rate_api_key, ticker)
         await asyncio.sleep(0.1)
         return
-    
+
+
 async def throttled_get_options_and_initial_quotes(ticker):
     async with schwab_api_semaphore:
         print(f"📡 Fetching initial data for {ticker}...")
         await get_options_and_initial_quotes(ticker)
 
         return
+
 
 async def handleCompany(api_key, rate_key, ticker):
     """
@@ -493,16 +526,18 @@ async def handleCompany(api_key, rate_key, ticker):
         return
     try:
         from companyClass import Company
+
         company = await Company.create(ticker=ticker, api_key=api_key, rate_api_key=rate_key)
         if company is None:
             print("Company data not fetched properly")
             return
-    
+
         await r.publish("Company_Channel", orjson.dumps(company.final_report))
     except Exception as e:
         print(f"Error publishing company data for {ticker}: {e}")
 
     del company
+
 
 async def get_options_and_initial_quotes(ticker):
     """
@@ -522,18 +557,19 @@ async def get_options_and_initial_quotes(ticker):
     client = app_state.client
     if symbol_cache.get(ticker) is None:
         s_id = await get_symbol_id(ticker)
-    else: s_id = symbol_cache[ticker]
+    else:
+        s_id = symbol_cache[ticker]
     option_ids = stream_func.option_ids
     file_names = stream_func.file_names
     call_option_id_list = []
     put_option_id_list = []
-    
+
     loader = DataLoader(ticker=ticker, symbol_id=s_id, connection=client)
     try:
         tasks = [
             asyncio.to_thread(loader.get_quote),
-            loader.get_recent_price_history(), 
-            asyncio.to_thread(loader.get_option_expirations)
+            loader.get_recent_price_history(),
+            asyncio.to_thread(loader.get_option_expirations),
         ]
 
         quote, price_history, (call_option_id_list, put_option_id_list) = await asyncio.gather(*tasks)
@@ -546,20 +582,27 @@ async def get_options_and_initial_quotes(ticker):
     file_names.extend(all_options)
 
     quote_dict = {
-            "Symbol": ticker,
-            "timestamp": int(quote['quoteTime'] // 1000),
-            "BidPrice": quote['bidPrice'],
-            "AskPrice": quote['askPrice'],
-            "LastPrice": quote['lastPrice'],
-            "Mark": quote['mark']
-        }
-    
-    payload = {"Symbol": ticker, "Quote": quote_dict, "PriceHistory": price_history, "Call": call_option_id_list, "Put": put_option_id_list}
-    
+        "Symbol": ticker,
+        "timestamp": int(quote["quoteTime"] // 1000),
+        "BidPrice": quote["bidPrice"],
+        "AskPrice": quote["askPrice"],
+        "LastPrice": quote["lastPrice"],
+        "Mark": quote["mark"],
+    }
+
+    payload = {
+        "Symbol": ticker,
+        "Quote": quote_dict,
+        "PriceHistory": price_history,
+        "Call": call_option_id_list,
+        "Put": put_option_id_list,
+    }
+
     await r.publish("One_Time_Data_Channel", orjson.dumps(payload))
 
+
 async def init_earnings_db():
-    db_path = os.path.join(db_dir, 'EarningsDates.db')
+    db_path = os.path.join(db_dir, "EarningsDates.db")
     db = await aiosqlite.connect(db_path)
     await db.execute("PRAGMA journal_mode=WAL")
     await db.execute("PRAGMA synchronous=NORMAL")
@@ -580,12 +623,14 @@ async def init_earnings_db():
 
     return db
 
+
 async def get_last_update_date():
     db = app_state.earnings_db
     async with db.execute("SELECT MAX(reportdate) FROM earnings_calendar") as cursor:
         row = await cursor.fetchone()
         return row[0] if row else None
-        
+
+
 async def get_earnings_dates(api_key):
     """
     Fetches the earnings calendar for the next 3 months.
@@ -606,8 +651,7 @@ async def get_earnings_dates(api_key):
     global earnings_lookup
     global today
 
-        
-    db_path = os.path.join(db_dir, 'EarningsDates.db')
+    db_path = os.path.join(db_dir, "EarningsDates.db")
     should_fetch = False
 
     latest_report = await get_last_update_date()
@@ -633,58 +677,59 @@ async def get_earnings_dates(api_key):
             df = pd.read_csv(csv_data)
             df.columns = [c.strip().lower() for c in df.columns]
 
-            df['symbol_id'] = df['symbol'].str.upper().map(symbol_cache)
+            df["symbol_id"] = df["symbol"].str.upper().map(symbol_cache)
 
-            missing_symbols = df[df['symbol_id'].isna()]['symbol'].unique().tolist()
+            missing_symbols = df[df["symbol_id"].isna()]["symbol"].unique().tolist()
             if missing_symbols:
                 new_ids = await asyncio.gather(*(get_symbol_id(s) for s in missing_symbols))
-                
+
                 new_mappings = {s: i for s, i in zip(missing_symbols, new_ids) if i is not None}
                 symbol_cache.update(new_mappings)
-                
-                df['symbol_id'] = df['symbol'].str.upper().map(symbol_cache)
 
-            earnings_df = df.dropna(subset=['symbol_id']).copy()
+                df["symbol_id"] = df["symbol"].str.upper().map(symbol_cache)
+
+            earnings_df = df.dropna(subset=["symbol_id"]).copy()
             earnings_df["symbol_id"] = earnings_df["symbol_id"].astype(int)
             earnings_lookup = {
-                row.symbol_id: (row.reportdate, row.fiscaldateending) 
-                for row in earnings_df.itertuples(index=False)
+                row.symbol_id: (row.reportdate, row.fiscaldateending) for row in earnings_df.itertuples(index=False)
             }
             os.makedirs(db_dir, exist_ok=True)
 
             def save_to_db():
                 with sqlite3.connect(db_path) as conn:
-                    earnings_df.to_sql('earnings_calendar', conn, if_exists='replace', index=False)
-            
+                    earnings_df.to_sql("earnings_calendar", conn, if_exists="replace", index=False)
+
             await asyncio.to_thread(save_to_db)
         else:
             print(f"Failed to fetch data: {response.status_code}")
             return
     else:
+
         def load_from_db():
             with sqlite3.connect(db_path) as conn:
                 return pd.read_sql("SELECT * FROM earnings_calendar", conn)
-        
+
         earnings_df = await asyncio.to_thread(load_from_db)
         earnings_lookup = {
-                row.symbol_id: (row.reportdate, row.fiscaldateending) 
-                for row in earnings_df.itertuples(index=False)
-            }
+            row.symbol_id: (row.reportdate, row.fiscaldateending) for row in earnings_df.itertuples(index=False)
+        }
         return
-    
+
+
 def get_furthest_date_for_stock(symbol_id):
     """
     Returns the latest scheduled earnings date from RAM.
     Falling back to the DB is no longer necessary if the cache is loaded.
     """
     global earnings_lookup
-    
+
     ticker_data = earnings_lookup.get(symbol_id)
     if ticker_data:
-        return ticker_data[0] 
+        return ticker_data[0]
 
     return None
-    
+
+
 async def check_for_new_earnings(symbol_id, table) -> bool:
     """
     Checks if there are new earnings available for a specific ticker.
@@ -709,17 +754,17 @@ async def check_for_new_earnings(symbol_id, table) -> bool:
             last_checked_date = datetime.date.fromisoformat(last_checked_date)
         else:
             last_checked_date = last_checked_date
-        
+
         days_since_check = (today - last_checked_date).days
-        
+
         if days_since_check < 7:
             return False
-    
+
     last_checked_cache[symbol_id] = today
     try:
         await app_state.last_checked_db.execute(
             "INSERT OR REPLACE INTO last_checked (symbol_id, last_checked_date) VALUES (?, ?)",
-            (symbol_id, today.isoformat())
+            (symbol_id, today.isoformat()),
         )
         await app_state.last_checked_db.commit()
     except Exception as e:
@@ -732,10 +777,10 @@ async def check_for_new_earnings(symbol_id, table) -> bool:
 
     if not ticker_data:
         return False
-        
+
     report_date_str, next_fiscal_date = ticker_data
     if next_fiscal_date > (last_local_fiscal or "1900-01-01"):
-        if today_str > report_date_str: # String comparison is faster than parsing
+        if today_str > report_date_str:  # String comparison is faster than parsing
             return True
 
     return False
@@ -744,13 +789,16 @@ async def check_for_new_earnings(symbol_id, table) -> bool:
 async def init_caches():
     await asyncio.gather(cache_all_max_dates(), get_recent_quote_time(), cache_symbol_ids())
 
+
 async def cache_all_max_dates():
     global max_fiscal_lookup
-    financial_tables = {"balance" : "RAW_BALANCE_SHEET",
-                        "cash": "RAW_CASH_FLOW",
-                        "earnings": "RAW_EARNINGS",
-                        "income": "RAW_INCOME_STATEMENT"}
-    
+    financial_tables = {
+        "balance": "RAW_BALANCE_SHEET",
+        "cash": "RAW_CASH_FLOW",
+        "earnings": "RAW_EARNINGS",
+        "income": "RAW_INCOME_STATEMENT",
+    }
+
     async def fetch_table_max(table, db_name):
         async with app_state.engines[db_name].connect() as conn:
             query = text(f"SELECT symbol_id, MAX(date) FROM {table} GROUP BY symbol_id")
@@ -759,32 +807,31 @@ async def cache_all_max_dates():
             return table, dict(result.fetchall())
 
     tasks = [fetch_table_max(table, db_name) for table, db_name in financial_tables.items()]
-    
+
     results = await asyncio.gather(*tasks)
 
     for table, data in results:
         max_fiscal_lookup[table] = data
 
+
 async def get_recent_quote_time():
     priceDB = app_state.price_db
     global latest_quote
-    async with priceDB.execute(
-        "SELECT symbol_id, MAX(timestamp) FROM HistoricalStocks GROUP BY symbol_id"
-    ) as cursor:
+    async with priceDB.execute("SELECT symbol_id, MAX(timestamp) FROM HistoricalStocks GROUP BY symbol_id") as cursor:
         rows = await cursor.fetchall()
         latest_quote.update(dict(rows))
 
     return
 
+
 async def cache_symbol_ids():
     global symbol_cache
-    async with app_state.price_db.execute(
-        "SELECT symbol, symbol_id FROM Symbols"
-    ) as cursor:
+    async with app_state.price_db.execute("SELECT symbol, symbol_id FROM Symbols") as cursor:
         result = await cursor.fetchall()
         symbol_cache.update(dict(result))
 
     return
+
 
 async def last_checked_cacher():
     db = app_state.last_checked_db
