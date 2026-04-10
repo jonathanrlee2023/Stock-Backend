@@ -1,0 +1,68 @@
+# .gitlab-ci.yml
+
+stages:
+  - lint
+  - test
+
+variables:
+  GO_VERSION: "1.25"
+  PYTHON_VERSION: "3.13"
+
+# Cache dependencies between runs — saves 30-60s per job
+cache:
+  key:
+    files:
+      - Go_Backend/go.sum
+      - Python_Streamer/requirements.txt
+  paths:
+    - Go_Backend/.go-cache/
+    - Python_Streamer/.pip-cache/
+
+go:lint:
+  stage: lint
+  image: golang:1.25-alpine
+  script:
+    - cd Go_Backend
+    - go vet ./...
+  only:
+    changes:
+      - Go_Backend/**/*
+
+go:test:
+  stage: test
+  image: golang:1.25-alpine
+  variables:
+    GOPATH: $CI_PROJECT_DIR/Go_Backend/.go-cache
+  script:
+    - cd Go_Backend
+    - go test ./... -race -timeout 60s -cover
+  coverage: '/coverage: \d+\.\d+/'
+  only:
+    changes:
+      - Go_Backend/**/*
+
+python:lint:
+  stage: lint
+  image: python:3.13-slim
+  script:
+    - pip install ruff --quiet
+    - ruff check Python_Streamer/
+  only:
+    changes:
+      - Python_Streamer/**/*
+
+python:test:
+  stage: test
+  image: python:3.13-slim
+  variables:
+    PIP_CACHE_DIR: $CI_PROJECT_DIR/Python_Streamer/.pip-cache
+    PYTHONPATH: "."
+  before_script:
+    - cd Python_Streamer
+    - pip install -r requirements.txt --break-system-packages -q
+    - pip install pytest pytest-asyncio -q
+  script:
+    - pytest tests/ -v --tb=short --asyncio-mode=auto
+  only:
+    changes:
+      - Python_Streamer/**/*

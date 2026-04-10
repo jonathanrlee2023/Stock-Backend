@@ -13,7 +13,6 @@ import httpx
 from sqlalchemy import text
 import datetime
 from appState import app_state
-from companyClass import Company
 from dataloader import DataLoader
 import stream_func
 from cache import latest_quote, earnings_lookup, max_fiscal_lookup, symbol_cache, last_checked_cache, POPULAR_ETFS
@@ -493,6 +492,7 @@ async def handleCompany(api_key, rate_key, ticker):
         print(f"⚠️ Skipping {ticker} as it's a popular ETF with no financials.")
         return
     try:
+        from companyClass import Company
         company = await Company.create(ticker=ticker, api_key=api_key, rate_api_key=rate_key)
         if company is None:
             print("Company data not fetched properly")

@@ -39,6 +39,11 @@ func NewTrackerHandler(trackerDB *sql.DB, w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	if newTracker.ID == "" {
+		http.Error(w, "Tracker ID is required and must be a string", http.StatusBadRequest)
+		return
+	}
+
 	insertData := `INSERT OR REPLACE INTO Tracker (id) VALUES (?)`
 	_, err = trackerDB.Exec(insertData, newTracker.ID)
 	if err != nil {

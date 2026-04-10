@@ -12,8 +12,6 @@ from cache import exchange_rate_cache, max_fiscal_lookup, rate_limited
 import asyncFunc
 from dataloader import DataLoader
 
-pd.set_option('future.no_silent_downcasting', True)
-
 RISK_FREE_RATE = 0.0375
 MARKET_RISK_PREMIUM = 0.055
 # Levered Beta averages for Robinhood/Morningstar Categories
@@ -902,6 +900,7 @@ class Company:
             The dividend price of the stock if applicable
         """
         ticker = self.ticker
+        intrinsic_price = 0.0
         dividend_price = None
         # 1. LOAD DATA
         income_df = self.income_df

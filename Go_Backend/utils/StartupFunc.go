@@ -103,56 +103,6 @@ func SendOpenPositions(balanceDB, openDB, priceDB, trackerDB *sql.DB, targetClie
     ProcessWrite(time.Now(), targetClient, balanceDB, openDB)
 }
 
-// Send symbols from Tracker.db to python client
-func SendTrackerSymbols(trackerDB, openDB *sql.DB) ([]OptionStreamRequest, []StockStreamRequest) {
-	var optionSymbols []OptionStreamRequest
-	var stockSymbols []StockStreamRequest
-	var toDelete []string
-
-	rows, err := trackerDB.Query("SELECT id FROM Tracker")
-	if err != nil {
-		log.Println("No Tables in Tracker")
-		return nil, nil
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var id string
-		var option OptionStreamRequest
-
-		err := rows.Scan(&id)
-		if err != nil {
-			log.Println("No rows to read from")
-			return nil, nil
-		}
-		if len(id) > 6 {
-			option, err = ParseOptionString(id)
-			if err != nil {
-				log.Println("Failed to parse")
-			}
-			expDate, err := ParseExpirationDate(option)
-			if err != nil {
-				log.Println("Failed to parse")
-			}
-			now := time.Now().UTC()
-			if expDate.Before(now) {
-				toDelete = append(toDelete, id)
-				continue
-			}
-			optionSymbols = append(optionSymbols, option)
-		} else {
-			stock := StockStreamRequest{Symbol: id}
-			stockSymbols = append(stockSymbols, stock)
-		}
-	}
-	for _, id := range toDelete {
-		log.Printf("Cleaning up expired option: %s", id)
-		trackerDB.Exec("DELETE FROM Tracker WHERE id = ?", id)
-		openDB.Exec("DELETE FROM OpenPositions WHERE id = ?", id)
-	}
-	return optionSymbols, stockSymbols
-}
-
 func InitDB(path string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -165,7 +115,7 @@ func InitDB(path string) (*sql.DB, error) {
 	db.SetConnMaxIdleTime(30 * time.Second)
 
 	var lastErr error
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		_, lastErr = db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL;")
 		if lastErr == nil {
 			return db, nil
