@@ -7,6 +7,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -490,7 +491,11 @@ func CreateUserHandler(balanceDB *sql.DB, w http.ResponseWriter, r *http.Request
 }
 
 func HashPassword(password string) (string, error) {
-	bytes, err := bcrypt.GenerateFromPassword([]byte(password), 14)
+	cost := bcrypt.DefaultCost
+    if os.Getenv("GO_ENV") == "test" {
+        cost = bcrypt.MinCost
+    }
+	bytes, err := bcrypt.GenerateFromPassword([]byte(password), cost)
 	return string(bytes), err
 }
 
