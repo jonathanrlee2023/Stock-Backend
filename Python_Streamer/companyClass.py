@@ -129,7 +129,8 @@ class Company:
                 if val is None or pd.isna(val):
                     return None
                 return float(val)
-            except:
+            except Exception as e:
+                print("Exception in converting to float: ", e)
                 return None
 
         def safe_int(val):
@@ -137,7 +138,8 @@ class Company:
                 if val is None or pd.isna(val):
                     return None
                 return int(val)
-            except:
+            except Exception as e:
+                print("Exception in converting to int: ", e)
                 return None
 
         annual_income = self.prepare_df_for_go(self.income_df)
@@ -516,7 +518,8 @@ class Company:
                     text(f"SELECT 1 FROM {table_name} WHERE ticker = :ticker LIMIT 1"), {"ticker": ticker}
                 )
                 return result.fetchone() is not None
-            except:
+            except Exception as e:
+                print(f"Exception in checking DB for ticker {ticker}: {e}")
                 return False
 
     async def _save_df_to_sql(self, engine, df, table_name):
