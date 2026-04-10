@@ -30,9 +30,10 @@ go:lint:
 
 go:test:
   stage: test
-  image: golang:1.25-alpine
+  image: golang:1.25-bookworm
   variables:
     GOPATH: $CI_PROJECT_DIR/Go_Backend/.go-cache
+    CGO_ENABLED: "1"
   script:
     - cd Go_Backend
     - go test ./... -race -timeout 60s -cover
