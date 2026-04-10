@@ -7,7 +7,6 @@ cache:
     files:
       - Go_Backend/go.sum
       - Python_Streamer/requirements.txt
-      - Python_Streamer/requirements-dev.txt
   paths:
     - Go_Backend/.go-cache/
     - Python_Streamer/.pip-cache/
