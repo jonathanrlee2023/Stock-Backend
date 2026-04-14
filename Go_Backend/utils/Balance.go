@@ -3,7 +3,6 @@ package utils
 import (
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"log"
 	"time"
 
@@ -40,7 +39,6 @@ func GetMostRecentBalance(balanceDB *sql.DB, userID int) map[int]float64 {
 	}
 
 	for id := range client.PortfolioIDs.IDs {
-		fmt.Println("Processing portfolio ID:", id)
 		err := balanceDB.QueryRow("SELECT timestamp, balance, cash FROM Balance WHERE portfolio_id = ? AND user_id = ? ORDER BY timestamp DESC LIMIT 1", id, userID).Scan(&latestTs, &todayBalance, &todayCash)
 		if err == sql.ErrNoRows {
 			client.Balance.Balances[id] = &Balance{}
@@ -112,8 +110,6 @@ func GetMostRecentBalance(balanceDB *sql.DB, userID int) map[int]float64 {
 			Cash:      todayCash,
 			PortfolioID: id,
 		}
-		fmt.Println("Most recent balance for portfolio", id, "is", balance)
-		fmt.Printf("Sending balance data to client for portfolio %d: %+v\n", id, message)
 
 		client := Clients[GlobalUserID.ClientID]
 		if client != nil {
