@@ -71,6 +71,7 @@ type CompanyStats struct {
 	EarningsDate      *string              `json:"EarningsDate"`
 	Grade             *int                 `json:"Grade"`
 	Sector            *string              `json:"Sector"`
+	Industry          *string              `json:"Industry"`
 	AnnualIncome      *[]IncomeStatement   `json:"AnnualIncome"`
 	AnnualBalance     *[]BalanceSheet      `json:"AnnualBalance"`
 	AnnualCash        *[]CashFlowStatement `json:"AnnualCash"`

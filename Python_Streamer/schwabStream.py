@@ -36,10 +36,6 @@ def create_engines(db_dir):
         "cash": "cash_flow.db",
         "earnings": "earnings.db",
         "overview": "company_overviews.db",
-        "RAW_INCOME_STATEMENT": "RAW_INCOME_STATEMENT.db",
-        "RAW_BALANCE_SHEET": "RAW_BALANCE_SHEET.db",
-        "RAW_CASH_FLOW": "RAW_CASH_FLOW.db",
-        "RAW_EARNINGS": "RAW_EARNINGS.db",
     }
 
     # Build engines dynamically using the shared DB_DIR
@@ -99,8 +95,8 @@ async def main():
 
     await init_app_state(db_dir)
     app_state.cpu_executor = ProcessPoolExecutor(max_workers=4)
-    app_state.client = schwabdev.Client(app_key=appKey, app_secret=appSecret, tokens_db="/app/Database/tokens.json")
-    app_state.streamer = schwabdev.Stream(app_state.client)
+    app_state.schwab_client = schwabdev.Client(app_key=appKey, app_secret=appSecret, tokens_db="/app/Database/tokens.json")
+    app_state.streamer = schwabdev.Stream(app_state.schwab_client)
     app_state.httpx_client = httpx.AsyncClient(
         timeout=httpx.Timeout(5.0), limits=httpx.Limits(max_connections=20, max_keepalive_connections=10)
     )
@@ -135,7 +131,7 @@ async def main():
         for engine in app_state.engines.values():
             await engine.dispose()
 
-        app_state.client.close()
+        app_state.schwab_client.close()
         app_state.streamer.close()
         app_state.httpx_client.close()
         app_state.cpu_executor.shutdown()
