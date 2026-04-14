@@ -91,7 +91,8 @@ class CompanyDataFetcher(FinancialDataSource):
 
     def _prepare_df(self, df, report_type):
         """Standardizes columns and cleans data."""
-        if df.empty: return df
+        if df.empty:
+            return df
         
         df = df.rename(columns={"fiscalDateEnding": "date"})
         df["ticker"] = self.ticker
