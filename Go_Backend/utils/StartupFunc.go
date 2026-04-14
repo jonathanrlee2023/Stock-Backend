@@ -84,7 +84,6 @@ func SendOpenPositions(balanceDB, openDB, priceDB, trackerDB *sql.DB, targetClie
 	targetClient.PortfolioIDs.Unlock()
 	targetClient.OpenPositions.Unlock()
 
-	fmt.Printf("Sending open positions data to client: %+v\n", msg)
 	jsonData, err := json.Marshal(msg)
 	if err != nil {
 		log.Println("Failed to marshal open positions:", err)

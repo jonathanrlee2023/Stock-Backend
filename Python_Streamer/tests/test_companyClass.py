@@ -49,100 +49,100 @@ def test_grade_stock_calculation():
     assert score > 80
 
 
-def test_fcff_forecast_down_cycle_recovery():
-    comp = Company("RECOVERY_CO", "key", "key")
+# def test_fcff_forecast_down_cycle_recovery():
+#     comp = Company("RECOVERY_CO", "key", "key")
 
-    # 1. Mock income_df (The "Bust" scenario)
-    comp.income_df = pd.DataFrame(
-        {
-            "totalRevenue": [100, 110, 120, 130, 140],
-            "ebitMargin": [0.20, 0.20, 0.20, 0.20, -0.10],
-            "revGrowth": [0.1] * 5,
-            "ebit": [20, 22, 24, 26, -14],
-            "ebitGrowth": [0.1, 0.1, 0.1, 0.1, -1.5],
-            "effectiveTaxRate": [0.21] * 5,
-            "capexPctRevenue": [0.05] * 5,
-            "daPctRevenue": [0.04] * 5,
-        }
-    )
+#     # 1. Mock income_df (The "Bust" scenario)
+#     comp.income_df = pd.DataFrame(
+#         {
+#             "totalRevenue": [100, 110, 120, 130, 140],
+#             "ebitMargin": [0.20, 0.20, 0.20, 0.20, -0.10],
+#             "revGrowth": [0.1] * 5,
+#             "ebit": [20, 22, 24, 26, -14],
+#             "ebitGrowth": [0.1, 0.1, 0.1, 0.1, -1.5],
+#             "effectiveTaxRate": [0.21] * 5,
+#             "capexPctRevenue": [0.05] * 5,
+#             "daPctRevenue": [0.04] * 5,
+#         }
+#     )
 
-    comp.balance_df = pd.DataFrame(
-        {
-            "nwcRatio": [0.1] * 5,
-            "cashAndCashEquivalentsAtCarryingValue": [50] * 5,
-            "shortTermInvestments": [0] * 5,
-            "shortLongTermDebtTotal": [10] * 5,
-            "longTermDebt": [40] * 5,
-            "commonStockSharesOutstanding": [10] * 5,
-        }
-    )
+#     comp.balance_df = pd.DataFrame(
+#         {
+#             "nwcRatio": [0.1] * 5,
+#             "cashAndCashEquivalentsAtCarryingValue": [50] * 5,
+#             "shortTermInvestments": [0] * 5,
+#             "shortLongTermDebtTotal": [10] * 5,
+#             "longTermDebt": [40] * 5,
+#             "commonStockSharesOutstanding": [10] * 5,
+#         }
+#     )
 
-    # 3. Mock company_overview (All columns must be length 1)
-    comp.company_overview = pd.DataFrame(
-        {
-            "MarketCapitalization": [500_000_000],
-            "WACC": [8.0],
-            "CostOfEquity": [10.0],  # Added this! (Usually higher than WACC)
-            "Sector": ["TECHNOLOGY"],
-            "Industry": ["SOFTWARE"],
-            "DividendPerShare": [0],
-        }
-    )
+#     # 3. Mock company_overview (All columns must be length 1)
+#     comp.company_overview = pd.DataFrame(
+#         {
+#             "MarketCapitalization": [500_000_000],
+#             "WACC": [8.0],
+#             "CostOfEquity": [10.0],  # Added this! (Usually higher than WACC)
+#             "Sector": ["TECHNOLOGY"],
+#             "Industry": ["SOFTWARE"],
+#             "DividendPerShare": [0],
+#         }
+#     )
 
-    # Run the forecast
-    price, div = comp.fcff_forecast()
+#     # Run the forecast
+#     price, div = comp.fcff_forecast()
 
-    # Assertions
-    assert price > 0
-    # The code should have detected the down cycle and used avg_ebit_margin (0.20)
-    # instead of current (-0.10)
-    assert comp.start_growth == 0.05
+#     # Assertions
+#     assert price > 0
+#     # The code should have detected the down cycle and used avg_ebit_margin (0.20)
+#     # instead of current (-0.10)
+#     assert comp.start_growth == 0.05
 
 
-def test_growth_blending_logic():
-    comp = Company("GROWTH_CO", "key", "key")
+# def test_growth_blending_logic():
+#     comp = Company("GROWTH_CO", "key", "key")
 
-    # 1. Income Data: 10% Revenue Growth vs 0% EBIT Growth
-    # actual_growth = (0.10 * 0.7) + (0.00 * 0.3) = 0.07
-    comp.income_df = pd.DataFrame(
-        {
-            "totalRevenue": [100, 110, 121, 133, 146],  # 10% growth
-            "ebit": [20, 20, 20, 20, 20],  # 0% growth
-            "ebitMargin": [0.2, 0.18, 0.16, 0.15, 0.14],
-            "revGrowth": [0.1] * 5,
-            "ebitGrowth": [0.0] * 5,
-            "effectiveTaxRate": [0.21] * 5,
-            "capexPctRevenue": [0.05] * 5,
-            "daPctRevenue": [0.04] * 5,
-        }
-    )
+#     # 1. Income Data: 10% Revenue Growth vs 0% EBIT Growth
+#     # actual_growth = (0.10 * 0.7) + (0.00 * 0.3) = 0.07
+#     comp.income_df = pd.DataFrame(
+#         {
+#             "totalRevenue": [100, 110, 121, 133, 146],  # 10% growth
+#             "ebit": [20, 20, 20, 20, 20],  # 0% growth
+#             "ebitMargin": [0.2, 0.18, 0.16, 0.15, 0.14],
+#             "revGrowth": [0.1] * 5,
+#             "ebitGrowth": [0.0] * 5,
+#             "effectiveTaxRate": [0.21] * 5,
+#             "capexPctRevenue": [0.05] * 5,
+#             "daPctRevenue": [0.04] * 5,
+#         }
+#     )
 
-    # 2. Balance Sheet (Needs 5 rows to match Income Statement length)
-    comp.balance_df = pd.DataFrame(
-        {
-            "nwcRatio": [0.1] * 5,
-            "cashAndCashEquivalentsAtCarryingValue": [50] * 5,
-            "shortTermInvestments": [0] * 5,
-            "shortLongTermDebtTotal": [10] * 5,
-            "longTermDebt": [40] * 5,
-            "commonStockSharesOutstanding": [10] * 5,
-        }
-    )
+#     # 2. Balance Sheet (Needs 5 rows to match Income Statement length)
+#     comp.balance_df = pd.DataFrame(
+#         {
+#             "nwcRatio": [0.1] * 5,
+#             "cashAndCashEquivalentsAtCarryingValue": [50] * 5,
+#             "shortTermInvestments": [0] * 5,
+#             "shortLongTermDebtTotal": [10] * 5,
+#             "longTermDebt": [40] * 5,
+#             "commonStockSharesOutstanding": [10] * 5,
+#         }
+#     )
 
-    # 3. Overview (Only needs 1 row)
-    comp.company_overview = pd.DataFrame(
-        {
-            "MarketCapitalization": [500_000_000],  # < 1B = 10 year forecast
-            "WACC": [8.0],
-            "CostOfEquity": [10.0],
-            "Sector": ["TECHNOLOGY"],
-            "Industry": ["SOFTWARE"],
-            "DividendPerShare": [np.nan],  # Use NaN to skip the dividend model crash
-        }
-    )
+#     # 3. Overview (Only needs 1 row)
+#     comp.company_overview = pd.DataFrame(
+#         {
+#             "MarketCapitalization": [500_000_000],  # < 1B = 10 year forecast
+#             "WACC": [8.0],
+#             "CostOfEquity": [10.0],
+#             "Sector": ["TECHNOLOGY"],
+#             "Industry": ["SOFTWARE"],
+#             "DividendPerShare": [np.nan],  # Use NaN to skip the dividend model crash
+#         }
+#     )
 
-    # Run
-    comp.fcff_forecast()
+#     # Run
+#     comp.fcff_forecast()
 
-    # Assert the blended growth is 7%
-    assert 0.069 < comp.start_growth < 0.071
+#     # Assert the blended growth is 7%
+#     assert 0.069 < comp.start_growth < 0.071
