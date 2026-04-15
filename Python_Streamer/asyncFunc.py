@@ -306,7 +306,7 @@ async def stream_options():
     """
     option_ids = stream_func.option_ids
     new_data = stream_func.new_data
-    client = app_state.client
+    client = app_state.schwab_client
     LIMIT = 250
 
     while True:
@@ -477,7 +477,6 @@ async def update_tickers_from_db(api_manager, rate_api_key):
 
     if not companies:
         return
-    tasks = []
     schwab_tasks = [throttled_get_options_and_initial_quotes(c) for c in companies]
     await asyncio.gather(*schwab_tasks, return_exceptions=True)
 
@@ -554,7 +553,7 @@ async def get_options_and_initial_quotes(ticker):
     -------
     None
     """
-    client = app_state.client
+    client = app_state.schwab_client
     if symbol_cache.get(ticker) is None:
         s_id = await get_symbol_id(ticker)
     else:
@@ -792,21 +791,16 @@ async def init_caches():
 
 async def cache_all_max_dates():
     global max_fiscal_lookup
-    financial_tables = {
-        "balance": "RAW_BALANCE_SHEET",
-        "cash": "RAW_CASH_FLOW",
-        "earnings": "RAW_EARNINGS",
-        "income": "RAW_INCOME_STATEMENT",
-    }
+    financial_tables = {"income", "balance", "cash", "earnings"}
 
-    async def fetch_table_max(table, db_name):
-        async with app_state.engines[db_name].connect() as conn:
-            query = text(f"SELECT symbol_id, MAX(date) FROM {table} GROUP BY symbol_id")
+    async def fetch_table_max(name):
+        async with app_state.engines[name].connect() as conn:
+            query = text(f"SELECT symbol_id, MAX(date) FROM {name} GROUP BY symbol_id")
             result = await conn.execute(query)
 
-            return table, dict(result.fetchall())
+            return name, dict(result.fetchall())
 
-    tasks = [fetch_table_max(table, db_name) for table, db_name in financial_tables.items()]
+    tasks = [fetch_table_max(table) for table in financial_tables if table in app_state.engines]
 
     results = await asyncio.gather(*tasks)
 

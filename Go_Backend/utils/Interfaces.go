@@ -71,6 +71,7 @@ type CompanyStats struct {
 	EarningsDate      *string              `json:"EarningsDate"`
 	Grade             *int                 `json:"Grade"`
 	Sector            *string              `json:"Sector"`
+	Industry          *string              `json:"Industry"`
 	AnnualIncome      *[]IncomeStatement   `json:"AnnualIncome"`
 	AnnualBalance     *[]BalanceSheet      `json:"AnnualBalance"`
 	AnnualCash        *[]CashFlowStatement `json:"AnnualCash"`
@@ -236,7 +237,7 @@ type IncomeStatement struct {
 	GrossProfit            *float64 `json:"grossProfit"`
 	TotalRevenue           *float64 `json:"totalRevenue"`
 	CostOfRevenue          *float64 `json:"costOfRevenue"`
-	CostOfGoodsAndServices *float64 `json:"costOfGoodsAndServices"`
+	CostOfGoodsAndServicesSold *float64 `json:"costOfGoodsAndServicesSold"`
 	OperatingIncome        *float64 `json:"operatingIncome"`
 	SellingGeneralAdmin    *float64 `json:"sellingGeneralAndAdministrative"`
 	ResearchAndDev         *float64 `json:"researchAndDevelopment"`
