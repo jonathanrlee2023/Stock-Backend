@@ -7,22 +7,13 @@ from appState import app_state
 from cache import exchange_rate_cache
 
 class CompanyDataFetcher(FinancialDataSource):
-    def __init__(self, ticker, symbol_id, api_key, rate_api_key, client):
+    def __init__(self, ticker, symbol_id, api_key, rate_api_key, data, client):
         self.ticker = ticker
         self.symbol_id = symbol_id
         self.api_key = api_key
         self.rate_api_key = rate_api_key
         self.client = client
-        self.data = self._initialize_data_structure()
-
-    def _initialize_data_structure(self):
-        return {
-            "income": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
-            "balance": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
-            "cash": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
-            "earnings": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
-            "overview": pd.DataFrame()
-        }
+        self.data = data
 
     async def fetch_fundamentals(self, category):
         CATEGORY_MAP = {
@@ -64,7 +55,6 @@ class CompanyDataFetcher(FinancialDataSource):
                 self.api_key.rate_limit()
                 return None
             
-            print(f"API Response for {self.ticker} ({category}): {data}")
             return data
         except Exception as e:
             print(f"Fetch Error: {e}")

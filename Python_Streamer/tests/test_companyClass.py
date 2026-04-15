@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 import pandas as pd
+from companyFinancialCalc import CompanyFinancialCalculator
 from companyClass import Company
 
 
@@ -49,54 +50,60 @@ def test_grade_stock_calculation():
     assert score > 80
 
 
-# def test_fcff_forecast_down_cycle_recovery():
-#     comp = Company("RECOVERY_CO", "key", "key")
+def test_fcff_forecast_down_cycle_recovery():
+    data = {
+            "income": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
+            "balance": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
+            "cash": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
+            "earnings": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
+            "overview": pd.DataFrame()
+        }
+    # 1. Mock income_df (The "Bust" scenario)
+    data["income"]["annual"] = pd.DataFrame(
+        {
+            "totalRevenue": [100, 110, 120, 130, 140],
+            "ebitMargin": [0.20, 0.20, 0.20, 0.20, -0.10],
+            "revGrowth": [0.1] * 5,
+            "ebit": [20, 22, 24, 26, -14],
+            "ebitGrowth": [0.1, 0.1, 0.1, 0.1, -1.5],
+            "effectiveTaxRate": [0.21] * 5,
+            "capexPctRevenue": [0.05] * 5,
+            "daPctRevenue": [0.04] * 5,
+        }
+    )
 
-#     # 1. Mock income_df (The "Bust" scenario)
-#     comp.income_df = pd.DataFrame(
-#         {
-#             "totalRevenue": [100, 110, 120, 130, 140],
-#             "ebitMargin": [0.20, 0.20, 0.20, 0.20, -0.10],
-#             "revGrowth": [0.1] * 5,
-#             "ebit": [20, 22, 24, 26, -14],
-#             "ebitGrowth": [0.1, 0.1, 0.1, 0.1, -1.5],
-#             "effectiveTaxRate": [0.21] * 5,
-#             "capexPctRevenue": [0.05] * 5,
-#             "daPctRevenue": [0.04] * 5,
-#         }
-#     )
+    data["balance"]["annual"] = pd.DataFrame(
+        {
+            "nwcRatio": [0.1] * 5,
+            "cashAndCashEquivalentsAtCarryingValue": [50] * 5,
+            "shortTermInvestments": [0] * 5,
+            "shortLongTermDebtTotal": [10] * 5,
+            "longTermDebt": [40] * 5,
+            "commonStockSharesOutstanding": [10] * 5,
+        }
+    )
 
-#     comp.balance_df = pd.DataFrame(
-#         {
-#             "nwcRatio": [0.1] * 5,
-#             "cashAndCashEquivalentsAtCarryingValue": [50] * 5,
-#             "shortTermInvestments": [0] * 5,
-#             "shortLongTermDebtTotal": [10] * 5,
-#             "longTermDebt": [40] * 5,
-#             "commonStockSharesOutstanding": [10] * 5,
-#         }
-#     )
+    # 3. Mock company_overview (All columns must be length 1)
+    data["overview"] = pd.DataFrame(
+        {
+            "MarketCapitalization": [500_000_000],
+            "WACC": [8.0],
+            "CostOfEquity": [10.0],  # Added this! (Usually higher than WACC)
+            "Sector": ["TECHNOLOGY"],
+            "Industry": ["SOFTWARE"],
+            "DividendPerShare": [0],
+        }
+    )
+    comp = CompanyFinancialCalculator("TEST", data, "key")
 
-#     # 3. Mock company_overview (All columns must be length 1)
-#     comp.company_overview = pd.DataFrame(
-#         {
-#             "MarketCapitalization": [500_000_000],
-#             "WACC": [8.0],
-#             "CostOfEquity": [10.0],  # Added this! (Usually higher than WACC)
-#             "Sector": ["TECHNOLOGY"],
-#             "Industry": ["SOFTWARE"],
-#             "DividendPerShare": [0],
-#         }
-#     )
+    # Run the forecast
+    price, div = comp.fcff_forecast()
 
-#     # Run the forecast
-#     price, div = comp.fcff_forecast()
-
-#     # Assertions
-#     assert price > 0
-#     # The code should have detected the down cycle and used avg_ebit_margin (0.20)
-#     # instead of current (-0.10)
-#     assert comp.start_growth == 0.05
+    # Assertions
+    assert price > 0
+    # The code should have detected the down cycle and used avg_ebit_margin (0.20)
+    # instead of current (-0.10)
+    assert comp.start_growth == 0.05
 
 
 # def test_growth_blending_logic():
