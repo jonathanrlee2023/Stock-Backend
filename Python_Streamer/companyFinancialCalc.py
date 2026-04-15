@@ -38,6 +38,10 @@ class ValuationResults:
     dividend_price: float
     wacc: float
     roic: float
+    fcf: float
+    fcff: float
+    fcf_per_share: float
+    delta_nwc: float
 class CompanyFinancialCalculator:
     def __init__(self, ticker, data, price_at_report=None):
         self.ticker = ticker
@@ -50,6 +54,7 @@ class CompanyFinancialCalculator:
 
     def run_valuation(self) -> ValuationResults:
         """The 'Orchestrator' that returns a clean object."""
+        fcf, fcff, fcf_per_share, delta_nwc = self.calc_fcf()
         wacc = self.calc_wacc()
         roic = self.roic()
         intrinsic, div_price = self.fcff_forecast()
@@ -63,7 +68,11 @@ class CompanyFinancialCalculator:
             intrinsic_price=intrinsic,
             dividend_price=div_price,
             wacc=wacc,
-            roic=roic
+            roic=roic,
+            fcf=fcf,
+            fcff=fcff,
+            fcf_per_share=fcf_per_share,
+            delta_nwc=delta_nwc
         )
     
     
@@ -137,6 +146,7 @@ class CompanyFinancialCalculator:
             ).round(2)
         except Exception as e:
             print(f"Error calculating FCF for {ticker}: {str(e)}")
+            print(f"Data: {cash_df.head()}, {income_df.head()}, {balance_df.head()}")
 
         self.cash_df = cash_df
         self.income_df = income_df
@@ -226,6 +236,8 @@ class CompanyFinancialCalculator:
 
         except Exception as e:
             print(f"Error calculating WACC for {ticker}: {str(e)}")
+            print(f"Data: {income_df.head()}, {balance_df.head()}")
+
         self.company_overview = company_overview
 
         return wacc.round(4)
@@ -268,6 +280,8 @@ class CompanyFinancialCalculator:
             balance_df["nwcRatio"] = balance_df["NWC"] / income_df["totalRevenue"]
         except Exception as e:
             print(f"Error calculating forecast metrics for {self.ticker}: {str(e)}")
+            print(f"Data: {income_df.head()}, {balance_df.head()}, {cash_df.head()}")
+
 
         self.income_df = income_df
         self.balance_df = balance_df

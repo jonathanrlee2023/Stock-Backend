@@ -32,7 +32,7 @@ class Company:
         self = cls(ticker, api_key, rate_api_key)
         self.symbol_id = await get_symbol_id(self.ticker)
 
-        db_handler = CompanyDBHandler(app_state.engines, self.symbol_id, ticker)
+        db_handler = CompanyDBHandler(app_state.engines, self.symbol_id, ticker, data=self.data)
 
         await db_handler.load_all_from_dbs()
 
@@ -40,7 +40,7 @@ class Company:
 
         categories = ["income", "balance", "cash", "earnings"]
 
-        api_handler = CompanyDataFetcher(ticker, self.symbol_id, api_key, rate_api_key, app_state.httpx_client)
+        api_handler = CompanyDataFetcher(ticker, self.symbol_id, api_key, rate_api_key, data=self.data, client=app_state.httpx_client)
 
         for cat in categories:
             if self.data[cat]["annual"].empty:
@@ -81,7 +81,7 @@ class Company:
         
 
         self.market_cap = self.company_overview["MarketCapitalization"].values[0]
-        self.fcf, self.fcff, self.fcf_per_share, self.nwc = financial_calculator.calc_fcf()
+        self.fcf, self.fcff, self.fcf_per_share, self.nwc = self.valuation_results.fcf, self.valuation_results.fcff, self.valuation_results.fcf_per_share, self.valuation_results.delta_nwc
         self.wacc = self.valuation_results.wacc
         self.intrinsic_price = self.valuation_results.intrinsic_price
         self.dividend_price = self.valuation_results.dividend_price

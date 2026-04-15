@@ -6,18 +6,12 @@ from sqlalchemy import text
 
 
 class CompanyDBHandler:
-    def __init__(self, engines: dict, symbol_id: int, ticker: str):
+    def __init__(self, engines: dict, symbol_id: int, ticker: str, data: dict):
         # DIP: Inject the engines needed rather than reaching for app_state
         self.engines = engines
         self.symbol_id = symbol_id
         self.ticker = ticker
-        self.data = {
-            "income": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
-            "balance": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
-            "cash": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
-            "earnings": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
-            "overview": pd.DataFrame()
-        }
+        self.data = data
 
     async def _check_db_for_ticker(self, table_name, engine, ticker):
         async with engine.connect() as conn:

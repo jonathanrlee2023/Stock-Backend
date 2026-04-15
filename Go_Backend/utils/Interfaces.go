@@ -237,7 +237,7 @@ type IncomeStatement struct {
 	GrossProfit            *float64 `json:"grossProfit"`
 	TotalRevenue           *float64 `json:"totalRevenue"`
 	CostOfRevenue          *float64 `json:"costOfRevenue"`
-	CostOfGoodsAndServices *float64 `json:"costOfGoodsAndServices"`
+	CostOfGoodsAndServicesSold *float64 `json:"costOfGoodsAndServicesSold"`
 	OperatingIncome        *float64 `json:"operatingIncome"`
 	SellingGeneralAdmin    *float64 `json:"sellingGeneralAndAdministrative"`
 	ResearchAndDev         *float64 `json:"researchAndDevelopment"`
