@@ -5,23 +5,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
 // Sends open position and previous balance
-func SendOpenPositions(balanceDB, openDB, priceDB, trackerDB *sql.DB, targetClient *Client, userID int) {
+func SendOpenPositions(targetClient *Client, userID int) {
 	openIDs := make(map[int]map[string]float64)
 	var trackerIds []string
-	GetPorfolioIDs(balanceDB, userID, targetClient)
-	prevBalances := GetMostRecentBalance(balanceDB, userID)
+	GetPorfolioIDs(userID, targetClient)
+	prevBalances := GetMostRecentBalance(userID, targetClient)
 
 	if targetClient.OpenPositions.Positions == nil {
         targetClient.OpenPositions.Positions = make(map[int]map[string]OpenPositionDetails)
     }
 
-	rows, err := openDB.Query("SELECT id, price, amount, portfolio_id FROM OpenPositions WHERE user_id = ?", userID)
+	rows, err := GlobalDatabasePool.OpenDB.Query("SELECT id, price, amount, portfolio_id FROM OpenPositions WHERE user_id = ?", userID)
 	if err == sql.ErrNoRows {
 		fmt.Println("No Open Positions Yet")
 		return
@@ -31,7 +32,7 @@ func SendOpenPositions(balanceDB, openDB, priceDB, trackerDB *sql.DB, targetClie
 	}
 	defer rows.Close()
 	targetClient.OpenPositions.Lock()
-
+	GlobalSubscriptionHub.Lock()
 	for rows.Next() {
 		var id string
 		var price float64
@@ -52,14 +53,25 @@ func SendOpenPositions(balanceDB, openDB, priceDB, trackerDB *sql.DB, targetClie
 			openIDs[portfolio_id] = make(map[string]float64)
 		}
 		openIDs[portfolio_id][id] = amount
+		if len(id) > 8 {
+			parts := strings.Split(id, "_")
+			if len(parts) > 0 {
+				id = parts[0]
+			}
+		}
+		if _, ok := GlobalSubscriptionHub.Topics[id]; !ok {
+			GlobalSubscriptionHub.Topics[id] = make([]*Client, 0)
+		}
+		GlobalSubscriptionHub.Topics[id] = append(GlobalSubscriptionHub.Topics[id], targetClient)
 	}
+	GlobalSubscriptionHub.Unlock()
 
-	rows, err = trackerDB.Query("SELECT * FROM Tracker")
+	rows, err = GlobalDatabasePool.TrackerDB.Query("SELECT * FROM Tracker")
 	if err == sql.ErrNoRows {
 		fmt.Println("No trackers Yet")
 		return
 	} else if err != nil {
-		log.Printf("Query failed process write openDB: %v", err)
+		log.Printf("Query failed process write trackerDB: %v", err)
 		return
 	}
 	defer rows.Close()
@@ -99,7 +111,7 @@ func SendOpenPositions(balanceDB, openDB, priceDB, trackerDB *sql.DB, targetClie
         _ = targetClient.SafeWrite(websocket.TextMessage, jsonData) 
     }
     
-    ProcessWrite(time.Now(), targetClient, balanceDB, openDB)
+    ProcessWrite(time.Now(), targetClient)
 }
 
 func InitDB(path string) (*sql.DB, error) {

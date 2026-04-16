@@ -91,8 +91,8 @@ class CompanyDataFetcher(FinancialDataSource):
         # Clean numeric cols (except specific ones)
         return self._clean_financial_df(df, date_col="date")
 
-    def _clean_financial_df(self, df, date_col, scale=1):
-        exclude = [date_col, "reportedCurrency", "ticker", "report_type"]
+    def _clean_financial_df(self, df, date_col="date", scale=1_000_000):
+        exclude = [date_col, "reportedCurrency", "ticker", "report_type", "estimatedEPS", "surprise", "surprisePercentage"]
         cols = [c for c in df.columns if c not in exclude]
 
         for col in cols:
