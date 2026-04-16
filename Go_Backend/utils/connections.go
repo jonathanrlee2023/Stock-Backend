@@ -526,18 +526,10 @@ func StartOptionStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request
 		return
 	}
 	formattedSymbol := fmt.Sprintf("%-6s", strings.ToUpper(symbol))
-
-    // 2. Format Date: YYMMDD
     formattedDate := fmt.Sprintf("%02s%02s%02s", year, month, day)
-
-    // 3. Format Type: 'C' or 'P'
     formattedType := strings.ToUpper(string(optionType[0]))
-
-    // 4. Format Price: Scaled by 1000, padded to 8 digits
-    // Note: In a real app, convert price to float64 first to handle decimals
     formattedPrice := fmt.Sprintf("%08d", 147000) 
 
-    // Combine into final ID
     optionID := fmt.Sprintf("%s%s%s%s", formattedSymbol, formattedDate, formattedType, formattedPrice)
 	GlobalSubscriptionHub.Lock()
 	if _, ok := GlobalSubscriptionHub.Topics[optionID]; !ok {
