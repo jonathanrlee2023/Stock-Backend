@@ -2,7 +2,6 @@ package utils
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -29,6 +28,7 @@ var (
 	Clients   = make(map[string]*Client)
 	ClientsMu sync.RWMutex
 )
+
 
 var ctx = context.Background()
 
@@ -118,7 +118,6 @@ func (h *Hub) Run() {
 	}
 }
 
-// Takes json and sends it to client
 func SendToClient(client *Client, msg []byte) error {
 	err := client.SafeWrite(websocket.TextMessage, msg)
 	if err != nil {
@@ -177,7 +176,7 @@ func StopRedisContainer() {
 }
 
 // Handles all websocket connections
-func WebsocketConnectHandler(hub *Hub, openDB, balanceDB, priceDB, trackerDB *sql.DB, w http.ResponseWriter, r *http.Request) {
+func WebsocketConnectHandler(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println("Upgrade error:", err)
@@ -197,72 +196,46 @@ func WebsocketConnectHandler(hub *Hub, openDB, balanceDB, priceDB, trackerDB *sq
 		log.Println("Hub registration busy, retrying in background...")
 		go func() { hub.register <- ws }()
 	}
-
-	ClientsMu.Lock()
-	if oldClient, exists := Clients[clientID]; exists {
-		log.Printf("Client %s already connected — replacing connection", clientID)
-		// 1. Trigger the close
-		oldClient.Conn.Close()
-		select {
-		case <-oldClient.Done:
-		default:
-			close(oldClient.Done)
-		}
-		delete(Clients, clientID)
-		ClientsMu.Unlock()
-
-		// 2. SMALL PAUSE: allow the old goroutine to exit the select loop
-		time.Sleep(50 * time.Millisecond)
-
-		ClientsMu.Lock()
-	}
-
-	newClient := &Client{
-		Conn: ws,
-		ID:   clientID,
-		Done: make(chan struct{}),
-	}
-	Clients[clientID] = newClient
-	ClientsMu.Unlock()
-
-	defer func() {
-		hub.unregister <- ws // Unregister on disconnect
-		DisconnectClient(clientID)
-	}()
-	var clientFormat = regexp.MustCompile(`^STOCK_CLIENT_\d+$`)
-	id, err := getIDFromClient(clientID)
+	UserID, err := getIDFromClient(clientID)
 	if err != nil {
 		log.Printf("Invalid client ID format: %s", clientID)
 		return
 	}
-	if clientFormat.MatchString(clientID) {
-		if GlobalUserID.ID != 0 {
-			if GlobalUserID.ClientID != clientID {
-				newClient.Balance.Lock()
-				newClient.Balance.Balances = make(map[int]*Balance)
-				newClient.Balance.Unlock()
-				GlobalUserID.ClientID = clientID
-				GlobalUserID.ID = id
-				newClient.PortfolioIDs.Lock()
-				newClient.PortfolioIDs.IDs = make(map[int]string)
-				newClient.PortfolioIDs.Unlock()
-				newClient.OpenPositions.Lock()
-				newClient.OpenPositions.Positions = make(map[int]map[string]OpenPositionDetails)
-				newClient.OpenPositions.Unlock()
-				log.Printf("Client switched: %s, new user ID: %d", clientID, id)
-			}
-		}
-		GlobalUserID.ClientID = clientID
-		log.Printf("Client connected: %s", clientID)
 
-		newClient.IsWriting = false
-		SendOpenPositions(balanceDB, openDB, priceDB, trackerDB, newClient, id)
+	ClientsMu.Lock()
+	newClient := &Client{
+        Conn:   ws,
+        ID:     clientID,
+        UserID: UserID,
+        Done:   make(chan struct{}),
+		send:   make(chan []byte, 256),
+        Balance:       PortfolioBalances{Balances: make(map[int]*Balance)},
+        PortfolioIDs:  Portfolio_IDs{IDs: make(map[int]string)},
+        OpenPositions: OpenPositions{Positions: make(map[int]map[string]OpenPositionDetails)},
+        IsWriting:     false,
+    }
+	if oldClient, exists := Clients[clientID]; exists {
+		log.Printf("Replacing connection for: %s", clientID)
+		close(oldClient.Done) 
+		oldClient.Conn.Close() 
+	}	
+
+	Clients[clientID] = newClient
+	ClientsMu.Unlock()
+
+	go newClient.WritePump()
+
+	defer func() {
+		hub.unregister <- ws // Unregister on disconnect
+		DisconnectClient(clientID, newClient)
+	}()
+	var clientFormat = regexp.MustCompile(`^STOCK_CLIENT_\d+$`)
+	if clientFormat.MatchString(clientID) {
+		SendOpenPositions(newClient, UserID)
 		SendAllCached(clientID)
-		go HandleClientWrite(newClient, openDB, balanceDB, priceDB)
 	}
 
 	<-newClient.Done
-
 }
 
 func getIDFromClient(clientId string) (int, error) {
@@ -272,20 +245,22 @@ func getIDFromClient(clientId string) (int, error) {
     
     return strconv.Atoi(idStr)
 }
-func DisconnectClient(clientID string) {
-	ClientsMu.Lock()
-	client, exists := Clients[clientID]
-	if !exists {
-		log.Printf("Client %s was already removed", clientID)
-		ClientsMu.Unlock()
-		return
-	}
-	delete(Clients, clientID)
-	ClientsMu.Unlock()
+func DisconnectClient(clientID string, caller *Client) {
+    ClientsMu.Lock()
+    
+    // 1. Check if the client in the map is the same one calling Disconnect
+    currentClient, exists := Clients[clientID]
+    
+    if exists && currentClient == caller {
+        delete(Clients, clientID)
+        log.Printf("Client disconnected and removed: %s", clientID)
+    } else {
+        log.Printf("Client %s removal skipped (already replaced or removed)", clientID)
+    }
+    ClientsMu.Unlock()
 
-	client.Conn.Close()
-	client.Close() // safe: Once ensures it's only closed once
-	log.Printf("Client disconnected: %s", clientID)
+    caller.Conn.Close()
+    caller.Close() 
 }
 
 func ShutdownAllClients() {
@@ -370,15 +345,16 @@ func HandleCompanyRead(msg redis.Message) {
 	
 	GlobalCompanyCache.Unlock()
 	GlobalCacheLimit.Unlock()
-	client := GlobalUserID.ClientID
-	if Clients[client] == nil {
-		return
-	}
-
-	if err := send(Clients[client], company); err != nil {
-		errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-		_ = Clients[client].SafeWrite(websocket.TextMessage, errMsg)
-		return
+	GlobalSubscriptionHub.RLock()
+	defer GlobalSubscriptionHub.RUnlock()
+	if clients, ok := GlobalSubscriptionHub.Topics[company.Symbol]; ok {
+		for _, client := range clients {
+			if err := send(client, company); err != nil {
+				errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
+				_ = client.SafeWrite(websocket.TextMessage, errMsg)
+				return
+			}
+		}
 	}
 }
 
@@ -407,20 +383,22 @@ func HandleOptionRead(msg redis.Message) {
 	GlobalOptionExpiration.Unlock()
 
 	GlobalCacheLimit.Unlock()
-
-	client := GlobalUserID.ClientID
-	if Clients[client] == nil {
-		return
-	}
-	if err := send(Clients[client], option); err != nil {
-		errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-		_ = Clients[client].SafeWrite(websocket.TextMessage, errMsg)
-		return
+	GlobalSubscriptionHub.RLock()
+	defer GlobalSubscriptionHub.RUnlock()
+	if clients, ok := GlobalSubscriptionHub.Topics[option.Symbol]; ok {
+		for _, client := range clients {
+			if err := send(client, option); err != nil {
+				errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
+				_ = client.SafeWrite(websocket.TextMessage, errMsg)
+				return
+			}
+		}
 	}
 }
 
 // Receives and handles a websocket message from python client and sends data to frontend
 func HandleRedisRead(msg redis.Message) {
+	// start_time := time.Now()
 	var quotes map[string]MixedQuote
 	payloadBytes := []byte(msg.Payload)
 	if err := json.Unmarshal(payloadBytes, &quotes); err != nil {
@@ -430,54 +408,93 @@ func HandleRedisRead(msg redis.Message) {
 	GlobalPrices.Lock()
 	maps.Copy(GlobalPrices.Prices, quotes)
 	GlobalPrices.Unlock()
-}
 
-// Incremently writes balance to the Frontend
-func HandleClientWrite(client *Client, openDB, balanceDB, priceDB *sql.DB) {
-	client.Mu.Lock()
-	// If already writing, just unlock and leave
-	if client.IsWriting {
-		client.Mu.Unlock()
-		return
-	}
+	GlobalSubscriptionHub.RLock()
+	activeTopics := maps.Clone(GlobalSubscriptionHub.Topics)
+    GlobalSubscriptionHub.RUnlock()
+	now := time.Now().Unix()
 
-	// Otherwise, set the flag and start the loop
-	client.IsWriting = true
-	client.Mu.Unlock()
-	defer func() {
-		client.Mu.Lock()
-		client.IsWriting = false
-		client.Mu.Unlock()
-	}()
-	now := time.Now()
-	wait := 15*time.Second - (time.Duration(now.Second()%15)*time.Second + time.Duration(now.Nanosecond()))
-	timer := time.NewTimer(wait)
+	type clientBatch struct {
+        Stocks  []StockPriceData
+        Options []OptionPriceData
+    }
+    batches := make(map[*Client]*clientBatch)
+	for symbol, quote := range quotes {
+		sepIdx := strings.IndexByte(symbol, ' ')
+        var underlying string
+        isOption := quote.IV != nil && sepIdx != -1
+        if isOption {
+            underlying = symbol[:sepIdx]
+        }
 
-	select {
-	case <-client.Done:
-		log.Printf("handleClientWrite exiting for client %s", client.ID)
-		DisconnectClient(client.ID)
-		timer.Stop()
-		return
-	case t := <-timer.C:
-		ProcessWrite(t, client, balanceDB, openDB)
-	}
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
+		var targets []*Client
+        
+        // Direct Match
+        if c, ok := activeTopics[symbol]; ok {
+            targets = append(targets, c...)
+        }
+        
+        // Underlying Match (Implied)
+        if isOption {
+            if c, ok := activeTopics[underlying]; ok {
+                targets = append(targets, c...)
+            }
+        }
 
-	for {
-		select {
-		case <-client.Done:
-			log.Printf("handleClientWrite exiting for client %s", client.ID)
-			DisconnectClient(client.ID)
-			return
-		case t := <-ticker.C:
-			ProcessWrite(t, client, balanceDB, openDB)
+        if len(targets) == 0 {
+            continue
+        }
+		if !isOption {
+			stockQuote := StockPriceData{
+				Symbol:    symbol,
+				Timestamp: now,
+				Mark:      quote.Mark,
+				BidPrice:  quote.BidPrice,
+				AskPrice:  quote.AskPrice,
+				LastPrice: quote.LastPrice,
+				BidSize:   *quote.BidSize,
+				AskSize:   *quote.AskSize,
+			}
+			for _, c := range targets {
+                if batches[c] == nil { batches[c] = &clientBatch{} }
+                batches[c].Stocks = append(batches[c].Stocks, stockQuote)
+            }
+		} else {
+			optionQuote := OptionPriceData{
+				Symbol:    symbol,
+				Timestamp: now,
+				Bid:       quote.BidPrice,
+				Ask:       quote.AskPrice,
+				Mark:      quote.Mark,
+				Last:      quote.LastPrice,
+				High:      *quote.HighPrice,
+				IV:        *quote.IV,
+				Delta:     *quote.Delta,
+				Gamma:     *quote.Gamma,
+				Theta:     *quote.Theta,
+				Vega:      *quote.Vega,
+			}
+			for _, c := range targets {
+                if batches[c] == nil { batches[c] = &clientBatch{} }
+                batches[c].Options = append(batches[c].Options, optionQuote)
+            }
 		}
 	}
+	for client, batch := range batches {
+        payload, _ := json.Marshal(map[string]interface{}{
+            "type":    "TICKER_UPDATE",
+            "stocks":  batch.Stocks,
+            "options": batch.Options,
+        })
+        client.EnqueueMessage(payload)
+    }
+	for _, client := range Clients {
+		go ProcessWrite(time.Now(), client)
+	}
+
+	// log.Printf("HandleRedisRead took %v", time.Since(start_time))
 }
 
-// Sends a message to the python streamer to start a subscription to a certain option ID
 func StartOptionStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request) {
 	symbol := r.URL.Query().Get("symbol")
 	price := r.URL.Query().Get("price")
@@ -485,6 +502,8 @@ func StartOptionStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request
 	month := r.URL.Query().Get("month")
 	year := r.URL.Query().Get("year")
 	optionType := r.URL.Query().Get("type")
+	clientID := r.URL.Query().Get("clientID")
+	client := Clients[clientID]
 
 	request := OptionStreamRequest{
 		Symbol: symbol,
@@ -506,12 +525,33 @@ func StartOptionStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	formattedSymbol := fmt.Sprintf("%-6s", strings.ToUpper(symbol))
+
+    // 2. Format Date: YYMMDD
+    formattedDate := fmt.Sprintf("%02s%02s%02s", year, month, day)
+
+    // 3. Format Type: 'C' or 'P'
+    formattedType := strings.ToUpper(string(optionType[0]))
+
+    // 4. Format Price: Scaled by 1000, padded to 8 digits
+    // Note: In a real app, convert price to float64 first to handle decimals
+    formattedPrice := fmt.Sprintf("%08d", 147000) 
+
+    // Combine into final ID
+    optionID := fmt.Sprintf("%s%s%s%s", formattedSymbol, formattedDate, formattedType, formattedPrice)
+	GlobalSubscriptionHub.Lock()
+	if _, ok := GlobalSubscriptionHub.Topics[optionID]; !ok {
+		GlobalSubscriptionHub.Topics[optionID] = make([]*Client, 0)
+	}
+	GlobalSubscriptionHub.Topics[optionID] = append(GlobalSubscriptionHub.Topics[optionID], client)
+	GlobalSubscriptionHub.Unlock()
 }
 
 // Sends a message to the python streamer to start a subscription to a certain stock
 func StartStockStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request) {
 	symbol := r.URL.Query().Get("symbol")
-	client := Clients[GlobalUserID.ClientID]
+	clientID := r.URL.Query().Get("clientID")
+	client := Clients[clientID]
 	GlobalCompanyCache.Lock()
 	defer GlobalCompanyCache.Unlock()
 	if stats, ok := GlobalCompanyCache.Stats[symbol]; ok {
@@ -535,6 +575,13 @@ func StartStockStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request)
 		Symbol: symbol,
 	}
 
+	GlobalSubscriptionHub.Lock()
+	defer GlobalSubscriptionHub.Unlock()
+	if _, ok := GlobalSubscriptionHub.Topics[symbol]; !ok {
+		GlobalSubscriptionHub.Topics[symbol] = make([]*Client, 0)
+	}
+	GlobalSubscriptionHub.Topics[symbol] = append(GlobalSubscriptionHub.Topics[symbol], client)
+
 	msg, err := json.Marshal(request)
 	if err != nil {
 		return
@@ -547,12 +594,12 @@ func StartStockStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request)
 }
 
 // Write to a specific client the most recent balance
-func ProcessWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
+func ProcessWrite(t time.Time, client *Client) {
 	client.OpenPositions.RLock()
 	defer client.OpenPositions.RUnlock()
 
 	client.Balance.Lock()
-    defer client.Balance.Unlock()
+	defer client.Balance.Unlock()
 
 	GlobalPrices.RLock()
 	defer GlobalPrices.RUnlock()
@@ -560,67 +607,8 @@ func ProcessWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 		return
 	}
 
-	userID := GlobalUserID.ID
-    
-	var now int64
-		
-	now = time.Now().Unix()
-	
-	stockPrices := make([]StockPriceData, 0, len(GlobalPrices.Prices))
-	optionPrices := make([]OptionPriceData, 0, len(GlobalPrices.Prices))
-
-	for symbol, q := range GlobalPrices.Prices {
-		switch {
-		// Equity quote if BidSize/AskSize are present
-		case q.BidSize != nil && q.AskSize != nil:
-			stock := StockPriceData{
-				Symbol:    symbol,
-				Timestamp: now,
-				Mark:      q.Mark,
-				BidPrice:  q.BidPrice,
-				AskPrice:  q.AskPrice,
-				LastPrice: q.LastPrice,
-				BidSize:   *q.BidSize,
-				AskSize:   *q.AskSize,
-			}
-
-			stockPrices = append(stockPrices, stock)
-
-		// Option quote if IV or Greeks are present
-		case q.IV != nil:
-			option := OptionPriceData{
-				Symbol:    symbol,
-				Timestamp: now,
-				Bid:       q.BidPrice,
-				Ask:       q.AskPrice,
-				Mark:      q.Mark,
-				Last:      q.LastPrice,
-				High:      *q.HighPrice,
-				IV:        *q.IV,
-				Delta:     *q.Delta,
-				Gamma:     *q.Gamma,
-				Theta:     *q.Theta,
-				Vega:      *q.Vega,
-			}
-			optionPrices = append(optionPrices, option)
-		default:
-			log.Printf("Unrecognized quote type for %s: %+v", symbol, q)
-		}
-	}
-	if len(optionPrices) > 0 {
-		if err := send(client, optionPrices); err != nil {
-			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-			_ = client.SafeWrite(websocket.TextMessage, errMsg)
-			return
-		}
-	}
-	if len(stockPrices) > 0 {
-		if err := send(client, stockPrices); err != nil {
-			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-			_ = client.SafeWrite(websocket.TextMessage, errMsg)
-			return
-		}
-	}
+	userID := client.UserID
+	dbSnapshot := make(map[int]BalanceData)
 	for pid := range client.OpenPositions.Positions {
 		var cash float64
 		var balance float64
@@ -667,18 +655,24 @@ func ProcessWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 			Cash:      cash,
 			PortfolioID: pid,
 		}
-		if err := send(client, message); err != nil {
-			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-			_ = client.SafeWrite(websocket.TextMessage, errMsg)
-			return
+		dbSnapshot[pid] = message
+		payload, err := json.Marshal(message)
+		if err != nil {
+			log.Printf("Failed to marshal balance data: %v", err)
+			continue
 		}
-		
+		client.EnqueueMessage(payload)
 	}
-	batch, err := balanceDB.Begin()
+	go WriteBalanceToDB(t.Unix(), userID, client, dbSnapshot)
+}
+
+func WriteBalanceToDB(now int64, userID int, client *Client, snapshot map[int]BalanceData) error {
+	batch, err := GlobalDatabasePool.BalanceDB.Begin()
 	if err != nil {
 		log.Printf("Failed to begin transaction: %v", err)
-		return 
+		return err
 	}
+	defer batch.Rollback()
 	stmt, err := batch.Prepare(`
 		INSERT OR IGNORE INTO Balance (timestamp, balance, cash, portfolio_id, user_id) 
 		VALUES (?, ?, ?, ?, ?)
@@ -687,19 +681,20 @@ func ProcessWrite(t time.Time, client *Client, balanceDB, openDB *sql.DB) {
 	if err != nil {
 		batch.Rollback()
 		log.Printf("Failed to prepare statement: %v", err)
-		return
+		return err
 	}
 	defer stmt.Close()
-	for id, data := range client.Balance.Balances {
+	for id, data := range snapshot {
 		_, err := stmt.Exec(now, data.Balance, data.Cash, id, userID)
 		if err != nil {
 			batch.Rollback()
 			log.Printf("Failed to insert balance: %v", err)
-			return
+			return err
 		}
 	}
 
 	batch.Commit()
+	return nil
 }
 
 func send(client *Client, v interface{}) error {
@@ -707,6 +702,5 @@ func send(client *Client, v interface{}) error {
 	if err != nil {
 		return err
 	}
-	// fmt.Println("Sending to client:", string(msg))
 	return SendToClient(client, msg)
 }

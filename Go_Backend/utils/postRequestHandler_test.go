@@ -67,7 +67,7 @@ func TestCheckPasswordHash_WrongPassword(t *testing.T) {
 func TestNewTrackerHandler_WrongMethod(t *testing.T) {
     req := httptest.NewRequest(http.MethodGet, "/newTracker", nil)
     w := httptest.NewRecorder()
-    NewTrackerHandler(nil, w, req)
+    NewTrackerHandler(w, req)
     assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
 }
 
@@ -78,7 +78,7 @@ func TestNewTrackerHandler_InvalidInput(t *testing.T) {
     
     w := httptest.NewRecorder()
 
-    NewTrackerHandler(nil, w, req)
+    NewTrackerHandler(w, req)
 
     assert.Equal(t, http.StatusBadRequest, w.Code)
     
@@ -86,23 +86,23 @@ func TestNewTrackerHandler_InvalidInput(t *testing.T) {
 }
 
 func TestNewTrackerHandler_InvalidJSON(t *testing.T) {
-    db := setupTestDB(t)
     req := httptest.NewRequest(http.MethodPost, "/newTracker", 
         strings.NewReader(`{invalid json`))
     req.Header.Set("Content-Type", "application/json")
     w := httptest.NewRecorder()
-    NewTrackerHandler(db, w, req)
+    NewTrackerHandler(w, req)
     assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 
 func TestNewTrackerHandler_ValidRequest(t *testing.T) {
     db := setupTestDB(t)
+    GlobalDatabasePool.TrackerDB = db
     body := strings.NewReader(`{"id": "AAPL"}`)
     req := httptest.NewRequest(http.MethodPost, "/newTracker", body)
     w := httptest.NewRecorder()
 
-    NewTrackerHandler(db, w, req)
+    NewTrackerHandler(w, req)
     assert.Equal(t, http.StatusOK, w.Code)
 
     // Verify it actually wrote to DB
@@ -114,13 +114,15 @@ func TestNewTrackerHandler_ValidRequest(t *testing.T) {
 
 func TestRemoveTrackerHandler_ValidRequest(t *testing.T) {
     db := setupTestDB(t)
+    GlobalDatabasePool.TrackerDB = db
+
     db.Exec("INSERT INTO Tracker (id) VALUES (?)", "AAPL")
 
     body := strings.NewReader(`{"id": "AAPL"}`)
     req := httptest.NewRequest(http.MethodPost, "/closeTracker", body)
     w := httptest.NewRecorder()
 
-    RemoveTrackerHandler(db, w, req)
+    RemoveTrackerHandler(w, req)
     assert.Equal(t, http.StatusOK, w.Code)
 
     var count int
@@ -131,6 +133,8 @@ func TestRemoveTrackerHandler_ValidRequest(t *testing.T) {
 
 func TestLoginHandler_ValidCredentials(t *testing.T) {
     db := setupTestDB(t)
+    GlobalDatabasePool.BalanceDB = db
+
     hash, _ := HashPassword("password123")
     db.Exec("INSERT INTO Users (username, password) VALUES (?, ?)", "testuser", hash)
 
@@ -138,12 +142,14 @@ func TestLoginHandler_ValidCredentials(t *testing.T) {
     req := httptest.NewRequest(http.MethodPost, "/login", body)
     w := httptest.NewRecorder()
 
-    LoginHandler(db, w, req)
+    LoginHandler(w, req)
     assert.Equal(t, http.StatusOK, w.Code)
 }
 
 func TestLoginHandler_WrongPassword(t *testing.T) {
     db := setupTestDB(t)
+    GlobalDatabasePool.BalanceDB = db
+
     hash, _ := HashPassword("correctpassword")
     db.Exec("INSERT INTO Users (username, password) VALUES (?, ?)", "testuser", hash)
 
@@ -151,16 +157,17 @@ func TestLoginHandler_WrongPassword(t *testing.T) {
     req := httptest.NewRequest(http.MethodPost, "/login", body)
     w := httptest.NewRecorder()
 
-    LoginHandler(db, w, req)
+    LoginHandler(w, req)
     assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
 
 func TestLoginHandler_UserNotFound(t *testing.T) {
     db := setupTestDB(t)
+    GlobalDatabasePool.BalanceDB = db
     body := strings.NewReader(`{"username": "nobody", "password": "password"}`)
     req := httptest.NewRequest(http.MethodPost, "/login", body)
     w := httptest.NewRecorder()
 
-    LoginHandler(db, w, req)
+    LoginHandler(w, req)
     assert.Equal(t, http.StatusNotFound, w.Code)
 }

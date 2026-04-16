@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"database/sql"
+	"log"
 	"sync"
 	"time"
 
@@ -12,11 +14,18 @@ type Client struct {
 	ID        string // unique identifier for this client (e.g., user ID, session ID)
 	Mu        sync.Mutex
 	Done      chan struct{}
+	send      chan []byte
 	once      sync.Once
+	UserID    int
 	Balance   PortfolioBalances
 	OpenPositions OpenPositions
 	PortfolioIDs Portfolio_IDs
 	IsWriting bool
+}
+
+type SubscriptionHub struct {
+    Topics map[string][]*Client
+    sync.RWMutex
 }
 
 func (c *Client) Close() {
@@ -24,7 +33,37 @@ func (c *Client) Close() {
 		close(c.Done)
 	})
 }
+func (c *Client) EnqueueMessage(payload []byte) {
+    select {
+    case c.send <- payload:
+    default:
+        log.Printf("Client %s buffer full, dropping message", c.ID)
+    }
+}
 
+func (c *Client) WritePump() {
+    defer func() {
+        c.Conn.Close()
+    }()
+
+    for {
+        select {
+        case message, ok := <-c.send:
+            if !ok {
+                c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
+                return
+            }
+
+            err := c.Conn.WriteMessage(websocket.TextMessage, message)
+            if err != nil {
+                log.Printf("WS write error for %s: %v", c.ID, err)
+                return
+            }
+        case <-c.Done:
+            return
+        }
+    }
+}
 func (c *Client) SafeWrite(messageType int, data []byte) error {
 	c.Mu.Lock()
 	defer c.Mu.Unlock()
@@ -337,6 +376,7 @@ type Position struct {
 	Price  float64 `json:"price"`
 	Amount float64 `json:"amount"`
 	PortfolioID int `json:"portfolio_id"`
+	ClientID string `json:"client_id"`
 }
 
 type Portfolio struct {
@@ -395,4 +435,11 @@ type Credentials struct {
 type UserID struct {
 	ClientID string
 	ID int
+}
+
+type DatabasePool struct {
+	BalanceDB *sql.DB
+	OpenDB    *sql.DB
+	CloseDB   *sql.DB
+	TrackerDB *sql.DB
 }

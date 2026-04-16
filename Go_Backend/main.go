@@ -28,16 +28,12 @@ func main() {
 		dbDir = "../Database" // Safe fallback for local dev
 	}
 
-	priceDBPath := filepath.Join(dbDir, "PriceData.db")
 	balanceDBPath := filepath.Join(dbDir, "Balance.db")
 	openDBPath := filepath.Join(dbDir, "Open.db")
 	closeDBPath := filepath.Join(dbDir, "Close.db")
 	trackerDBPath := filepath.Join(dbDir, "Tracker.db")
 
-	priceDB, err := utils.InitDB(priceDBPath)
-	if err != nil {
-		log.Printf("Error initializing database: %v", err)
-	}
+	
 	openDB, err := utils.InitDB(openDBPath)
 	if err != nil {
 		log.Printf("Error initializing database: %v", err)
@@ -57,7 +53,7 @@ func main() {
 	}
 	utils.InitSchemas(openDB, balanceDB, closeDB, trackerDB)
 
-
+	utils.GlobalDatabasePool = &utils.DatabasePool{OpenDB: openDB, BalanceDB: balanceDB, CloseDB: closeDB, TrackerDB: trackerDB}
 	// Start Redis Container
 	utils.StartRedisContainer()
 
@@ -83,7 +79,7 @@ func main() {
 	// Endpoints for API
 	mux := http.NewServeMux()
 	mux.HandleFunc("/connect", func(w http.ResponseWriter, r *http.Request) {
-		utils.WebsocketConnectHandler(hub, openDB, balanceDB, priceDB, trackerDB, w, r)
+		utils.WebsocketConnectHandler(hub, w, r)
 	})
 	mux.HandleFunc("/startOptionStream", func(w http.ResponseWriter, r *http.Request) {
 		utils.StartOptionStream(rdb, w, r)
@@ -92,28 +88,28 @@ func main() {
 		utils.StartStockStream(rdb, w, r)
 	})
 	mux.HandleFunc("/newTracker", func(w http.ResponseWriter, r *http.Request) {
-		utils.NewTrackerHandler(trackerDB, w, r)
+		utils.NewTrackerHandler(w, r)
 	})
 	mux.HandleFunc("/openPosition", func(w http.ResponseWriter, r *http.Request) {
-		utils.OpenSharesPositionHandler(openDB, balanceDB, w, r)
+		utils.OpenSharesPositionHandler(w, r)
 	})
 	mux.HandleFunc("/closePosition", func(w http.ResponseWriter, r *http.Request) {
-		utils.ClosePositionHandler(openDB, closeDB, balanceDB, w, r)
+		utils.ClosePositionHandler(w, r)
 	})
 	mux.HandleFunc("/closeTracker", func(w http.ResponseWriter, r *http.Request) {
-		utils.RemoveTrackerHandler(trackerDB, w, r)
+		utils.RemoveTrackerHandler(w, r)
 	})
 	mux.HandleFunc("/newPortfolio", func(w http.ResponseWriter, r *http.Request) {
-		utils.NewPortfolioHandler(balanceDB, openDB, w, r)
+		utils.NewPortfolioHandler(w, r)
 	})
 	mux.HandleFunc("/deletePortfolio", func(w http.ResponseWriter, r *http.Request) {
-		utils.DeletePortfolioHandler(balanceDB, openDB, w, r)
+		utils.DeletePortfolioHandler(w, r)
 	})
 	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
-		utils.LoginHandler(balanceDB, w, r)
+		utils.LoginHandler(w, r)
 	})
 	mux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
-		utils.CreateUserHandler(balanceDB, w, r)
+		utils.CreateUserHandler(w, r)
 	})
 
 
@@ -136,7 +132,6 @@ func main() {
 
 	defer openDB.Close()
 	defer balanceDB.Close()
-	defer priceDB.Close()
 	defer closeDB.Close()
 	defer trackerDB.Close()
 

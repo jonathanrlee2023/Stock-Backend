@@ -19,7 +19,7 @@ import (
 // It expects a POST request with a JSON body containing a single tracker struct.
 // If the request is invalid, it will return a 400 error with a JSON body containing an error message.
 // If the write to the database fails, it will return a 500 error with a JSON body containing an error message.
-func NewTrackerHandler(trackerDB *sql.DB, w http.ResponseWriter, r *http.Request) {
+func NewTrackerHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
 		return
@@ -46,7 +46,7 @@ func NewTrackerHandler(trackerDB *sql.DB, w http.ResponseWriter, r *http.Request
 	}
 
 	insertData := `INSERT OR REPLACE INTO Tracker (id) VALUES (?)`
-	_, err = trackerDB.Exec(insertData, newTracker.ID)
+	_, err = GlobalDatabasePool.TrackerDB.Exec(insertData, newTracker.ID)
 	if err != nil {
 		log.Printf("Failed to write to table: %v", err)
 	}
@@ -57,7 +57,7 @@ func NewTrackerHandler(trackerDB *sql.DB, w http.ResponseWriter, r *http.Request
 // # Body should contain a single tracker struct in JSON format
 //
 // Returns 500 if database delete fails
-func RemoveTrackerHandler(trackerDB *sql.DB, w http.ResponseWriter, r *http.Request) {
+func RemoveTrackerHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
 		return
@@ -70,7 +70,7 @@ func RemoveTrackerHandler(trackerDB *sql.DB, w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	_, err := trackerDB.Exec("DELETE FROM Tracker WHERE id = ?", closeTracker.ID)
+	_, err := GlobalDatabasePool.TrackerDB.Exec("DELETE FROM Tracker WHERE id = ?", closeTracker.ID)
 	if err != nil {
 		log.Printf("Error deleting tracker %s: %v", closeTracker.ID, err)
 		http.Error(w, "Database delete failed", http.StatusInternalServerError)
@@ -81,20 +81,15 @@ func RemoveTrackerHandler(trackerDB *sql.DB, w http.ResponseWriter, r *http.Requ
 // It expects a POST request with a JSON body containing a single position struct.
 // If the request is invalid, it will return a 400 error with a JSON body containing an error message.
 // If the write to the database fails, it will return a 500 error with a JSON body containing an error message.
-func OpenSharesPositionHandler(openDB, balanceDB *sql.DB, w http.ResponseWriter, r *http.Request) {
+func OpenSharesPositionHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	client := Clients[GlobalUserID.ClientID]
-
 	var newPosition Position
 	var extAmount float64
 	var extPrice float64
-
-	userID := GlobalUserID.ID
-	clientID := GlobalUserID.ClientID
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -108,6 +103,8 @@ func OpenSharesPositionHandler(openDB, balanceDB *sql.DB, w http.ResponseWriter,
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
+	client := Clients[newPosition.ClientID]
+	userID := client.UserID
 	client.OpenPositions.Lock()
 
 	if client.OpenPositions.Positions[newPosition.PortfolioID] == nil {
@@ -123,13 +120,13 @@ func OpenSharesPositionHandler(openDB, balanceDB *sql.DB, w http.ResponseWriter,
 		totalCost := (extPrice * float64(extAmount)) + (newPosition.Price * float64(newPosition.Amount))
 		updatedAmount := extAmount + newPosition.Amount
 		updatedPrice := math.Round((totalCost/float64(updatedAmount))*100) / 100
-		_, err = openDB.Exec("UPDATE OpenPositions SET price = ?, amount = ? WHERE id = ? AND portfolio_id = ? AND user_id = ?", updatedPrice, updatedAmount, newPosition.ID, newPosition.PortfolioID, userID)
+		_, err = GlobalDatabasePool.OpenDB.Exec("UPDATE OpenPositions SET price = ?, amount = ? WHERE id = ? AND portfolio_id = ? AND user_id = ?", updatedPrice, updatedAmount, newPosition.ID, newPosition.PortfolioID, userID)
 		client.OpenPositions.Positions[newPosition.PortfolioID][newPosition.ID] = OpenPositionDetails{
 			Price:  updatedPrice,
 			Amount: updatedAmount,
 		}
 	} else {
-		_, err = openDB.Exec("INSERT INTO OpenPositions (id, price, amount, portfolio_id, user_id) VALUES (?, ?, ?, ?, ?)", newPosition.ID, newPosition.Price, newPosition.Amount, newPosition.PortfolioID, userID)
+		_, err = GlobalDatabasePool.OpenDB.Exec("INSERT INTO OpenPositions (id, price, amount, portfolio_id, user_id) VALUES (?, ?, ?, ?, ?)", newPosition.ID, newPosition.Price, newPosition.Amount, newPosition.PortfolioID, userID)
 		client.OpenPositions.Positions[newPosition.PortfolioID][newPosition.ID] = OpenPositionDetails{
 			Price:  newPosition.Price,
 			Amount: newPosition.Amount,
@@ -153,17 +150,17 @@ func OpenSharesPositionHandler(openDB, balanceDB *sql.DB, w http.ResponseWriter,
 	client.Balance.Balances[newPosition.PortfolioID].Cash = newCash
 
 	insertData := `INSERT INTO Balance (timestamp, balance, cash, portfolio_id, user_id) VALUES (?, ?, ?, ?, ?)`
-	_, err = balanceDB.Exec(insertData, time.Now().Unix(), balance, newCash, newPosition.PortfolioID, userID)
+	_, err = GlobalDatabasePool.BalanceDB.Exec(insertData, time.Now().Unix(), balance, newCash, newPosition.PortfolioID, userID)
 	if err != nil {
 		http.Error(w, "Failed to write balance", http.StatusInternalServerError)
 	}
 	client.Balance.Unlock()
 
-	ProcessWrite(time.Now(), Clients[clientID], balanceDB, openDB)
+	ProcessWrite(time.Now(), client)
 }
 
 // Handles the closing of a position
-func ClosePositionHandler(openDB, closeDB, balanceDB *sql.DB, w http.ResponseWriter, r *http.Request) {
+func ClosePositionHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
 		return
@@ -173,15 +170,13 @@ func ClosePositionHandler(openDB, closeDB, balanceDB *sql.DB, w http.ResponseWri
 	var price float64
 	var amount float64
 
-	userID := GlobalUserID.ID
-	clientID := GlobalUserID.ClientID
-
-	client := Clients[clientID]
-
+	
 	if err := json.NewDecoder(r.Body).Decode(&closePosition); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
+	client := Clients[closePosition.ClientID]
+	userID := client.UserID
 	client.OpenPositions.Lock()
 	if _, ok := client.OpenPositions.Positions[closePosition.PortfolioID][closePosition.ID]; !ok {
 		http.Error(w, "Position not found", http.StatusBadRequest)
@@ -205,7 +200,7 @@ func ClosePositionHandler(openDB, closeDB, balanceDB *sql.DB, w http.ResponseWri
 	remaining := amount - closePosition.Amount
 	if remaining != 0 {
 		insertData := `INSERT OR REPLACE INTO OpenPositions (id, price, amount, portfolio_id, user_id) VALUES (?, ?, ?, ?, ?)`
-		_, err := openDB.Exec(insertData, closePosition.ID, price, remaining, closePosition.PortfolioID, userID)
+		_, err := GlobalDatabasePool.OpenDB.Exec(insertData, closePosition.ID, price, remaining, closePosition.PortfolioID, userID)
 		if err != nil {
 			log.Printf("Failed to write to table: %v", err)
 		}
@@ -214,7 +209,7 @@ func ClosePositionHandler(openDB, closeDB, balanceDB *sql.DB, w http.ResponseWri
 			Amount: remaining,
 		}
 	} else {
-		_, err := openDB.Exec("DELETE FROM OpenPositions WHERE id = ? AND user_id = ? AND portfolio_id = ?", closePosition.ID, userID, closePosition.PortfolioID)
+		_, err := GlobalDatabasePool.OpenDB.Exec("DELETE FROM OpenPositions WHERE id = ? AND user_id = ? AND portfolio_id = ?", closePosition.ID, userID, closePosition.PortfolioID)
 		if err != nil {
 			log.Printf("Failed to delete: %v", err)
 			client.OpenPositions.Unlock()
@@ -225,7 +220,7 @@ func ClosePositionHandler(openDB, closeDB, balanceDB *sql.DB, w http.ResponseWri
 	client.OpenPositions.Unlock()
 
 	insertData := `INSERT INTO ClosePositions (id, price, amount, pl, portfolio_id, user_id) VALUES (?, ?, ?, ?, ?, ?)`
-	_, err := closeDB.Exec(insertData, closePosition.ID, closePosition.Price, closePosition.Amount, pl, closePosition.PortfolioID, userID)
+	_, err := GlobalDatabasePool.CloseDB.Exec(insertData, closePosition.ID, closePosition.Price, closePosition.Amount, pl, closePosition.PortfolioID, userID)
 	if err != nil {
 		log.Printf("Failed to write to table: %v", err)
 	}
@@ -241,14 +236,14 @@ func ClosePositionHandler(openDB, closeDB, balanceDB *sql.DB, w http.ResponseWri
 	client.Balance.Unlock()
 
 	insertData = `INSERT OR REPLACE INTO Balance (timestamp, balance, cash, portfolio_id, user_id) VALUES (?, ?, ?, ?, ?)`
-	_, err = balanceDB.Exec(insertData, time.Now().Unix(), balance, newCash, closePosition.PortfolioID, userID)
+	_, err = GlobalDatabasePool.BalanceDB.Exec(insertData, time.Now().Unix(), balance, newCash, closePosition.PortfolioID, userID)
 	if err != nil {
 		http.Error(w, "Failed to write balance", http.StatusInternalServerError)
 	}
-	ProcessWrite(time.Now(), client, balanceDB, openDB)
+	ProcessWrite(time.Now(), client)
 }
 
-func NewPortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r *http.Request) {
+func NewPortfolioHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
 		return
@@ -260,9 +255,8 @@ func NewPortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r *ht
 	}
 	var balance, cash float64
 	id := newPortfolio.ID
-	userID := GlobalUserID.ID
-
-	client := Clients[GlobalUserID.ClientID]
+	client := Clients[newPortfolio.Positions[0].ClientID]
+	userID := client.UserID
 	exists := false
 
 	client.PortfolioIDs.Lock()
@@ -282,7 +276,7 @@ func NewPortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r *ht
 	
 
 	if exists {
-		err := balanceDB.QueryRow("SELECT balance, cash FROM Balance WHERE portfolio_id = ? AND user_id = ? ORDER BY timestamp DESC LIMIT 1", id, userID).Scan(&balance, &cash)
+		err := GlobalDatabasePool.BalanceDB.QueryRow("SELECT balance, cash FROM Balance WHERE portfolio_id = ? AND user_id = ? ORDER BY timestamp DESC LIMIT 1", id, userID).Scan(&balance, &cash)
 		if err != nil {
 			log.Printf("Failed to read from table: %v", err)
 			balance = 10000.0
@@ -294,7 +288,7 @@ func NewPortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r *ht
 		cash = 10000.0
 	}
 
-	batch, err := openDB.Begin()
+	batch, err := GlobalDatabasePool.OpenDB.Begin()
 	if err != nil {
 		log.Printf("Failed to begin transaction: %v", err)
 		return 
@@ -343,39 +337,40 @@ func NewPortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r *ht
 	
 	if !exists {
 		insertData := `INSERT INTO Balance (timestamp, balance, cash, portfolio_id, user_id) VALUES (?, ?, ?, ?, ?)`
-		_, err = balanceDB.Exec(insertData, time.Now().Unix(), 10000.0, cash, id, userID)
+		_, err = GlobalDatabasePool.BalanceDB.Exec(insertData, time.Now().Unix(), 10000.0, cash, id, userID)
 		if err != nil {
 			http.Error(w, "Failed to write balance", http.StatusInternalServerError)
 		}
 
 		insertData = `INSERT INTO Portfolios (portfolio_id, name, user_id) VALUES (?, ?, ?)`
-		_, err = balanceDB.Exec(insertData, id, newPortfolio.Name, userID)
+		_, err = GlobalDatabasePool.BalanceDB.Exec(insertData, id, newPortfolio.Name, userID)
 		if err != nil {
 			http.Error(w, "Failed to write balance", http.StatusInternalServerError)
 		}
 	} else {
 		insertData := `INSERT INTO Balance (timestamp, balance, cash, portfolio_id, user_id) VALUES (?, ?, ?, ?, ?)`
-		_, err = balanceDB.Exec(insertData, time.Now().Unix(), balance, cash, id, userID)
+		_, err = GlobalDatabasePool.BalanceDB.Exec(insertData, time.Now().Unix(), balance, cash, id, userID)
 		if err != nil {
 			http.Error(w, "Failed to write balance", http.StatusInternalServerError)
 		}
 	}
 }
 
-func DeletePortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r *http.Request) {
+func DeletePortfolioHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		http.Error(w, "Only DELETE method is allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	id, err := strconv.Atoi(r.URL.Query().Get("id"))
+	clientID := r.URL.Query().Get("client_id")
 	if err != nil {
 		http.Error(w, "Unable to parse id", http.StatusBadRequest)
 		return
 	}
 
-	userID := GlobalUserID.ID
-	client := Clients[GlobalUserID.ClientID]
+	client := Clients[clientID]
+	userID := client.UserID
 	
 	client.PortfolioIDs.Lock()
 	defer client.PortfolioIDs.Unlock()
@@ -388,17 +383,17 @@ func DeletePortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r 
 		return
 	}
 
-	_, err = balanceDB.Exec("DELETE FROM Balance WHERE portfolio_id = ? AND user_id = ?", id, userID)
+	_, err = GlobalDatabasePool.BalanceDB.Exec("DELETE FROM Balance WHERE portfolio_id = ? AND user_id = ?", id, userID)
 	if err != nil {
 		http.Error(w, "Failed to delete balance", http.StatusInternalServerError)
 		return
 	}
-	_, err = openDB.Exec("DELETE FROM OpenPositions WHERE portfolio_id = ? AND user_id = ?", id, userID)
+	_, err = GlobalDatabasePool.OpenDB.Exec("DELETE FROM OpenPositions WHERE portfolio_id = ? AND user_id = ?", id, userID)
 	if err != nil {
 		http.Error(w, "Failed to delete open positions", http.StatusInternalServerError)
 		return
 	}
-	_, err = balanceDB.Exec("DELETE FROM Portfolios WHERE portfolio_id = ? AND user_id = ?", id, userID)
+	_, err = GlobalDatabasePool.BalanceDB.Exec("DELETE FROM Portfolios WHERE portfolio_id = ? AND user_id = ?", id, userID)
 	if err != nil {
 		http.Error(w, "Failed to delete portfolio", http.StatusInternalServerError)
 		return
@@ -409,7 +404,7 @@ func DeletePortfolioHandler(balanceDB, openDB *sql.DB, w http.ResponseWriter, r 
 	delete(client.Balance.Balances, id)
 }
 
-func LoginHandler(balanceDB *sql.DB, w http.ResponseWriter, r *http.Request) {
+func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
 		return
@@ -421,7 +416,7 @@ func LoginHandler(balanceDB *sql.DB, w http.ResponseWriter, r *http.Request) {
 	}
 	var password string
 	var userID int
-	err := balanceDB.QueryRow("SELECT user_id, password FROM Users WHERE username = ?", creds.Username).Scan(&userID, &password)
+	err := GlobalDatabasePool.BalanceDB.QueryRow("SELECT user_id, password FROM Users WHERE username = ?", creds.Username).Scan(&userID, &password)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			http.Error(w, "User not found", http.StatusNotFound)
@@ -435,8 +430,6 @@ func LoginHandler(balanceDB *sql.DB, w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    GlobalUserID.ID = userID
-
     w.Header().Set("Content-Type", "application/json")
     w.WriteHeader(http.StatusOK)
 
@@ -448,7 +441,7 @@ func LoginHandler(balanceDB *sql.DB, w http.ResponseWriter, r *http.Request) {
     json.NewEncoder(w).Encode(response)
 }
 
-func CreateUserHandler(balanceDB *sql.DB, w http.ResponseWriter, r *http.Request) {
+func CreateUserHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
 		return
@@ -463,31 +456,38 @@ func CreateUserHandler(balanceDB *sql.DB, w http.ResponseWriter, r *http.Request
 		http.Error(w, "Error hashing password", http.StatusInternalServerError)
 		return
 	}
-	_, err = balanceDB.Exec("INSERT INTO Users (username, password) VALUES (?, ?)", creds.Username, hashedPassword)
+	_, err = GlobalDatabasePool.BalanceDB.Exec("INSERT INTO Users (username, password) VALUES (?, ?)", creds.Username, hashedPassword)
 	if err != nil {
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
 	}
 	var userID int
-	err = balanceDB.QueryRow("SELECT user_id FROM Users WHERE username = ?", creds.Username).Scan(&userID)
+	err = GlobalDatabasePool.BalanceDB.QueryRow("SELECT user_id FROM Users WHERE username = ?", creds.Username).Scan(&userID)
 	if err != nil {
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
 	}
 
-	_, err = balanceDB.Exec("INSERT INTO Portfolios (portfolio_id, name, user_id) VALUES (?, ?, ?)", 1, "Main", userID)
+	_, err = GlobalDatabasePool.BalanceDB.Exec("INSERT INTO Portfolios (portfolio_id, name, user_id) VALUES (?, ?, ?)", 1, "Main", userID)
 	if err != nil {
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
 	}
 
-	_, err = balanceDB.Exec("INSERT INTO Balance (timestamp, balance, cash, portfolio_id, user_id) VALUES (?, ?, ?, ?, ?)", time.Now().Unix(), 10000, 10000, 1, userID)
+	_, err = GlobalDatabasePool.BalanceDB.Exec("INSERT INTO Balance (timestamp, balance, cash, portfolio_id, user_id) VALUES (?, ?, ?, ?, ?)", time.Now().Unix(), 10000, 10000, 1, userID)
 	if err != nil {
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
 	}
-	GlobalUserID.ID = userID
-	w.WriteHeader(http.StatusOK)
+	w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(http.StatusOK)
+
+    response := map[string]interface{}{
+        "user_id": userID,
+        "message": "Login successful",
+    }
+
+    json.NewEncoder(w).Encode(response)
 }
 
 func HashPassword(password string) (string, error) {

@@ -10,13 +10,12 @@ import (
 )
 
 // Gets the previous day's last balance
-func GetMostRecentBalance(balanceDB *sql.DB, userID int) map[int]float64 {
+func GetMostRecentBalance(userID int, client *Client) map[int]float64 {
 	var latestTs int64
 	var todayBalance float64
 	var todayCash float64
 
 	recentBalances := make(map[int]float64)
-	client := Clients[GlobalUserID.ClientID]
 
 	client.PortfolioIDs.Lock()
 	client.Balance.Lock()
@@ -39,7 +38,7 @@ func GetMostRecentBalance(balanceDB *sql.DB, userID int) map[int]float64 {
 	}
 
 	for id := range client.PortfolioIDs.IDs {
-		err := balanceDB.QueryRow("SELECT timestamp, balance, cash FROM Balance WHERE portfolio_id = ? AND user_id = ? ORDER BY timestamp DESC LIMIT 1", id, userID).Scan(&latestTs, &todayBalance, &todayCash)
+		err := GlobalDatabasePool.BalanceDB.QueryRow("SELECT timestamp, balance, cash FROM Balance WHERE portfolio_id = ? AND user_id = ? ORDER BY timestamp DESC LIMIT 1", id, userID).Scan(&latestTs, &todayBalance, &todayCash)
 		if err == sql.ErrNoRows {
 			client.Balance.Balances[id] = &Balance{}
 			client.Balance.Balances[id].Balance = 10000
@@ -59,7 +58,7 @@ func GetMostRecentBalance(balanceDB *sql.DB, userID int) map[int]float64 {
 			ORDER BY timestamp DESC 
 			LIMIT 1`
 
-		err = balanceDB.QueryRow(query, startOfYesterday, endOfYesterday, id, userID).Scan(&balance)
+		err = GlobalDatabasePool.BalanceDB.QueryRow(query, startOfYesterday, endOfYesterday, id, userID).Scan(&balance)
 
 		if err == sql.ErrNoRows {
 			log.Println("No balance found for the previous calendar day interval... Retrying")
@@ -73,7 +72,7 @@ func GetMostRecentBalance(balanceDB *sql.DB, userID int) map[int]float64 {
 					ORDER BY timestamp DESC 
 					LIMIT 1`
 
-				err = balanceDB.QueryRow(query, startOfYesterday, endOfYesterday, id, userID).Scan(&balance)
+				err = GlobalDatabasePool.BalanceDB.QueryRow(query, startOfYesterday, endOfYesterday, id, userID).Scan(&balance)
 
 				if err != sql.ErrNoRows {
 					recentBalances[id] = balance
@@ -110,8 +109,7 @@ func GetMostRecentBalance(balanceDB *sql.DB, userID int) map[int]float64 {
 			Cash:      todayCash,
 			PortfolioID: id,
 		}
-
-		client := Clients[GlobalUserID.ClientID]
+		
 		if client != nil {
 			if err := send(client, message); err != nil {
 				errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
@@ -125,7 +123,7 @@ func GetMostRecentBalance(balanceDB *sql.DB, userID int) map[int]float64 {
 	return recentBalances
 }
 
-func GetPorfolioIDs(balanceDB *sql.DB, userID int, client *Client) {
+func GetPorfolioIDs(userID int, client *Client) {
     if client == nil {
         log.Println("Error: GetPorfolioIDs called with nil client")
         return
@@ -143,7 +141,7 @@ func GetPorfolioIDs(balanceDB *sql.DB, userID int, client *Client) {
         client.Balance.Balances = make(map[int]*Balance)
     }
 
-    rows, err := balanceDB.Query("SELECT portfolio_id, name FROM Portfolios WHERE user_id = ?", userID)
+    rows, err := GlobalDatabasePool.BalanceDB.Query("SELECT portfolio_id, name FROM Portfolios WHERE user_id = ?", userID)
     if err != nil {
         log.Println(err)
         return
@@ -168,7 +166,7 @@ func GetPorfolioIDs(balanceDB *sql.DB, userID int, client *Client) {
 	if !found {
 		client.PortfolioIDs.IDs[1] = "Main"
 		insertData := `INSERT INTO Portfolios (portfolio_id, name, user_id) VALUES (?, ?, ?)`
-		_, err = balanceDB.Exec(insertData, 1, "Main", userID)
+		_, err = GlobalDatabasePool.BalanceDB.Exec(insertData, 1, "Main", userID)
 		if err != nil {
 			log.Printf("Failed to write to table: %v", err)
 		}

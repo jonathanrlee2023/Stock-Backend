@@ -18,6 +18,13 @@ var GlobalCacheLimit = &CacheLimit{
 	InQueue: make(map[string]struct{}),
 }
 
-var GlobalUserID = &UserID{
-	ID: 0,
+var GlobalSubscriptionHub = &SubscriptionHub{
+	Topics: make(map[string][]*Client),
+}
+
+var GlobalDatabasePool = &DatabasePool{
+	BalanceDB: nil,
+	OpenDB:    nil,
+	CloseDB:   nil,
+	TrackerDB: nil,
 }

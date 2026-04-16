@@ -55,6 +55,7 @@ class CompanyFinancialCalculator:
     def run_valuation(self) -> ValuationResults:
         """The 'Orchestrator' that returns a clean object."""
         fcf, fcff, fcf_per_share, delta_nwc = self.calc_fcf()
+        self.calc_forecast_metrics()
         wacc = self.calc_wacc()
         roic = self.roic()
         intrinsic, div_price = self.fcff_forecast()
