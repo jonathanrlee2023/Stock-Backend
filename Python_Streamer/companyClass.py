@@ -7,7 +7,6 @@ import numpy as np
 from appState import app_state
 from cache import exchange_rate_cache, max_fiscal_lookup
 from asyncFunc import get_symbol_id, get_furthest_date_for_stock
-from dataloader import DataLoader
 from companyFinancialCalc import CompanyFinancialCalculator, ValuationResults
 from companyDB import CompanyDBHandler
 from companyFetch import CompanyDataFetcher
@@ -205,11 +204,9 @@ class Company:
     async def get_current_price(self) -> float:
         """Asynchronously fetches price data using the DataLoader."""
         self.unix_timestamp()  # Sets self.timestamp
+        loader = app_state.data_loader
         try:
-            loader = DataLoader(
-                ticker=self.ticker, symbol_id=self.symbol_id, fiscalDate=self.timestamp, connection=app_state.schwab_client
-            )   
-            self.price_at_report = await loader.load_data()
+            self.price_at_report = await loader.load_data(ticker=self.ticker, symbol_id=self.symbol_id, fiscalDate=self.timestamp)
         except Exception as e:
             print(f"Error fetching current price for {self.ticker}: {str(e)}")
 

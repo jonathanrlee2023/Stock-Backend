@@ -8,3 +8,4 @@ httpx
 pandas
 numpy
 pytz
+finnhub-python

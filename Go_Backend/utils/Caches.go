@@ -9,7 +9,7 @@ var GlobalCompanyCache = &CompanyStatsCache{
 }
 
 var GlobalOptionExpiration = &OptionExpirationCache{
-	Stats: make(map[string]OptionExpiration),
+	Stats: make(map[string]InitialCompanyData),
 }
 
 var GlobalCacheLimit = &CacheLimit{
@@ -20,6 +20,10 @@ var GlobalCacheLimit = &CacheLimit{
 
 var GlobalSubscriptionHub = &SubscriptionHub{
 	Topics: make(map[string][]*Client),
+}
+
+var GlobalMarketNews = &GlobalNews{
+	GlobalNews: make(map[string]string),
 }
 
 var GlobalDatabasePool = &DatabasePool{

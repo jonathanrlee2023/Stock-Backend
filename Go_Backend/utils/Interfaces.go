@@ -43,7 +43,7 @@ func (c *Client) EnqueueMessage(payload []byte) {
 
 func (c *Client) WritePump() {
     defer func() {
-        c.Conn.Close()
+        c.Close()
     }()
 
     for {
@@ -126,12 +126,17 @@ type OpenPositionDetails struct {
 	Amount float64 `json:"amount"`
 }
 
-type OptionExpiration struct {
+type InitialCompanyData struct {
 	Symbol       string         `json:"Symbol"`
 	PriceHistory []Candle       `json:"PriceHistory"`
 	Quote        StockPriceData `json:"Quote"`
 	Call         []string       `json:"Call"`
 	Put          []string       `json:"Put"`
+	News map[string]string `json:"News"`
+}
+
+type GlobalNews struct {
+	GlobalNews map[string]string `json:"GlobalNews"`
 }
 
 type Candle struct {
@@ -417,7 +422,7 @@ type CompanyStatsCache struct {
 
 type OptionExpirationCache struct {
 	sync.RWMutex
-	Stats map[string]OptionExpiration
+	Stats map[string]InitialCompanyData
 }
 
 type CacheLimit struct {

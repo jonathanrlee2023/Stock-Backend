@@ -23,14 +23,11 @@ HOLIDAYS = {
 
 
 class DataLoader:
-    def __init__(self, ticker, symbol_id, connection, fiscalDate=None):
-        self.fiscalDate = fiscalDate
+    def __init__(self, connection):
         if connection is not None:
             self.connection = connection
         else:
             self.connection = self.establish_connection()
-        self.ticker = ticker
-        self.symbol_id = symbol_id
 
     def establish_connection(self):
         load_dotenv()  # loads variables from .env into environment
@@ -43,17 +40,16 @@ class DataLoader:
         client = schwabdev.Client(app_key=appKey, app_secret=appSecret)
         return client
 
-    async def load_data(self):
+    async def load_data(self, ticker, symbol_id, fiscalDate):
         db = app_state.price_db
-        start = time.perf_counter()
         try:
-            if self.fiscalDate is None:
+            if fiscalDate is None:
                 return None
-            start_ms = int(self.fiscalDate * 1000)
+            start_ms = int(fiscalDate * 1000)
             end_ms = start_ms + (7 * 86400 * 1000)
             async with db.execute(
                 "SELECT close FROM HistoricalStocks WHERE symbol_id = ? AND timestamp BETWEEN ? AND ? ORDER BY timestamp ASC LIMIT 1",
-                (self.symbol_id, start_ms, end_ms),
+                (symbol_id, start_ms, end_ms),
             ) as cursor:
                 rows = await cursor.fetchall()
             if rows:
@@ -61,7 +57,7 @@ class DataLoader:
 
             def fetch_api():
                 return self.connection.price_history(
-                    symbol=self.ticker, periodType="year", frequencyType="daily", startDate=start_ms, endDate=end_ms
+                    symbol=ticker, periodType="year", frequencyType="daily", startDate=start_ms, endDate=end_ms
                 )
 
             response = await asyncio.to_thread(fetch_api)
@@ -69,14 +65,12 @@ class DataLoader:
             if response.status_code == 200:
                 quote = response.json()
                 if "candles" in quote and quote["candles"]:
-                    print(f"API Success: {time.perf_counter() - start:.4f}s")
                     return quote["candles"][0]["close"]
         except Exception as e:
             print(f"Schwab API Error: {e}")
         return None
 
-    async def get_price_history(self):
-        s_id = self.symbol_id
+    async def get_price_history(self, s_id, ticker):
         priceDB = app_state.price_db
         try:
             async with priceDB.execute(
@@ -100,7 +94,7 @@ class DataLoader:
 
             response = await asyncio.to_thread(
                 self.connection.price_history,
-                symbol=self.ticker,
+                symbol=ticker,
                 periodType="year",
                 frequencyType="daily",
                 startDate=start_ms,
@@ -138,20 +132,19 @@ class DataLoader:
             print(f"Schwab API Error: {e}")
         return None
 
-    async def get_recent_price_history(self):
+    async def get_recent_price_history(self, s_id, ticker):
         global latest_quote
         start_ms = 0
         today_ms = int(time.time() * 1000)
         raw_candles = []
         needs_update = False
-        s_id = self.symbol_id
 
         priceDB = app_state.price_db
         start_ms = latest_quote.get(s_id, 0)
         if start_ms == 0:
             result = await priceDB.execute(
                 "SELECT timestamp, symbol_id FROM HistoricalStocks WHERE symbol_id = ? ORDER BY timestamp DESC LIMIT 1",
-                (self.symbol_id,),
+                (s_id,),
             )
 
             # 2. Extract the row
@@ -159,23 +152,23 @@ class DataLoader:
             if row:
                 start_ms = row[0]
             else:
-                raw_candles = await self.get_price_history()
+                raw_candles = await self.get_price_history(s_id, ticker)
         date_start = datetime.fromtimestamp(start_ms / 1000.0).date()
         date_today = datetime.fromtimestamp(today_ms / 1000.0).date()
 
         if date_start == date_today:
-            raw_candles = await self.get_price_history()
+            raw_candles = await self.get_price_history(s_id, ticker)
         else:
             start_ms += 86400000
-            if self.is_data_fresh(start_ms):
-                return await self.get_price_history()
-            print(f"Updating {self.ticker} history from {date_start} to {date_today}")
+            if self.is_data_fresh(start_ms, s_id):
+                return await self.get_price_history(s_id, ticker)
+            print(f"Updating {ticker} history from {date_start} to {date_today}")
             needs_update = True
 
         try:
             if needs_update:
                 response = self.connection.price_history(
-                    symbol=self.ticker,
+                    symbol=ticker,
                     periodType="year",
                     frequencyType="daily",
                     startDate=start_ms,
@@ -183,13 +176,13 @@ class DataLoader:
 
                 if response.status_code != 200:
                     print(f"API Error: Status {response.status_code} {response.content}")
-                    return await self.get_price_history()
+                    return await self.get_price_history(s_id, ticker)
 
                 quotes = response.json()
                 new_candles = quotes.get("candles", [])
                 latest_quote[s_id] = quotes.get("previousCloseDate", 0)
                 if not new_candles:
-                    return await self.get_price_history()
+                    return await self.get_price_history(s_id, ticker)
 
                 raw_candles.extend(new_candles)
 
@@ -212,11 +205,11 @@ class DataLoader:
                 "INSERT OR IGNORE INTO HistoricalStocks VALUES (?, ?, ?, ?, ?, ?, ?)", history_records
             )
             await priceDB.commit()
-            print(f"Saved {self.ticker} history to DB")
+            print(f"Saved {ticker} history to DB")
 
         except Exception as e:
             print(f"Price Database Error: {e}")
-        return await self.get_price_history()
+        return await self.get_price_history(s_id, ticker)
 
     def get_last_trading_day(self, target_date):
         """Finds the most recent day the market should have been open."""
@@ -235,7 +228,7 @@ class DataLoader:
             else:
                 return check_date
 
-    def is_data_fresh(self, last_db_ts):
+    def is_data_fresh(self, last_db_ts, s_id):
         if not last_db_ts:
             return False
 
@@ -243,8 +236,8 @@ class DataLoader:
         now = datetime.now()
         today = now.date()
 
-        if self.symbol_id in last_checked_cache:
-            last_checked_date = last_checked_cache[self.symbol_id]
+        if s_id in last_checked_cache:
+            last_checked_date = last_checked_cache[s_id]
             if isinstance(last_checked_date, str):
                 last_checked_date = datetime.fromisoformat(last_checked_date).date()
             else:
@@ -256,21 +249,21 @@ class DataLoader:
         expected_latest_date = self.get_last_trading_day(today)
 
         if last_stored_date >= expected_latest_date:
-            print(f"✅ {self.ticker} is fresh. Last trading day was {expected_latest_date}")
+            # print(f"✅ {s_id} is fresh. Last trading day was {expected_latest_date}")
             return True
 
         return False
 
-    def get_quote(self):
-        response = self.connection.quote(self.ticker).json()
-        return response.get(self.ticker, {}).get("quote", {})
+    def get_quote(self, ticker):
+        response = self.connection.quote(ticker).json()
+        return response.get(ticker, {}).get("quote", {})
 
-    def get_option_expirations(self):
+    def get_option_expirations(self, ticker):
         fromDate = datetime.now()
         toDate = fromDate + timedelta(days=7)
 
         response = self.connection.option_chains(
-            symbol=self.ticker, strikeCount=5, optionType="ALL", toDate=toDate
+            symbol=ticker, strikeCount=5, optionType="ALL", toDate=toDate
         ).json()
 
         def extract_symbols(exp_map):

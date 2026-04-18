@@ -1,13 +1,16 @@
 from concurrent.futures import ProcessPoolExecutor
 
 import httpx
-
+import finnhub
+from marketNewsClass import MarketNews
+from dataloader import DataLoader
 from secureAPIKey import SecureAPIKey
 import schwabdev
 from dotenv import load_dotenv
 import os
 import asyncio
 import asyncFunc
+import startupFunc
 from appState import app_state
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -47,12 +50,12 @@ def create_engines(db_dir):
 
 async def init_app_state(db_dir):
     app_state.engines = create_engines(db_dir)
-    app_state.price_db = await asyncFunc.init_db()
-    app_state.earnings_db = await asyncFunc.init_earnings_db()
-    app_state.tracker_db = await asyncFunc.init_tracker_db()
-    app_state.last_checked_db = await asyncFunc.init_last_checked_db()
+    app_state.price_db = await startupFunc.init_db()
+    app_state.earnings_db = await startupFunc.init_earnings_db()
+    app_state.tracker_db = await startupFunc.init_tracker_db()
+    app_state.last_checked_db = await startupFunc.init_last_checked_db()
 
-    await asyncFunc.init_financial_db()
+    await startupFunc.init_financial_db()
 
 
 async def verify_db_conn():
@@ -90,16 +93,23 @@ async def main():
     alpha_vantage_api_key = os.getenv("AlphaVantageKey")
     rate_api_key = os.getenv("ExchangeRateKey")
     db_dir = os.getenv("DB_DIR", "../Database")
+    finnhub_api_key = os.getenv("FinnhubApiKey")
 
     api_manager = SecureAPIKey(alpha_vantage_api_key)
-
+    schwab_client = schwabdev.Client(app_key=appKey, app_secret=appSecret, tokens_db="/app/Database/tokens.json")
     await init_app_state(db_dir)
     app_state.cpu_executor = ProcessPoolExecutor(max_workers=4)
-    app_state.schwab_client = schwabdev.Client(app_key=appKey, app_secret=appSecret, tokens_db="/app/Database/tokens.json")
+    app_state.schwab_client = schwab_client
     app_state.streamer = schwabdev.Stream(app_state.schwab_client)
     app_state.httpx_client = httpx.AsyncClient(
         timeout=httpx.Timeout(5.0), limits=httpx.Limits(max_connections=20, max_keepalive_connections=10)
     )
+    finnhub_client = finnhub.Client(api_key=finnhub_api_key)
+
+    app_state.finnhub_client = finnhub_client
+    app_state.data_loader = DataLoader(schwab_client)
+
+    app_state.market_news = MarketNews()
 
     await verify_db_conn()
 
@@ -110,9 +120,10 @@ async def main():
         asyncio.create_task(asyncFunc.listen_for_messages(api_manager, rate_api_key)),
         asyncio.create_task(asyncFunc.write_to_db()),
         asyncio.create_task(asyncFunc.stream_options()),
-        asyncio.create_task(asyncFunc.get_earnings_dates(api_manager)),
-        asyncio.create_task(asyncFunc.get_recent_quote_time()),
-        asyncio.create_task(asyncFunc.last_checked_cacher()),
+        asyncio.create_task(startupFunc.get_earnings_dates(api_manager)),
+        asyncio.create_task(startupFunc.get_recent_quote_time()),
+        asyncio.create_task(startupFunc.last_checked_cacher()),
+        asyncio.create_task(startupFunc.get_global_market_news()),
     ]
 
     try:

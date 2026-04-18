@@ -1,21 +1,14 @@
 import asyncio
-import io
-import sqlite3
-import pandas as pd
 from operator import itemgetter
 import os
 import time
 import orjson
 from redis import asyncio as aioredis
-import aiosqlite
 import requests
-from sqlalchemy import text
 import datetime
 from appState import app_state
-from dataloader import DataLoader
 import stream_func
-from cache import latest_quote, earnings_lookup, max_fiscal_lookup, symbol_cache, last_checked_cache, POPULAR_ETFS
-from schemas import financial_schemas
+from cache import earnings_lookup, max_fiscal_lookup, symbol_cache, last_checked_cache, POPULAR_ETFS
 
 stream_started = False
 stream_lock = asyncio.Lock()
@@ -146,76 +139,6 @@ async def get_symbol_id(symbol):
 
     symbol_cache[symbol] = new_id
     return new_id
-
-
-async def init_db():
-    db_path = os.path.join(db_dir, "PriceData.db")
-    db = await aiosqlite.connect(db_path)
-    await db.execute("PRAGMA journal_mode=WAL")
-    await db.execute("PRAGMA synchronous=NORMAL")
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS Options (
-            timestamp INTEGER NOT NULL, symbol_id INTEGER NOT NULL, mark REAL,
-            bid_price REAL, ask_price REAL, last_price REAL, high_price REAL,
-            iv REAL, delta REAL, gamma REAL, theta REAL, vega REAL,
-            PRIMARY KEY (timestamp, symbol_id)
-        )
-    """)
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS Stocks (
-            timestamp INTEGER NOT NULL, symbol_id INTEGER NOT NULL, mark REAL,
-            bid_price REAL, ask_price REAL, last_price REAL, bid_size INTEGER, ask_size INTEGER,
-            PRIMARY KEY (timestamp, symbol_id)
-        )
-    """)
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS HistoricalStocks (
-            timestamp INTEGER NOT NULL, symbol_id INTEGER NOT NULL, open REAL, high REAL, low REAL, close REAL, volume INTEGER,
-            PRIMARY KEY (timestamp, symbol_id)
-        )
-    """)
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS Symbols (
-            symbol_id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT UNIQUE
-        )
-    """)
-
-    await db.execute("CREATE INDEX IF NOT EXISTS idx_options_symbol ON Options (symbol_id, timestamp)")
-    await db.execute("CREATE INDEX IF NOT EXISTS idx_stocks_symbol ON Stocks (symbol_id, timestamp)")
-    await db.commit()
-
-    return db
-
-
-async def init_last_checked_db():
-    db_path = os.path.join(db_dir, "LastChecked.db")
-    db = await aiosqlite.connect(db_path)
-    await db.execute("PRAGMA journal_mode=WAL")
-    await db.execute("PRAGMA synchronous=NORMAL")
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS last_checked (
-            symbol_id INTEGER PRIMARY KEY, last_checked_date DATE
-        )
-    """)
-    await db.commit()
-
-    return db
-
-
-async def init_financial_db():
-    for table, schema in financial_schemas.items():
-        engine = app_state.engines.get(table)
-        if not engine:
-            print(f"⚠️ Warning: No engine found for table '{table}'")
-            continue
-
-        async with engine.begin() as conn:
-            try:
-                for statement in schema.split(";"):
-                    if statement.strip():
-                        await conn.execute(text(statement))
-            except Exception as e:
-                print(f"❌ Failed to initialize {table}: {e}")
 
 
 async def write_to_db():
@@ -408,17 +331,6 @@ async def broadcast_to_redis():
             print(f"⚠️ Unexpected error: {e}")
             await asyncio.sleep(1)  # Prevent tight-looping on errors
 
-
-async def init_tracker_db():
-    db_path = os.path.join(db_dir, "Tracker.db")
-    db = await aiosqlite.connect(db_path)
-    await db.execute("PRAGMA journal_mode=WAL")
-    await db.execute("PRAGMA synchronous=NORMAL")
-    await db.commit()
-
-    return db
-
-
 async def update_tickers_from_db(api_manager, rate_api_key):
     """
     Updates the list of tickers to subscribe to from the database.
@@ -497,7 +409,7 @@ async def throttled_get_options_and_initial_quotes(ticker):
     async with schwab_api_semaphore:
         print(f"📡 Fetching initial data for {ticker}...")
         await get_options_and_initial_quotes(ticker)
-
+        await asyncio.sleep(1)
         return
 
 
@@ -553,7 +465,6 @@ async def get_options_and_initial_quotes(ticker):
     -------
     None
     """
-    client = app_state.schwab_client
     if symbol_cache.get(ticker) is None:
         s_id = await get_symbol_id(ticker)
     else:
@@ -563,12 +474,17 @@ async def get_options_and_initial_quotes(ticker):
     call_option_id_list = []
     put_option_id_list = []
 
-    loader = DataLoader(ticker=ticker, symbol_id=s_id, connection=client)
+    loader = app_state.data_loader
+    try:
+        market_news = app_state.market_news
+        news = await market_news.get_company_news(ticker)
+    except Exception as e:
+        print(f"Error fetching market news for {ticker}: {e}")
     try:
         tasks = [
-            asyncio.to_thread(loader.get_quote),
-            loader.get_recent_price_history(),
-            asyncio.to_thread(loader.get_option_expirations),
+            asyncio.to_thread(loader.get_quote, ticker),
+            loader.get_recent_price_history(ticker=ticker, s_id=s_id),
+            asyncio.to_thread(loader.get_option_expirations, ticker),
         ]
 
         quote, price_history, (call_option_id_list, put_option_id_list) = await asyncio.gather(*tasks)
@@ -595,125 +511,10 @@ async def get_options_and_initial_quotes(ticker):
         "PriceHistory": price_history,
         "Call": call_option_id_list,
         "Put": put_option_id_list,
+        "News": news,
     }
 
     await r.publish("One_Time_Data_Channel", orjson.dumps(payload))
-
-
-async def init_earnings_db():
-    db_path = os.path.join(db_dir, "EarningsDates.db")
-    db = await aiosqlite.connect(db_path)
-    await db.execute("PRAGMA journal_mode=WAL")
-    await db.execute("PRAGMA synchronous=NORMAL")
-    await db.execute("""
-            CREATE TABLE IF NOT EXISTS earnings_calendar (
-                symbol TEXT,
-                name TEXT,
-                reportdate TEXT,
-                fiscaldateending TEXT,
-                estimate REAL,
-                currency TEXT,
-                timeoftheday TEXT,
-                symbol_id INTEGER,
-                UNIQUE(symbol_id, reportdate) ON CONFLICT REPLACE
-            )
-        """)
-    await db.commit()
-
-    return db
-
-
-async def get_last_update_date():
-    db = app_state.earnings_db
-    async with db.execute("SELECT MAX(reportdate) FROM earnings_calendar") as cursor:
-        row = await cursor.fetchone()
-        return row[0] if row else None
-
-
-async def get_earnings_dates(api_key):
-    """
-    Fetches the earnings calendar for the next 3 months.
-
-    If the latest report date is older than today, fetches the latest earnings calendar
-    from Alpha Vantage and saves it to the database. Otherwise, loads the earnings calendar
-    from the database.
-
-    Parameters
-    ----------
-    api_key: str
-        The API key to use for the Alpha Vantage request.
-
-    Returns
-    -------
-    None
-    """
-    global earnings_lookup
-    global today
-
-    db_path = os.path.join(db_dir, "EarningsDates.db")
-    should_fetch = False
-
-    latest_report = await get_last_update_date()
-    if latest_report is None:
-        should_fetch = True
-    else:
-        if today_str > latest_report:
-            should_fetch = True
-    await cache_all_max_dates()
-    if should_fetch:
-        client = app_state.httpx_client
-        await api_key.lock_key()
-        try:
-            url = f"https://www.alphavantage.co/query?function=EARNINGS_CALENDAR&horizon=3month&apikey={api_key.key}"
-            response = await client.get(url)
-        except Exception as e:
-            print(f"Error fetching earnings calendar: {e}")
-            return
-        finally:
-            api_key.unlock_key()
-        if response.status_code == 200:
-            csv_data = io.StringIO(response.text)
-            df = pd.read_csv(csv_data)
-            df.columns = [c.strip().lower() for c in df.columns]
-
-            df["symbol_id"] = df["symbol"].str.upper().map(symbol_cache)
-
-            missing_symbols = df[df["symbol_id"].isna()]["symbol"].unique().tolist()
-            if missing_symbols:
-                new_ids = await asyncio.gather(*(get_symbol_id(s) for s in missing_symbols))
-
-                new_mappings = {s: i for s, i in zip(missing_symbols, new_ids) if i is not None}
-                symbol_cache.update(new_mappings)
-
-                df["symbol_id"] = df["symbol"].str.upper().map(symbol_cache)
-
-            earnings_df = df.dropna(subset=["symbol_id"]).copy()
-            earnings_df["symbol_id"] = earnings_df["symbol_id"].astype(int)
-            earnings_lookup = {
-                row.symbol_id: (row.reportdate, row.fiscaldateending) for row in earnings_df.itertuples(index=False)
-            }
-            os.makedirs(db_dir, exist_ok=True)
-
-            def save_to_db():
-                with sqlite3.connect(db_path) as conn:
-                    earnings_df.to_sql("earnings_calendar", conn, if_exists="replace", index=False)
-
-            await asyncio.to_thread(save_to_db)
-        else:
-            print(f"Failed to fetch data: {response.status_code}")
-            return
-    else:
-
-        def load_from_db():
-            with sqlite3.connect(db_path) as conn:
-                return pd.read_sql("SELECT * FROM earnings_calendar", conn)
-
-        earnings_df = await asyncio.to_thread(load_from_db)
-        earnings_lookup = {
-            row.symbol_id: (row.reportdate, row.fiscaldateending) for row in earnings_df.itertuples(index=False)
-        }
-        return
-
 
 def get_furthest_date_for_stock(symbol_id):
     """
@@ -785,51 +586,3 @@ async def check_for_new_earnings(symbol_id, table) -> bool:
     return False
 
 
-async def init_caches():
-    await asyncio.gather(cache_all_max_dates(), get_recent_quote_time(), cache_symbol_ids())
-
-
-async def cache_all_max_dates():
-    global max_fiscal_lookup
-    financial_tables = {"income", "balance", "cash", "earnings"}
-
-    async def fetch_table_max(name):
-        async with app_state.engines[name].connect() as conn:
-            query = text(f"SELECT symbol_id, MAX(date) FROM {name} GROUP BY symbol_id")
-            result = await conn.execute(query)
-
-            return name, dict(result.fetchall())
-
-    tasks = [fetch_table_max(table) for table in financial_tables if table in app_state.engines]
-
-    results = await asyncio.gather(*tasks)
-
-    for table, data in results:
-        max_fiscal_lookup[table] = data
-
-
-async def get_recent_quote_time():
-    priceDB = app_state.price_db
-    global latest_quote
-    async with priceDB.execute("SELECT symbol_id, MAX(timestamp) FROM HistoricalStocks GROUP BY symbol_id") as cursor:
-        rows = await cursor.fetchall()
-        latest_quote.update(dict(rows))
-
-    return
-
-
-async def cache_symbol_ids():
-    global symbol_cache
-    async with app_state.price_db.execute("SELECT symbol, symbol_id FROM Symbols") as cursor:
-        result = await cursor.fetchall()
-        symbol_cache.update(dict(result))
-
-    return
-
-
-async def last_checked_cacher():
-    db = app_state.last_checked_db
-    global last_checked_cache
-    async with db.execute("SELECT symbol_id, last_checked_date FROM last_checked") as cursor:
-        rows = await cursor.fetchall()
-        last_checked_cache = dict(rows)

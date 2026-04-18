@@ -9,6 +9,9 @@ class AppState:
         self.client = None
         self.streamer = None
         self.httpx_client = None
+        self.finnhub_client = None
+        self.data_loader = None
+        self.market_news = None
 
 
 # Instantiate it once

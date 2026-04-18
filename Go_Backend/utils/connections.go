@@ -85,6 +85,35 @@ func ListenToRedis(ctx context.Context, rdb *redis.Client, hub *Hub, channel str
 		for msg := range ch {
 			HandleOptionRead(*msg)
 		}
+	case "Global_News_Channel":
+		for msg := range ch {
+			HandleGlobalNewsRead(*msg)
+		}
+	}
+}
+
+func HandleGlobalNewsRead(message redis.Message) {
+	var rawNews map[string]string
+    payloadBytes := []byte(message.Payload)
+    
+    if err := json.Unmarshal(payloadBytes, &rawNews); err != nil {
+        log.Printf("JSON Error: %v", err)
+        return
+    }
+
+    formattedPayload := struct {
+        GlobalNews map[string]string `json:"GlobalNews"`
+    }{
+        GlobalNews: rawNews,
+    }
+
+    finalBytes, _ := json.Marshal(formattedPayload)
+	if len(Clients) == 0 {
+		GlobalMarketNews.GlobalNews = rawNews
+		fmt.Println(GlobalMarketNews.GlobalNews)
+	}
+	for _, client := range Clients {
+		client.EnqueueMessage(finalBytes)
 	}
 }
 
@@ -216,7 +245,6 @@ func WebsocketConnectHandler(hub *Hub, w http.ResponseWriter, r *http.Request) {
     }
 	if oldClient, exists := Clients[clientID]; exists {
 		log.Printf("Replacing connection for: %s", clientID)
-		close(oldClient.Done) 
 		oldClient.Conn.Close() 
 	}	
 
@@ -248,9 +276,9 @@ func getIDFromClient(clientId string) (int, error) {
 func DisconnectClient(clientID string, caller *Client) {
     ClientsMu.Lock()
     
-    // 1. Check if the client in the map is the same one calling Disconnect
     currentClient, exists := Clients[clientID]
     
+    // Only remove from the global map if this specific caller is the one stored there
     if exists && currentClient == caller {
         delete(Clients, clientID)
         log.Printf("Client disconnected and removed: %s", clientID)
@@ -259,7 +287,12 @@ func DisconnectClient(clientID string, caller *Client) {
     }
     ClientsMu.Unlock()
 
-    caller.Conn.Close()
+    // Ensure the WebSocket is actually terminated
+    if caller.Conn != nil {
+        caller.Conn.Close()
+    }
+
+    // This calls the sync.Once guarded close of the 'Send' channel
     caller.Close() 
 }
 
@@ -297,28 +330,36 @@ func SendAllCached(clientID string) {
 			if _, ok := checked[symbol]; !ok {
 				checked[symbol] = struct{}{}
 				if stats, ok := GlobalCompanyCache.Stats[symbol]; ok {
-					if err := send(client, stats); err != nil {
-						errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-						_ = client.SafeWrite(websocket.TextMessage, errMsg)
-						return
+					payload, err := json.Marshal(stats)
+					if err != nil {
+						log.Printf("Failed to marshal stats for symbol %s: %v", symbol, err)
+						continue
 					}
+					client.EnqueueMessage(payload)
 				}
 				if stats, ok := GlobalOptionExpiration.Stats[symbol]; ok {
-					if err := send(client, stats); err != nil {
-						errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
-						_ = client.SafeWrite(websocket.TextMessage, errMsg)
-						return
-					} else {
+					payload, err := json.Marshal(stats)
+					if err != nil {
+						log.Printf("Failed to marshal stats for symbol %s: %v", symbol, err)
+						continue
 					}
+					client.EnqueueMessage(payload)
 				}	
-				GlobalCacheLimit.Queue = append(GlobalCacheLimit.Queue, symbol)
 				if _, exists := GlobalCacheLimit.InQueue[symbol]; !exists {
 					GlobalCacheLimit.InQueue[symbol] = struct{}{}
 					GlobalCacheLimit.Queue = append(GlobalCacheLimit.Queue, symbol)
 				}
 			}
 		}
-	}	
+	}
+	if len(GlobalMarketNews.GlobalNews) > 0 {
+		payload, err := json.Marshal(GlobalMarketNews)
+		if err != nil {
+			log.Printf("Failed to marshal news: %v", err)
+			return
+		}
+		client.EnqueueMessage(payload)
+	}
 }
 
 func HandleCompanyRead(msg redis.Message) {
@@ -359,14 +400,13 @@ func HandleCompanyRead(msg redis.Message) {
 }
 
 func HandleOptionRead(msg redis.Message) {
-	var option OptionExpiration
+	var option InitialCompanyData
 	payloadBytes := []byte(msg.Payload)
 	if err := json.Unmarshal(payloadBytes, &option); err != nil {
 		// If it’s not a quotes payload, skip or handle other message types here
 		log.Printf("Invalid quotes JSON from Python Client: %v", err)
 		return
 	}
-
 	GlobalOptionExpiration.Lock()
 	GlobalOptionExpiration.Stats[option.Symbol] = option
 
