@@ -26,6 +26,8 @@ async def get_symbol_id(symbol):
 async def run_backtest(user_portfolio, benchmark, days_ago, client_id):
     initial_capital = 10_000
     data_loader = app_state.data_loader
+    possible_cols = ['datetime', 'timestamp', 'time', 'Date']
+
 
     async def calculate_equity_curve(portfolio_dict):
         prices = {}
@@ -34,8 +36,15 @@ async def run_backtest(user_portfolio, benchmark, days_ago, client_id):
                 continue
             s_id = await get_symbol_id(stock)
             df = await data_loader.load_backtesting_data(stock, s_id, days_ago)
-            prices[stock] = df.set_index("datetime")["close"]
-        
+            time_col = next((c for c in possible_cols if c in df.columns), None)
+
+            if time_col is None:
+                raise KeyError(f"Could not find a time column for {stock}. Found: {df.columns.tolist()}")
+
+            # Convert to datetime objects and set as index
+            df[time_col] = pd.to_datetime(df[time_col])
+            prices[stock] = df.set_index(time_col)["close"]
+
         price_matrix = pd.DataFrame(prices).sort_index()
 
         stocks_only = {s: v for s, v in portfolio_dict.items() if s != "Cash"}
@@ -69,9 +78,6 @@ async def run_backtest(user_portfolio, benchmark, days_ago, client_id):
     except Exception as e:
         print(f"Error calculating equity curve: {e}")
         return
-
-    print(test_df.head())
-    print(bench_df.head())
 
     try:
         stats = compute_strategy_stats(test_df)

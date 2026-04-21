@@ -360,16 +360,16 @@ class DataLoader:
         # Prepare the records for bulk insertion
         # Ensure we use 'timestamp' and 'close' as columns
         records = []
-        for _, row in df.iterrows():
-            # Using .get() or specific keys ensures we don't hit KeyErrors
-            records.append((row.get('datetime'), row.get('open'), row.get('high'), row.get('low'), row.get('close'), row.get('volume'), s_id))
-
-        query = """
-            INSERT OR IGNORE INTO HistoricalStocks (timestamp, open, high, low, close, volume, symbol_id) 
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """
-        
         try:
+            for _, row in df.iterrows():
+                # Using .get() or specific keys ensures we don't hit KeyErrors
+                records.append((row.get('datetime'), row.get('open'), row.get('high'), row.get('low'), row.get('close'), row.get('volume'), s_id))
+
+            query = """
+                INSERT OR IGNORE INTO HistoricalStocks (timestamp, open, high, low, close, volume, symbol_id) 
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """
+        
             # Use executemany for high-performance async batching
             await db_conn.executemany(query, records)
             await db_conn.commit()
