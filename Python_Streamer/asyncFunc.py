@@ -390,12 +390,12 @@ async def update_tickers_from_db(api_manager, rate_api_key):
 
     if not companies:
         return
-    # schwab_tasks = [throttled_get_options_and_initial_quotes(c) for c in companies]
-    # await asyncio.gather(*schwab_tasks, return_exceptions=True)
+    schwab_tasks = [throttled_get_options_and_initial_quotes(c) for c in companies]
+    await asyncio.gather(*schwab_tasks, return_exceptions=True)
 
-    # # Phase 3: Alpha Vantage fundamentals (slow, serialized)
-    # av_tasks = [throttled_handle_company(api_manager, rate_api_key, c) for c in companies]
-    # await asyncio.gather(*av_tasks, return_exceptions=True)
+    # Phase 3: Alpha Vantage fundamentals (slow, serialized)
+    av_tasks = [throttled_handle_company(api_manager, rate_api_key, c) for c in companies]
+    await asyncio.gather(*av_tasks, return_exceptions=True)
 
 
 async def throttled_handle_company(api_manager, rate_api_key, ticker):
