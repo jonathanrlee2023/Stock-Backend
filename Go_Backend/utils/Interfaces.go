@@ -448,3 +448,54 @@ type DatabasePool struct {
 	CloseDB   *sql.DB
 	TrackerDB *sql.DB
 }
+
+type BacktestRequest struct {
+	DaysAgo int `json:"DaysAgo"`
+	UserPortfolio map[string]float64 `json:"UserPortfolio"`
+	BenchmarkPortfolio map[string]float64 `json:"BenchmarkPortfolio"`
+	ClientID string `json:"ClientID"`
+}
+
+type BacktestPayload struct {
+	User      []BacktestPoint   `json:"User"`
+	Benchmark []BacktestPoint   `json:"Benchmark"`
+	Stats     BacktestStats  `json:"Stats"`
+	ClientID  string `json:"ClientID"`
+}
+
+// BacktestPoint matches the "records" format from the Pandas DataFrame
+type BacktestPoint struct {
+	Datetime  string  `json:"datetime"` // or time.Time if you parse it specifically
+	Capital   float64 `json:"Capital"`
+}
+
+// BacktestStats contains the calculated performance and risk metrics
+type BacktestStats struct {
+	Performance PerformanceMetrics `json:"performance"`
+	Risk        RiskMetrics        `json:"risk"`
+	Counts      CountMetrics       `json:"counts"`
+}
+
+type PerformanceMetrics struct {
+	TotalReturn          float64 `json:"total_return"`
+	CAGR                 float64 `json:"cagr"`
+	Sharpe               float64 `json:"sharpe"`
+	Sortino              float64 `json:"sortino"`
+	Calmar               float64 `json:"calmar"`
+	AnnualizedVolatility float64 `json:"annualized_volatility"`
+}
+
+type RiskMetrics struct {
+	MaxDrawdown float64     `json:"max_drawdown"`
+	VaR         ValueAtRisk `json:"var"`
+	CVaR        ValueAtRisk `json:"cvar"`
+}
+
+type ValueAtRisk struct {
+	Alpha float64 `json:"alpha"`
+	Value float64 `json:"value"`
+}
+
+type CountMetrics struct {
+	Periods int `json:"periods"`
+}

@@ -8,7 +8,8 @@ import requests
 import datetime
 from appState import app_state
 import stream_func
-from cache import earnings_lookup, max_fiscal_lookup, symbol_cache, last_checked_cache, POPULAR_ETFS
+from backtesting import run_backtest
+from cache import earnings_lookup, max_fiscal_lookup, symbol_cache, last_checked_cache, r, POPULAR_ETFS
 
 stream_started = False
 stream_lock = asyncio.Lock()
@@ -28,7 +29,6 @@ option_attributes = [
 ]
 parsed_labels = ["Ask Price", "Bid Price", "Last Price", "High Price", "IV", "Delta", "Gamma", "Theta", "Vega", "Mark"]
 get_option_stats = itemgetter(*option_attributes)
-r = aioredis.Redis(host="redis", port=6379, db=0)
 db_dir = os.getenv("DB_DIR", "../Database")
 alpha_vantage_semaphore = asyncio.Semaphore(1)
 schwab_api_semaphore = asyncio.Semaphore(5)
@@ -83,8 +83,9 @@ async def listen_for_messages(alpha_vantage_api_key, rate_api_key):
                     stream_started = True
         if message is not None:
             data = orjson.loads(message["data"])
-
-            if "Status" in data:
+            if "UserPortfolio" in data:
+                await run_backtest(data["UserPortfolio"], data["BenchmarkPortfolio"], data["DaysAgo"], data["ClientID"])
+            elif "Status" in data:
                 continue
             else:
                 symbol = data.get("symbol")
@@ -389,12 +390,12 @@ async def update_tickers_from_db(api_manager, rate_api_key):
 
     if not companies:
         return
-    schwab_tasks = [throttled_get_options_and_initial_quotes(c) for c in companies]
-    await asyncio.gather(*schwab_tasks, return_exceptions=True)
+    # schwab_tasks = [throttled_get_options_and_initial_quotes(c) for c in companies]
+    # await asyncio.gather(*schwab_tasks, return_exceptions=True)
 
-    # Phase 3: Alpha Vantage fundamentals (slow, serialized)
-    av_tasks = [throttled_handle_company(api_manager, rate_api_key, c) for c in companies]
-    await asyncio.gather(*av_tasks, return_exceptions=True)
+    # # Phase 3: Alpha Vantage fundamentals (slow, serialized)
+    # av_tasks = [throttled_handle_company(api_manager, rate_api_key, c) for c in companies]
+    # await asyncio.gather(*av_tasks, return_exceptions=True)
 
 
 async def throttled_handle_company(api_manager, rate_api_key, ticker):

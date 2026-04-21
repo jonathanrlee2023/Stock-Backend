@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
 	_ "modernc.org/sqlite"
 )
@@ -402,6 +404,31 @@ func DeletePortfolioHandler(w http.ResponseWriter, r *http.Request) {
 	delete(client.PortfolioIDs.IDs, id)
 	delete(client.OpenPositions.Positions, id)
 	delete(client.Balance.Balances, id)
+}
+
+
+func StartBacktest(rdb *redis.Client, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var backtestRequest BacktestRequest
+	if err := json.NewDecoder(r.Body).Decode(&backtestRequest); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	msg, err := json.Marshal(backtestRequest)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	err = SendToRedis(msg, context.Background(), rdb, "Request_Channel")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 }
 
 func LoginHandler(w http.ResponseWriter, r *http.Request) {

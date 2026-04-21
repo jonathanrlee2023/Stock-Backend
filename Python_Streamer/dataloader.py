@@ -1,5 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta
+
+import pandas as pd
 from cache import latest_quote
 import time
 import schwabdev
@@ -293,3 +295,83 @@ class DataLoader:
 
         # Convert to Unix timestamp (integer)
         return int(time.mktime(five_years_ago.timetuple()))
+
+    async def load_backtesting_data(self, ticker, s_id, days_ago):
+        cutoff_ts = self.time_ago(days_ago)
+        db = app_state.price_db
+        df = None
+        try:
+            async with db.execute(
+                "SELECT timestamp, close FROM HistoricalStocks WHERE symbol_id = ? AND timestamp >= ? ORDER BY timestamp ASC",
+                (s_id, cutoff_ts),
+            ) as cursor:
+                rows = await cursor.fetchall()
+
+            if rows:
+                df = pd.DataFrame(rows, columns=['timestamp', 'close'])
+        except Exception as e:
+            print(f"Price Database Error: {e}")
+        try:
+            if df is None or df.empty:
+                response = await asyncio.to_thread(
+                    self.connection.price_history,
+                    symbol=ticker,
+                    periodType="year",
+                    frequencyType="daily",
+                    period=1,
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    candles = data.get("candles", [])
+                    
+                    if candles:
+                        # Create DataFrame immediately from the API response list
+                        df = pd.DataFrame(candles)
+                        
+                        # Filter only columns we need to save memory
+                        new_df = df[['datetime', 'close']].copy()
+                        new_df.rename(columns={'datetime': 'timestamp'}, inplace=True)
+
+                    await self.save_to_db(df, s_id)
+        except Exception as e:
+            print(f"Schwab API Error: {e}")
+
+        if df is not None and not df.empty:
+            # Vectorized Date Conversion
+            # TDA/Schwab timestamps are usually milliseconds
+            df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True).dt.date
+            
+            # Filter by cutoff (if the DB had older data than requested)
+            cutoff_date = datetime.fromtimestamp(cutoff_ts).date()
+            df = df[df['datetime'] >= cutoff_date]
+            
+            return df[['datetime', 'close']].reset_index(drop=True)
+        
+        return None
+
+    def time_ago(self, days_ago):
+        seconds_to_subtract = days_ago * 86400
+        return int(time.time() - seconds_to_subtract)
+    
+    async def save_to_db(self, df, s_id):
+        db_conn = app_state.price_db
+        
+        # Prepare the records for bulk insertion
+        # Ensure we use 'timestamp' and 'close' as columns
+        records = []
+        for _, row in df.iterrows():
+            # Using .get() or specific keys ensures we don't hit KeyErrors
+            records.append((row.get('datetime'), row.get('open'), row.get('high'), row.get('low'), row.get('close'), row.get('volume'), s_id))
+
+        query = """
+            INSERT OR IGNORE INTO HistoricalStocks (timestamp, open, high, low, close, volume, symbol_id) 
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """
+        
+        try:
+            # Use executemany for high-performance async batching
+            await db_conn.executemany(query, records)
+            await db_conn.commit()
+        except Exception as e:
+            print(f"Price Database Bulk Insert Error: {e}")
