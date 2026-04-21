@@ -1,3 +1,5 @@
+from redis import asyncio as aioredis
+
 max_fiscal_lookup = {"income": {}, "balance": {}, "cash": {}, "earnings": {}}
 earnings_lookup = {}
 latest_quote = {}
@@ -5,6 +7,8 @@ symbol_cache = {}
 exchange_rate_cache = {}
 last_checked_cache = {}
 rate_limited = False
+r = aioredis.Redis(host="redis", port=6379, db=0)
+
 
 POPULAR_ETFS = {
     # Broad Market

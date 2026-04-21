@@ -76,6 +76,7 @@ func main() {
 	go utils.ListenToRedis(context.Background(), rdb, hub, "Company_Channel")
 	go utils.ListenToRedis(context.Background(), rdb, hub, "One_Time_Data_Channel")
 	go utils.ListenToRedis(context.Background(), rdb, hub, "Global_News_Channel")
+	go utils.ListenToRedis(context.Background(), rdb, hub, "Backtest_Channel")
 
 	// Endpoints for API
 	mux := http.NewServeMux()
@@ -111,6 +112,9 @@ func main() {
 	})
 	mux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
 		utils.CreateUserHandler(w, r)
+	})
+	mux.HandleFunc("/startBacktest", func(w http.ResponseWriter, r *http.Request) {
+		utils.StartBacktest(rdb, w, r)
 	})
 
 

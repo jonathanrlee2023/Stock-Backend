@@ -89,6 +89,24 @@ func ListenToRedis(ctx context.Context, rdb *redis.Client, hub *Hub, channel str
 		for msg := range ch {
 			HandleGlobalNewsRead(*msg)
 		}
+	case "Backtest_Channel":
+		for msg := range ch {
+			HandleBacktestRead(*msg)
+		}
+	}
+}
+
+func HandleBacktestRead(message redis.Message) {
+	var BacktestData BacktestPayload
+	payloadBytes := []byte(message.Payload)
+	
+	if err := json.Unmarshal(payloadBytes, &BacktestData); err != nil {
+		log.Printf("JSON Error: %v", err)
+		return
+	}
+	clientID := BacktestData.ClientID
+	if client, ok := Clients[clientID]; ok {
+		client.EnqueueMessage(payloadBytes)
 	}
 }
 
@@ -110,7 +128,6 @@ func HandleGlobalNewsRead(message redis.Message) {
     finalBytes, _ := json.Marshal(formattedPayload)
 	if len(Clients) == 0 {
 		GlobalMarketNews.GlobalNews = rawNews
-		fmt.Println(GlobalMarketNews.GlobalNews)
 	}
 	for _, client := range Clients {
 		client.EnqueueMessage(finalBytes)
@@ -624,6 +641,7 @@ func StartStockStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request)
 		return
 	}
 }
+
 
 // Write to a specific client the most recent balance
 func ProcessWrite(t time.Time, client *Client) {
