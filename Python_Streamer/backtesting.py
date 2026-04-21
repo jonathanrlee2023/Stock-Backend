@@ -30,7 +30,8 @@ async def run_backtest(user_portfolio, benchmark, days_ago, client_id):
     async def calculate_equity_curve(portfolio_dict):
         prices = {}
         for stock, weight in portfolio_dict.items():
-            if stock == "Cash": continue
+            if stock == "Cash": 
+                continue
             s_id = await get_symbol_id(stock)
             df = await data_loader.load_backtesting_data(stock, s_id, days_ago)
             prices[stock] = df.set_index("datetime")["close"]
