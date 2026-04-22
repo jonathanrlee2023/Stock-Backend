@@ -81,6 +81,7 @@ type OptionStreamRequest struct {
 
 type StockStreamRequest struct {
 	Symbol string `json:"symbol"`
+	GetOptionData string `json:"getOptionData"`
 }
 
 type CompanyStats struct {

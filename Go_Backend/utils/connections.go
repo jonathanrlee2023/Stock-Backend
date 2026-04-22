@@ -600,6 +600,7 @@ func StartOptionStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request
 func StartStockStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request) {
 	symbol := r.URL.Query().Get("symbol")
 	clientID := r.URL.Query().Get("clientID")
+	getOptionData := r.URL.Query().Get("getOptionData")
 	client := Clients[clientID]
 	GlobalCompanyCache.Lock()
 	defer GlobalCompanyCache.Unlock()
@@ -618,10 +619,13 @@ func StartStockStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request)
 			_ = client.SafeWrite(websocket.TextMessage, errMsg)
 			return
 		}
-		return
+		if getOptionData == "No" {
+			return
+		}
 	}
 	request := StockStreamRequest{
 		Symbol: symbol,
+		GetOptionData: getOptionData,
 	}
 
 	GlobalSubscriptionHub.Lock()

@@ -89,6 +89,7 @@ async def listen_for_messages(alpha_vantage_api_key, rate_api_key):
                 continue
             else:
                 symbol = data.get("symbol")
+                get_options_data = data.get("getOptionData")
                 try:
                     if "price" in data:
                         price = data["price"]
@@ -104,17 +105,20 @@ async def listen_for_messages(alpha_vantage_api_key, rate_api_key):
                                     )
                                 )
                     else:
+                        tasks = []
                         if symbol not in streamer.subscriptions.get("LEVELONE_EQUITIES", {}):
                             if not is_market_closed:
                                 asyncio.create_task(
-                                    stream_func.start_stock_stream(
-                                        ticker=symbol,
-                                    )
+                                    tasks.append(stream_func.start_stock_stream(ticker=symbol))
                                 )
-                        await asyncio.gather(
-                            get_options_and_initial_quotes(symbol),
-                            handleCompany(alpha_vantage_api_key, rate_api_key, symbol),
-                        )
+                            tasks.append(handleCompany(alpha_vantage_api_key, rate_api_key, symbol))
+
+                        tasks.append(get_options_and_initial_quotes(symbol, get_options_data))
+                        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                        for i, res in enumerate(results):
+                            if isinstance(res, Exception):
+                                print(f"Task {i} failed for {symbol}: {res}")
                 except requests.exceptions.ReadTimeout:
                     print("Timeout connecting to Schwab API.")
                 except Exception as e:
@@ -390,7 +394,7 @@ async def update_tickers_from_db(api_manager, rate_api_key):
 
     if not companies:
         return
-    schwab_tasks = [throttled_get_options_and_initial_quotes(c) for c in companies]
+    schwab_tasks = [throttled_get_options_and_initial_quotes(c, get_options="No") for c in companies]
     await asyncio.gather(*schwab_tasks, return_exceptions=True)
 
     # Phase 3: Alpha Vantage fundamentals (slow, serialized)
@@ -400,16 +404,14 @@ async def update_tickers_from_db(api_manager, rate_api_key):
 
 async def throttled_handle_company(api_manager, rate_api_key, ticker):
     async with alpha_vantage_semaphore:
-        print(f"📡 Fetching company data for {ticker}...")
         await handleCompany(api_manager, rate_api_key, ticker)
         await asyncio.sleep(0.1)
         return
 
 
-async def throttled_get_options_and_initial_quotes(ticker):
+async def throttled_get_options_and_initial_quotes(ticker, get_options):
     async with schwab_api_semaphore:
-        print(f"📡 Fetching initial data for {ticker}...")
-        await get_options_and_initial_quotes(ticker)
+        await get_options_and_initial_quotes(ticker, get_options=get_options)
         await asyncio.sleep(1)
         return
 
@@ -433,6 +435,8 @@ async def handleCompany(api_key, rate_key, ticker):
     -------
     None
     """
+    print(f"📡 Fetching company data for {ticker}...")
+
     if ticker in POPULAR_ETFS:
         print(f"⚠️ Skipping {ticker} as it's a popular ETF with no financials.")
         return
@@ -451,7 +455,7 @@ async def handleCompany(api_key, rate_key, ticker):
     del company
 
 
-async def get_options_and_initial_quotes(ticker):
+async def get_options_and_initial_quotes(ticker, get_options):
     """
     Fetches the one time data for a given ticker and publishes it to the "One_Time_Data_Channel" Redis channel.
 
@@ -466,6 +470,8 @@ async def get_options_and_initial_quotes(ticker):
     -------
     None
     """
+    print(f"📡 Fetching initial data for {ticker}...")
+
     if symbol_cache.get(ticker) is None:
         s_id = await get_symbol_id(ticker)
     else:
@@ -494,8 +500,9 @@ async def get_options_and_initial_quotes(ticker):
         return
 
     all_options = call_option_id_list + put_option_id_list
-    option_ids.extend(all_options)
-    file_names.extend(all_options)
+    if get_options == "Yes":
+        option_ids.extend(all_options)
+        file_names.extend(all_options)
 
     quote_dict = {
         "Symbol": ticker,
