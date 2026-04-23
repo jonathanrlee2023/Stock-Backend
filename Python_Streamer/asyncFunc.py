@@ -108,9 +108,7 @@ async def listen_for_messages(alpha_vantage_api_key, rate_api_key):
                         tasks = []
                         if symbol not in streamer.subscriptions.get("LEVELONE_EQUITIES", {}):
                             if not is_market_closed:
-                                asyncio.create_task(
-                                    tasks.append(stream_func.start_stock_stream(ticker=symbol))
-                                )
+                                tasks.append(stream_func.start_stock_stream(ticker=symbol))
                             tasks.append(handleCompany(alpha_vantage_api_key, rate_api_key, symbol))
 
                         tasks.append(get_options_and_initial_quotes(symbol, get_options_data))

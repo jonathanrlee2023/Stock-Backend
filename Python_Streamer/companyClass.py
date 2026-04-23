@@ -107,6 +107,8 @@ class Company:
         # Extract values from the loaded overview
         self._setup_analyst_ratings()
 
+        self.grade = self.grade_stock()
+
         await db_handler.save_all_to_db()
 
         def safe_float(val):
@@ -161,7 +163,7 @@ class Company:
             "StrongSell": safe_int(self.strong_sell),
             "Sell": safe_int(self.sell),
             "EarningsDate": self.earnings_date,
-            "Grade": self.grade_stock(),
+            "Grade": self.grade,
             "Sector": self.sector,
             "Industry": self.industry,
             "AnnualIncome": annual_income,
@@ -254,35 +256,92 @@ class Company:
 
     def grade_stock(self):
         """
-        Grades a stock based on 6 key metrics.
+        Grades a stock based on 8 key metrics, with both positive and negative scoring.
+        Final score is clamped between 0 and 100.
+        Metric Details:
+        ---------------
+        1. Capital Efficiency (ROIC vs WACC)
+        - ROIC and WACC must be in consistent units (both as percentages).
+        - ROIC > 2x WACC: +15 (elite capital allocator)
+        - ROIC > WACC:    +10 (creating shareholder value)
+        - ROIC > 0:        +5 (at least profitable on capital)
+        - ROIC < 0:       -10 (actively destroying capital)
 
-        1. Capital Efficiency: ROIC vs WACC (Weight: 15)
-        2. Valuation: PEG Ratio (Weight: 15)
-        3. Earnings Quality: Sloan Ratio (Weight: 15)
-        4. Margin of safety: Price vs Intrinsic (Weight: 20)
-        5. Analyst Sentiment (Weight: 15)
-        6. Cash Flow Strength: FCF (Weight: 15)
+        2. Valuation (PEG Ratio)
+        - Negative PEG indicates declining earnings and is penalized.
+        - 0 < PEG <= 1.0:  +15 (undervalued relative to growth)
+        - 1.0 < PEG <= 1.5: +10 (fairly valued)
+        - 1.5 < PEG <= 2.0:  +5 (mildly overvalued)
+        - PEG < 0:          -10 (earnings declining)
 
-        Returns a score between 0 and 100. Higher scores indicate better performance.
+        3. Earnings Quality (Sloan Ratio)
+        - Measures accrual component of earnings. High absolute values
+            indicate earnings are not backed by cash flow.
+        - |sloan| <= 0.10:  +15 (high quality earnings)
+        - |sloan| <= 0.20:   +7 (acceptable)
+        - |sloan| <= 0.25:   -5 (elevated accrual risk)
+        - |sloan| >  0.25:  -10 (aggressive accrual manipulation territory)
+
+        4. Margin of Safety (Intrinsic vs Current Price)
+        - Based on DCF-derived intrinsic price vs price at last fiscal report.
+        - intrinsic > 1.5x current:  +20 (deep value, 50% margin of safety)
+        - intrinsic > 1.3x current:  +15 (strong margin of safety, 30%)
+        - intrinsic > current:        +8 (trading below intrinsic)
+        - intrinsic < 0.7x current:  -5  (trading at 30%+ premium to intrinsic)
+
+        5. Analyst Sentiment
+        - Normalized against structural sell-side bullishness bias.
+            Raw buy/sell counts are insufficient — buy% relative to total is used.
+        - buy% > 70% and buys > 5: +15 (exceptional conviction)
+        - buy% > 55%:               +8 (above baseline bullishness)
+        - buy% < 40%:               -5 (genuine negative consensus)
+
+        6. Free Cash Flow Yield (FCF / Market Cap)
+        - FCF values are stored in millions; market cap in raw dollars.
+        - FCF yield > 5%:  +15 (strong cash generation)
+        - FCF yield > 2%:   +8 (acceptable)
+        - FCF yield > 0%:   +3 (positive but thin)
+        - FCF yield <= 0%:  -5 (cash burn)
+
+        7. Growth Sustainability (Forecasted vs Historical)
+        - Rewards both maintenance of growth rate AND absolute growth level.
+        - Forecasted growth >= 75% of historical AND fore > 10%: +10
+        - Forecasted growth >= 75% of historical:                 +7
+        - Forecasted growth > 0%:                                 +3
+
+        8. Leverage (Debt-to-Equity)
+        - High leverage amplifies downside and increases insolvency risk.
+        - D/E < 0.3:  +10 (conservatively financed)
+        - D/E < 1.0:   +5 (manageable)
+        - D/E > 3.0:  -10 (dangerously leveraged)
+
+        Returns:
+            int: Score between 0 and 100 inclusive.
         """
         score = 0
         try:
             # 1. Capital Efficiency: ROIC vs WACC (Weight: 15)
             # Ideally ROIC > WACC. If ROIC is 2x WACC, it's an elite performer.
-            roic = self.return_on_invested_capital
-            wacc = self.wacc
-            if roic > (wacc * 2):
+            roic_pct = self.return_on_invested_capital * 100
+            wacc_pct = self.wacc  # already a percent
+
+            if roic_pct > (wacc_pct * 2):
                 score += 15
-            elif roic > wacc:
+            elif roic_pct > wacc_pct:
                 score += 10
-            elif roic > 0:
+            elif roic_pct > 0:
                 score += 5
+            
+            if roic_pct < 0:
+                score -= 10
 
             # 2. Valuation: PEG Ratio (Weight: 15)
             # Lower is better. < 1.0 is undervalued, > 2.0 is overvalued.
             peg = self.peg
             if peg is not None:
-                if 0 < peg <= 1.0:
+                if peg < 0:
+                    score -= 10
+                elif 0 < peg <= 1.0:
                     score += 15
                 elif 1.0 < peg <= 1.5:
                     score += 10
@@ -297,34 +356,71 @@ class Company:
             elif -0.20 <= sloan <= 0.20:
                 score += 7
 
+            if sloan > 0.25 or sloan < -0.25:
+                score -= 10
+            elif sloan > 0.20 or sloan < -0.20:
+                score -= 5
+
             # 4. Margin of Safety: Price vs Intrinsic (Weight: 20)
             intrinsic = self.intrinsic_price
             current = self.price_at_report
-            if intrinsic > (current * 1.3):
-                score += 15  # 30% Margin of Safety
+            if intrinsic > (current * 1.5):   # 50% margin of safety — deep value
+                score += 20
+            elif intrinsic > (current * 1.3):  # 30% margin
+                score += 15
             elif intrinsic > current:
-                score += 10
+                score += 8
+            elif intrinsic < (current * 0.7):  # Trading at 30%+ premium to intrinsic
+                score -= 5
 
             # 5. Analyst Sentiment (Weight: 15)
             # Ratio of Buys to Sells
             buys = self.strong_buy + self.buy
             sells = self.strong_sell + self.sell
-            if buys > (sells * 3) and buys > 5:
-                score += 15
-            elif buys > sells:
-                score += 8
+            total = buys + sells + self.hold
+            if total > 0:
+                buy_pct = buys / total
+                # 70%+ buy rate is genuinely exceptional given structural bias
+                if buy_pct > 0.70 and buys > 5:
+                    score += 15
+                elif buy_pct > 0.55:
+                    score += 8
+                # Below 40% buy rate is a genuine red flag
+                elif buy_pct < 0.40:
+                    score -= 5
 
             # 6. Cash Flow Strength: FCF (Weight: 15)
-            # Positive FCF is mandatory for a good grade
-            if self.fcf > 0:
-                score += 15
+            if self.market_cap and self.market_cap > 0:
+                fcf_yield = (self.fcf * 1_000_000) / self.market_cap  # fcf is in millions
+                if fcf_yield > 0.05:  # >5% FCF yield is strong
+                    score += 15
+                elif fcf_yield > 0.02:
+                    score += 8
+                elif fcf_yield > 0:
+                    score += 3
+                else:
+                    score -= 5  # Negative FCF is a penalty, not neutral
 
             hist = self.hist_growth
             fore = self.forecasted_growth
-            if fore >= (hist * 0.75) and fore > 0:
+            if fore > 0 and hist > 0:
+                maintenance_ratio = fore / hist
+                if maintenance_ratio >= 0.75 and fore > 0.10:  # Maintaining AND growing fast
+                    score += 10
+                elif maintenance_ratio >= 0.75:
+                    score += 7
+                elif fore > 0:
+                    score += 3
+
+            debt_to_equity = self.balance_df["shortLongTermDebtTotal"].iloc[-1] / \
+                 self.balance_df["totalShareholderEquity"].iloc[-1]
+
+            if debt_to_equity < 0.3:
                 score += 10
-            elif fore > 0:
+            elif debt_to_equity < 1.0:
                 score += 5
+            elif debt_to_equity > 3.0:
+                score -= 10
         except Exception as e:
             print("Error Grading Stock: ", e)
 
