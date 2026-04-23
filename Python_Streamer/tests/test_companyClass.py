@@ -31,23 +31,44 @@ def test_prepare_df_for_go_formatting():
     assert "T00:00:00Z" in result[0]["date"]  # Ensure Go-compatible date format
 
 
-def test_grade_stock_calculation():
+def test_grade_stock_elite():
     comp = Company("AAPL", "mock_key", "mock_rate_key")
 
-    # Manually set metrics to simulate a "perfect" stock
-    comp.return_on_invested_capital = 0.30  # High ROIC
-    comp.wacc = 0.10  # 10% WACC
-    comp.peg = 0.5  # Very undervalued
-    comp.sloan = 0.02  # High quality
-    comp.intrinsic_price = 200  # Worth 200
-    comp.price_at_report = 100  # Trading at 100
-    comp.strong_buy, comp.buy = 10, 5  # Analyst support
-    comp.strong_sell, comp.sell, comp.hold = 0, 0, 1
-    comp.fcf = 1000000  # Positive cash flow
+    # 1. Capital Efficiency: ROIC (30%) > 2x WACC (10%) -> +15
+    comp.return_on_invested_capital = 0.30 
+    comp.wacc = 10.0  
 
-    # Test high grade
+    # 2. Valuation: PEG 0.5 -> +15
+    comp.peg = 0.5  
+
+    # 3. Earnings Quality: Sloan 0.05 -> +15
+    comp.sloan = 0.05  
+
+    # 4. Margin of Safety: Intrinsic (160) > 1.5x Current (100) -> +20
+    comp.intrinsic_price = 160  
+    comp.price_at_report = 100  
+
+    # 5. Analyst Sentiment: 10 buys, 0 sells, 0 holds (100% buy) -> +15
+    comp.strong_buy, comp.buy = 5, 5
+    comp.strong_sell, comp.sell, comp.hold = 0, 0, 0
+
+    # 6. FCF Yield: 100M FCF / 1B Market Cap = 10% -> +15
+    comp.fcf = 100  # in millions
+    comp.market_cap = 1_000_000_000  
+
+    # 7. Growth Sustainability: Fore (15%) is 100% of Hist (15%) -> +10
+    comp.hist_growth = 0.15
+    comp.forecasted_growth = 0.15
+
+    # 8. Leverage: D/E 0.1 -> +10
+    comp.balance_df = pd.DataFrame({
+        "shortLongTermDebtTotal": [100],
+        "totalShareholderEquity": [1000]
+    })
+
+    # Total expected: 15+15+15+20+15+15+10+10 = 115 (Function returns int)
     score = comp.grade_stock()
-    assert score > 80
+    assert score >= 100
 
 
 def test_fcff_forecast_down_cycle_recovery():
