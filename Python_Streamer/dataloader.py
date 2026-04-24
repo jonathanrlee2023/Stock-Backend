@@ -340,13 +340,22 @@ class DataLoader:
         if df is not None and not df.empty:
             # Vectorized Date Conversion
             # TDA/Schwab timestamps are usually milliseconds
-            df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True).dt.date
-            
-            # Filter by cutoff (if the DB had older data than requested)
-            cutoff_date = datetime.fromtimestamp(cutoff_ts).date()
-            df = df[df['datetime'] >= cutoff_date]
-            
-            return df[['datetime', 'close']].reset_index(drop=True)
+            try:
+                if 'datetime' in df.columns and 'timestamp' not in df.columns:
+                    df = df.rename(columns={'datetime': 'timestamp'})
+
+                # 2. Safety Check: If we still don't have 'timestamp', we can't proceed
+                if 'timestamp' not in df.columns:
+                    raise KeyError(f"Expected 'timestamp' column but found: {df.columns.tolist()}")
+                df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True).dt.date
+                
+                # Filter by cutoff (if the DB had older data than requested)
+                cutoff_date = datetime.fromtimestamp(cutoff_ts).date()
+                df = df[df['datetime'] >= cutoff_date]
+                
+                return df[['datetime', 'close']].reset_index(drop=True)
+            except Exception as e:
+                print(f"Date Conversion Error: {e}")
         
         return None
 

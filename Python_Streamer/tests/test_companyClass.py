@@ -72,59 +72,88 @@ def test_grade_stock_elite():
 
 
 def test_fcff_forecast_down_cycle_recovery():
+    """
+    Validates down-cycle detection and recovery assumptions in fcff_forecast.
+
+    Scenario: Revenue declining + EBIT margin collapsing to negative.
+        avg_revenue = (140+135+125+110+90) / 5 = 120
+        current_revenue = 90
+        revenue_gap = (120 - 90) / 120 = 0.25
+        start_growth = min(0.05 + (0.25 * 0.5), 0.15) = 0.15
+
+    Key behaviors under test:
+        - is_down_cycle triggers (ebit_margin_0 < 0)
+        - avg_ebit_margin (0.126) used instead of current (-0.05)
+        - start_growth scales with revenue trough depth, capped at 15%
+        - terminal_growth stays below start_growth and below 6%
+    """
     data = {
-            "income": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
-            "balance": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
-            "cash": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
-            "earnings": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
-            "overview": pd.DataFrame()
-        }
-    # 1. Mock income_df (The "Bust" scenario)
+        "income": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
+        "balance": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
+        "cash": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
+        "earnings": {"annual": pd.DataFrame(), "quarterly": pd.DataFrame()},
+        "overview": pd.DataFrame()
+    }
+
     data["income"]["annual"] = pd.DataFrame(
         {
-            "totalRevenue": [100, 110, 120, 130, 140],
-            "ebitMargin": [0.20, 0.20, 0.20, 0.20, -0.10],
-            "revGrowth": [0.1] * 5,
-            "ebit": [20, 22, 24, 26, -14],
-            "ebitGrowth": [0.1, 0.1, 0.1, 0.1, -1.5],
-            "effectiveTaxRate": [0.21] * 5,
-            "capexPctRevenue": [0.05] * 5,
-            "daPctRevenue": [0.04] * 5,
+            "totalRevenue":     [140,    135,    125,    110,    90   ],
+            "ebitMargin":       [0.20,   0.20,   0.18,   0.10,  -0.05],
+            "revGrowth":        [0.10,  -0.036, -0.074, -0.120, -0.182],
+            "ebit":             [28.0,   27.0,   22.5,   11.0,  -4.5 ],
+            "ebitGrowth":       [0.10,  -0.036, -0.167, -0.511, -1.409],
+            "effectiveTaxRate": [0.21]  * 5,
+            "capexPctRevenue":  [0.05]  * 5,
+            "daPctRevenue":     [0.04]  * 5,
+            "nwcPctRevenue":    [0.01]  * 5,
         }
     )
 
     data["balance"]["annual"] = pd.DataFrame(
         {
-            "nwcRatio": [0.1] * 5,
-            "cashAndCashEquivalentsAtCarryingValue": [50] * 5,
-            "shortTermInvestments": [0] * 5,
-            "shortLongTermDebtTotal": [10] * 5,
-            "longTermDebt": [40] * 5,
-            "commonStockSharesOutstanding": [10] * 5,
+            "nwcRatio":                              [0.10] * 5,
+            "cashAndCashEquivalentsAtCarryingValue": [50]   * 5,
+            "shortTermInvestments":                  [0]    * 5,
+            "shortLongTermDebtTotal":                [10]   * 5,
+            "commonStockSharesOutstanding":          [10]   * 5,
+            "totalShareholderEquity":                [100]  * 5,
         }
     )
 
-    # 3. Mock company_overview (All columns must be length 1)
     data["overview"] = pd.DataFrame(
         {
             "MarketCapitalization": [500_000_000],
-            "WACC": [8.0],
-            "CostOfEquity": [10.0],  # Added this! (Usually higher than WACC)
-            "Sector": ["TECHNOLOGY"],
-            "Industry": ["SOFTWARE"],
-            "DividendPerShare": [0],
+            "WACC":                 [8.0],
+            "CostOfEquity":         [10.0],
+            "Sector":               ["TECHNOLOGY"],
+            "Industry":             ["SOFTWARE"],
+            "DividendPerShare":     [np.nan],
         }
     )
-    comp = CompanyFinancialCalculator("TEST", data, "key")
 
-    # Run the forecast
+    comp = CompanyFinancialCalculator("TEST", data, price_at_report=100.0)
     price, div = comp.fcff_forecast()
 
-    # Assertions
-    assert price > 0
-    # The code should have detected the down cycle and used avg_ebit_margin (0.20)
-    # instead of current (-0.10)
-    assert comp.start_growth == 0.05
+    # Basic sanity
+    assert price > 0, "Intrinsic price must be positive"
+    assert div is None, "Dividend model should not trigger on NaN dividend"
+
+    # revenue_gap = (120 - 90) / 120 = 0.25
+    # start_growth = min(0.05 + 0.25 * 0.5, 0.15) = 0.15
+    assert comp.start_growth == pytest.approx(0.15, abs=1e-6), (
+        f"Expected start_growth=0.15 from revenue_gap=0.25, got {comp.start_growth}"
+    )
+
+    # terminal_growth must satisfy both constraints
+    assert comp.terminal_growth < comp.start_growth, (
+        "terminal_growth must be below start_growth"
+    )
+    assert comp.terminal_growth <= 0.06, (
+        "terminal_growth must not exceed 6% absolute cap"
+    )
+    assert comp.terminal_growth > 0, (
+        "terminal_growth should be positive for TECHNOLOGY sector"
+    )
 
 
 # def test_growth_blending_logic():

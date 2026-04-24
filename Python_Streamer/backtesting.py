@@ -32,44 +32,56 @@ async def run_backtest(user_portfolio, benchmark, days_ago, client_id):
     async def calculate_equity_curve(portfolio_dict):
         prices = {}
         for stock, weight in portfolio_dict.items():
-            if stock == "Cash": 
-                continue
-            s_id = await get_symbol_id(stock)
-            df = await data_loader.load_backtesting_data(stock, s_id, days_ago)
-            time_col = next((c for c in possible_cols if c in df.columns), None)
+            try:
+                if stock == "Cash": 
+                    continue
+                s_id = await get_symbol_id(stock)
+                df = await data_loader.load_backtesting_data(stock, s_id, days_ago)
+                if df.empty:
+                    print(f"Warning: No data found for {stock}. Skipping.")
+                    continue
+                time_col = next((c for c in possible_cols if c in df.columns), None)
 
-            if time_col is None:
-                raise KeyError(f"Could not find a time column for {stock}. Found: {df.columns.tolist()}")
+                if time_col is None:
+                    raise KeyError(f"Could not find a time column for {stock}. Found: {df.columns.tolist()}")
+            except Exception as e:
+                print(f"Error processing {stock}: {e}")
+                continue
 
             # Convert to datetime objects and set as index
-            df[time_col] = pd.to_datetime(df[time_col])
-            prices[stock] = df.set_index(time_col)["close"]
+            try:
+                df[time_col] = pd.to_datetime(df[time_col])
+                prices[stock] = df.set_index(time_col)["close"]
+            except Exception as e:
+                print(f"Error processing {stock}: {e}")
+        try:
+            price_matrix = pd.DataFrame(prices).sort_index()
 
-        price_matrix = pd.DataFrame(prices).sort_index()
+            stocks_only = {s: v for s, v in portfolio_dict.items() if s != "Cash"}
+            weights = pd.Series(stocks_only)
+            allocated_dollars = weights * initial_capital
 
-        stocks_only = {s: v for s, v in portfolio_dict.items() if s != "Cash"}
-        weights = pd.Series(stocks_only)
-        allocated_dollars = weights * initial_capital
+            ipo_prices = price_matrix.apply(lambda col: col.dropna().iloc[0])
+            
+            shares_held = allocated_dollars / ipo_prices
 
-        ipo_prices = price_matrix.apply(lambda col: col.dropna().iloc[0])
-        
-        shares_held = allocated_dollars / ipo_prices
+            position_values = price_matrix.ffill() * shares_held
 
-        position_values = price_matrix.ffill() * shares_held
+            pre_ipo_mask = position_values.isna()
+            
+            sidelined_cash = (pre_ipo_mask * allocated_dollars).sum(axis=1)
 
-        pre_ipo_mask = position_values.isna()
-        
-        sidelined_cash = (pre_ipo_mask * allocated_dollars).sum(axis=1)
+            portfolio_base_cash = initial_capital * portfolio_dict.get("Cash", 0)
+            
+            total_equity = (
+                position_values.fillna(0).sum(axis=1) + 
+                sidelined_cash + 
+                portfolio_base_cash
+            )
 
-        portfolio_base_cash = initial_capital * portfolio_dict.get("Cash", 0)
-        
-        total_equity = (
-            position_values.fillna(0).sum(axis=1) + 
-            sidelined_cash + 
-            portfolio_base_cash
-        )
-
-        return total_equity.reset_index(name="Capital").rename(columns={"index": "datetime"})
+            return total_equity.reset_index(name="Capital").rename(columns={"index": "datetime"})
+        except Exception as e:
+            print(f"Error calculating price curve: {e}")
 
     # Execute for both User and Benchmark
     try:

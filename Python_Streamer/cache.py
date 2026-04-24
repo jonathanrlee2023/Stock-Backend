@@ -55,4 +55,13 @@ POPULAR_ETFS = {
     "IEF",
     "LQD",
     "HYG",
+    "QQQM",
+    "SGOV",
+    "JEPI",
+    "VGLT",
+    "VGLU",
+    "VGLS",
+    "VGLM",
+    "VGLV",
+    "JEPQ",
 }

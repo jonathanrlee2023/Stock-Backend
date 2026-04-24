@@ -200,16 +200,18 @@ class CompanyFinancialCalculator:
             effective_tax_rate = recent_income["effectiveTaxRate"]
             sector = company_overview["Sector"].values[0]
 
-            if pd.isna(beta) or beta is None:
-                # Fallback to Sector Beta (Unlevered)
-                unlevered_beta = SECTOR_BETAS.get(sector, 1.0)  # Default to 1.0 if sector missing
+            sector_upper = sector.upper() if sector else "TECHNOLOGY"
+            sector_beta = SECTOR_BETAS.get(sector_upper, 1.0)  # Safe fallback
 
-                # Re-lever it using the company's capital structure
+            if pd.isna(beta) or beta is None:
+                unlevered_beta = sector_beta
                 debt_to_equity = total_debt / equity if equity != 0 else 0
                 beta = unlevered_beta * (1 + (1 - effective_tax_rate) * debt_to_equity)
 
-            if abs(SECTOR_BETAS[sector] - beta) > 0.4:
-                beta = (SECTOR_BETAS[sector] + beta) / 2.0
+            # Blend only if divergence is significant — use Vasicek shrinkage instead of 50/50
+            if abs(sector_beta - beta) > 0.4:
+                # Vasicek shrinkage: weight toward sector mean, trust market beta less
+                beta = (0.67 * sector_beta) + (0.33 * beta)
 
             cost_of_equity = RISK_FREE_RATE + beta * MARKET_RISK_PREMIUM
             company_overview["CostOfEquity"] = cost_of_equity
@@ -220,7 +222,11 @@ class CompanyFinancialCalculator:
 
             average_debt = recent_balance["shortLongTermDebtTotal"].mean(skipna=True)
 
-            cost_of_debt = min(interest_expense / average_debt, 0.15)
+            if average_debt > 0:
+                cost_of_debt = min(interest_expense / average_debt, 0.20)
+            else:
+                # No debt: cost of debt is irrelevant, weight will be zero anyway
+                cost_of_debt = 0.0
 
             post_tax_cost_of_debt = cost_of_debt * (1 - effective_tax_rate)
 
@@ -272,7 +278,12 @@ class CompanyFinancialCalculator:
                     + income_df["interestExpense"].fillna(0)
                     + income_df["incomeTaxExpense"].fillna(0)
                 )
-            income_df["ebitGrowth"] = income_df["ebit"].pct_change().round(4)
+            income_df["ebitGrowth"] = (
+                income_df["ebit"]
+                .pct_change()
+                .replace([np.inf, -np.inf], np.nan)
+                .round(4)
+            )
 
             balance_df["nwcRatio"] = balance_df["NWC"] / income_df["totalRevenue"]
         except Exception as e:
@@ -362,7 +373,16 @@ class CompanyFinancialCalculator:
             if is_down_cycle:
                 revenue_0 = avg_revenue
                 ebit_margin_0 = avg_ebit_margin
-                start_growth = 0.05  # Conservative mid-cycle recovery
+                
+                # Scale recovery rate to how far below average current revenue is
+                # Deeper cyclical trough historically implies faster mean reversion
+                if avg_revenue > 0:
+                    revenue_gap = (avg_revenue - income_df["totalRevenue"].iloc[-1]) / avg_revenue
+                    start_growth = min(0.05 + (revenue_gap * 0.5), 0.15)
+                else:
+                    start_growth = 0.05
+                
+                print(f"{ticker} down-cycle detected: revenue_gap={revenue_gap:.2%}, start_growth={start_growth:.2%}")
             else:
                 # Determine current growth blend (Revenue + EBIT)
                 if "ebitGrowth" not in income_df.columns:
@@ -378,6 +398,11 @@ class CompanyFinancialCalculator:
             self.start_growth = start_growth
             avg_ebit_growth_long_term = income_df["ebitGrowth"].tail(15).mean(skipna=True)
 
+            if not np.isfinite(avg_ebit_growth_long_term):
+                avg_ebit_growth_long_term = avg_long_term_rev_growth  # Fall back to revenue growth
+            else:
+                avg_ebit_growth_long_term = np.clip(avg_ebit_growth_long_term, -0.50, 0.50)
+
             long_term_growth = (avg_long_term_rev_growth * 0.7) + (avg_ebit_growth_long_term * 0.3)
             # 5. CREATE THE MEAN REVERSION GLIDE PATHS
             # Terminal targets
@@ -387,8 +412,9 @@ class CompanyFinancialCalculator:
                 terminal_growth = max(long_term_growth / 2.0, 0.05)
             else:
                 terminal_growth = (long_term_growth + 0.02) / 2
-            while terminal_growth > start_growth or terminal_growth > 0.06:
-                terminal_growth = terminal_growth * 0.9
+            terminal_growth = min(terminal_growth, start_growth * 0.9, 0.055)
+            if not np.isfinite(terminal_growth) or terminal_growth < 0:
+                terminal_growth = 0.025  # Safe fallback for degenerate cases
             self.terminal_growth = terminal_growth
 
             # See if has dividends
@@ -417,7 +443,7 @@ class CompanyFinancialCalculator:
             revenue = revenue_0
             prev_nwc = revenue_0 * avg_nwc_ratio
 
-            capex_pct = income_df["capexPctRevenue"].iloc[-1]
+            capex_pct = income_df["capexPctRevenue"].tail(5).mean(skipna=True)
             da_pct = income_df["daPctRevenue"].iloc[-1]
 
             for t in range(years):
@@ -449,12 +475,26 @@ class CompanyFinancialCalculator:
 
             # Choice of Valuation Method
             # Switch to Multiple for Growth/Tech
-            if start_growth > 0.12 or sector == "TECHNOLOGY":
-                target_multiple = 20.0 if start_growth < 0.25 else 25.0
+            if start_growth > 0.12:
+                # High growth companies: exit multiple scales with growth rate
+                if start_growth >= 0.25:
+                    target_multiple = 25.0
+                elif start_growth >= 0.18:
+                    target_multiple = 22.0
+                else:
+                    target_multiple = 18.0
                 terminal_value = terminal_fcff * target_multiple
+            elif sector == "TECHNOLOGY" and start_growth > 0.06:
+                # Mature tech: modest premium over Gordon Growth, not full hyper-growth multiple
+                spread = max(wacc - terminal_growth, wacc * 0.2)
+                gordon_value = terminal_fcff / spread
+                terminal_value = gordon_value * 1.15  # 15% premium for tech moat
             else:
-                denom = max(wacc - terminal_growth, 0.01)
-                terminal_value = terminal_fcff / denom
+                spread = wacc - terminal_growth
+                if spread < wacc * 0.2:
+                    terminal_value = terminal_fcff * 15.0
+                else:
+                    terminal_value = terminal_fcff / spread
 
             # Final Calculation
             pv_terminal = terminal_value / ((1 + wacc) ** years)
@@ -465,9 +505,7 @@ class CompanyFinancialCalculator:
                 balance_df["cashAndCashEquivalentsAtCarryingValue"].iloc[-1]
                 + balance_df["shortTermInvestments"].fillna(0).iloc[-1]
             )
-            total_debt = (
-                balance_df["shortLongTermDebtTotal"].fillna(0).iloc[-1] + balance_df["longTermDebt"].fillna(0).iloc[-1]
-            )
+            total_debt = balance_df["shortLongTermDebtTotal"].fillna(0).iloc[-1]
             net_debt = total_debt - liquid_assets
 
             equity_value = max(enterprise_value - net_debt, 0)
