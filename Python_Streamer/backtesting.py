@@ -2,27 +2,9 @@ import orjson
 import pandas as pd
 from appState import app_state
 from backtest_helper import compute_strategy_stats
+from dbUtils import get_symbol_id
 from cache import symbol_cache, r
 
-async def get_symbol_id(symbol):
-    """Helper to get ID from cache or DB, creating it if necessary."""
-    if symbol in symbol_cache:
-        return symbol_cache[symbol]
-
-    db = app_state.price_db
-    async with db.execute("SELECT symbol_id FROM Symbols WHERE symbol = ?", (symbol,)) as cursor:
-        row = await cursor.fetchone()
-        if row:
-            symbol_cache[symbol] = row[0]
-            return row[0]
-
-    cursor = await db.execute("INSERT INTO Symbols (symbol) VALUES (?)", (symbol,))
-    new_id = cursor.lastrowid
-
-    await db.commit()
-
-    symbol_cache[symbol] = new_id
-    return new_id
 async def run_backtest(user_portfolio, benchmark, days_ago, client_id):
     initial_capital = 10_000
     data_loader = app_state.data_loader

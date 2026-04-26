@@ -60,9 +60,9 @@ class Company:
         if self.data["overview"].empty or self.data["income"]["annual"].empty:
             print(f"--- Initialization Aborted for {ticker}: No data available ---")
             return None
-        self.get_current_price = await self.get_current_price() 
-        financial_calculator = CompanyFinancialCalculator(self.ticker, self.data, price_at_report=self.price_at_report)
+        await self.get_current_price()
 
+        financial_calculator = CompanyFinancialCalculator(self.ticker, self.data, price_at_report=self.price_at_report)
         self.valuation_results = financial_calculator.run_valuation()
         if self.valuation_results is None:
             print(f"--- Aborting {ticker}: Valuation math failed and returned None ---")

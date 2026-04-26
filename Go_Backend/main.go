@@ -54,8 +54,6 @@ func main() {
 	utils.InitSchemas(openDB, balanceDB, closeDB, trackerDB)
 
 	utils.GlobalDatabasePool = &utils.DatabasePool{OpenDB: openDB, BalanceDB: balanceDB, CloseDB: closeDB, TrackerDB: trackerDB}
-	// Start Redis Container
-	utils.StartRedisContainer()
 
 	// 2. INITIALIZE CLIENT
 	rdb := utils.InitRedis()
@@ -141,7 +139,6 @@ func main() {
 	defer trackerDB.Close()
 
 	totalShutdown(server)
-	utils.StopRedisContainer()
 }
 
 func totalShutdown(server *http.Server) {

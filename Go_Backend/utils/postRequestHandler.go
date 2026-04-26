@@ -105,7 +105,16 @@ func OpenSharesPositionHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
-	client := Clients[newPosition.ClientID]
+	ClientsMu.RLock()
+    client, exists := Clients[newPosition.ClientID]
+    ClientsMu.RUnlock()
+
+	if !exists {
+		http.Error(w, "Client not found", http.StatusBadRequest)
+		return
+	}
+
+	client.Mu.Lock()
 	userID := client.UserID
 	client.OpenPositions.Lock()
 
@@ -138,6 +147,7 @@ func OpenSharesPositionHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		log.Printf("Failed to write to table: %v", err)
+		client.Mu.Unlock()
 		return
 	}
 	client.Balance.Lock()
@@ -158,6 +168,8 @@ func OpenSharesPositionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	client.Balance.Unlock()
 
+	client.Mu.Unlock()
+
 	ProcessWrite(time.Now(), client)
 }
 
@@ -177,17 +189,28 @@ func ClosePositionHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
-	client := Clients[closePosition.ClientID]
+	ClientsMu.RLock()
+    client, exists := Clients[closePosition.ClientID]
+    ClientsMu.RUnlock() // Release map lock immediately!
+
+	if !exists {
+		http.Error(w, "Client not found", http.StatusBadRequest)
+		return
+	}
+
+	client.Mu.Lock()
 	userID := client.UserID
 	client.OpenPositions.Lock()
 	if _, ok := client.OpenPositions.Positions[closePosition.PortfolioID][closePosition.ID]; !ok {
 		http.Error(w, "Position not found", http.StatusBadRequest)
+		client.OpenPositions.Unlock()
 		return
 	}
 	price, amount = client.OpenPositions.Positions[closePosition.PortfolioID][closePosition.ID].Price, client.OpenPositions.Positions[closePosition.PortfolioID][closePosition.ID].Amount
 	if closePosition.Amount > amount {
 		http.Error(w, "Insufficient shares", 400)
 		client.OpenPositions.Unlock()
+		client.Mu.Unlock()
 		return
 	}
 
@@ -215,6 +238,7 @@ func ClosePositionHandler(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Printf("Failed to delete: %v", err)
 			client.OpenPositions.Unlock()
+			client.Mu.Unlock()
 			return
 		}
 		delete(client.OpenPositions.Positions[closePosition.PortfolioID], closePosition.ID)
@@ -242,6 +266,7 @@ func ClosePositionHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "Failed to write balance", http.StatusInternalServerError)
 	}
+	client.Mu.Unlock()
 	ProcessWrite(time.Now(), client)
 }
 
@@ -257,13 +282,23 @@ func NewPortfolioHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	var balance, cash float64
 	id := newPortfolio.ID
-	client := Clients[newPortfolio.Positions[0].ClientID]
+	ClientsMu.RLock()
+	client, clientExists := Clients[newPortfolio.Positions[0].ClientID]
+    ClientsMu.RUnlock()
+
+	if !clientExists {
+		http.Error(w, "Client not found", http.StatusBadRequest)
+		return
+	}
+
+	client.Mu.Lock()
+	defer client.Mu.Unlock()
 	userID := client.UserID
-	exists := false
+	portfolioExists := false
 
 	client.PortfolioIDs.Lock()
 	if _, ok := client.PortfolioIDs.IDs[id]; ok {
-		exists = true
+		portfolioExists = true
 	} else {
 		client.PortfolioIDs.IDs[id] = newPortfolio.Name
 	}
@@ -277,7 +312,7 @@ func NewPortfolioHandler(w http.ResponseWriter, r *http.Request) {
 	defer client.OpenPositions.Unlock()
 	
 
-	if exists {
+	if portfolioExists {
 		err := GlobalDatabasePool.BalanceDB.QueryRow("SELECT balance, cash FROM Balance WHERE portfolio_id = ? AND user_id = ? ORDER BY timestamp DESC LIMIT 1", id, userID).Scan(&balance, &cash)
 		if err != nil {
 			log.Printf("Failed to read from table: %v", err)
@@ -337,7 +372,7 @@ func NewPortfolioHandler(w http.ResponseWriter, r *http.Request) {
 	client.Balance.Balances[id].Cash = cash
 
 	
-	if !exists {
+	if !portfolioExists {
 		insertData := `INSERT INTO Balance (timestamp, balance, cash, portfolio_id, user_id) VALUES (?, ?, ?, ?, ?)`
 		_, err = GlobalDatabasePool.BalanceDB.Exec(insertData, time.Now().Unix(), 10000.0, cash, id, userID)
 		if err != nil {
@@ -370,8 +405,16 @@ func DeletePortfolioHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unable to parse id", http.StatusBadRequest)
 		return
 	}
+	ClientsMu.RLock()
+	client, clientExists := Clients[clientID]
+    ClientsMu.RUnlock()
 
-	client := Clients[clientID]
+	if !clientExists {
+		http.Error(w, "Client not found", http.StatusNotFound)
+		return
+	}
+	client.Mu.Lock()
+	defer client.Mu.Unlock()
 	userID := client.UserID
 	
 	client.PortfolioIDs.Lock()

@@ -124,6 +124,7 @@ async def main():
         asyncio.create_task(startupFunc.get_recent_quote_time()),
         asyncio.create_task(startupFunc.last_checked_cacher()),
         asyncio.create_task(startupFunc.get_global_market_news()),
+        asyncio.create_task(asyncFunc.date_refresher_task()),
     ]
 
     try:

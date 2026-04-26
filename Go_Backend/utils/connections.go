@@ -7,7 +7,6 @@ import (
 	"log"
 	"maps"
 	"net/http"
-	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -182,45 +181,6 @@ func ReceiveFromClient(client *Client) ([]byte, error) {
 	return msg, nil
 }
 
-func StartRedisContainer() {
-	path, err := exec.LookPath("docker")
-	if err != nil {
-		fmt.Println("Error: Docker executable not found in your system PATH.")
-		fmt.Println("Check: Is Docker installed and is the terminal session refreshed?")
-		return
-	}
-	fmt.Printf("Using Docker found at: %s\n", path)
-	cmd := exec.Command(path, "start", "redis-server")
-	if err := cmd.Run(); err == nil {
-		fmt.Println("Redis container started!")
-		return
-	}
-
-	fmt.Println("Container not starting. Cleaning up and recreating...")
-	exec.Command(path, "rm", "-f", "redis-server").Run()
-
-	// 3. Now try to run a fresh one
-	runCmd := exec.Command(path, "run", "-d", "--name", "redis-server", "-p", "6380:6379", "redis")
-	if err := runCmd.Run(); err != nil {
-		// If it STILL fails, it's almost certainly a port conflict on 6379
-		fmt.Printf("Critical Error: %v\n", err)
-		fmt.Println("Check if port 6379 is already used by a local Redis installation.")
-	} else {
-		fmt.Println("Redis container is up and running!")
-	}
-}
-
-// Stop the Redis container
-func StopRedisContainer() {
-	cmd := exec.Command("docker", "stop", "redis-server")
-	err := cmd.Run()
-	if err != nil {
-		fmt.Println("Error stopping container:", err)
-	} else {
-		fmt.Println("Redis container stopped.")
-	}
-}
-
 // Handles all websocket connections
 func WebsocketConnectHandler(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	ws, err := upgrader.Upgrade(w, r, nil)
@@ -304,6 +264,22 @@ func DisconnectClient(clientID string, caller *Client) {
     }
     ClientsMu.Unlock()
 
+	GlobalSubscriptionHub.Lock()
+    for topic, clients := range GlobalSubscriptionHub.Topics {
+        filtered := clients[:0]
+        for _, c := range clients {
+            if c != caller {
+                filtered = append(filtered, c)
+            }
+        }
+        if len(filtered) == 0 {
+            delete(GlobalSubscriptionHub.Topics, topic)
+        } else {
+            GlobalSubscriptionHub.Topics[topic] = filtered
+        }
+    }
+    GlobalSubscriptionHub.Unlock()
+
     // Ensure the WebSocket is actually terminated
     if caller.Conn != nil {
         caller.Conn.Close()
@@ -328,10 +304,19 @@ func ShutdownAllClients() {
 		}
 		delete(Clients, id)
 	}
+	GlobalSubscriptionHub.Lock()
+    GlobalSubscriptionHub.Topics = make(map[string][]*Client)
+    GlobalSubscriptionHub.Unlock()	
+
 }
 
 func SendAllCached(clientID string) {
+	ClientsMu.RLock()
 	client := Clients[clientID]
+	ClientsMu.RUnlock()
+
+	client.Mu.Lock()
+	defer client.Mu.Unlock()
 	client.OpenPositions.RLock()
 	defer client.OpenPositions.RUnlock()
 	GlobalCompanyCache.RLock()
@@ -545,8 +530,14 @@ func HandleRedisRead(msg redis.Message) {
         })
         client.EnqueueMessage(payload)
     }
-	for _, client := range Clients {
-		go ProcessWrite(time.Now(), client)
+	ClientsMu.RLock()
+	activeClients := make([]*Client, 0, len(Clients))
+	for _, c := range Clients {
+		activeClients = append(activeClients, c)
+	}
+	ClientsMu.RUnlock()
+	for _, client := range activeClients {
+		ProcessWrite(time.Now(), client)
 	}
 
 	// log.Printf("HandleRedisRead took %v", time.Since(start_time))
@@ -560,8 +551,15 @@ func StartOptionStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request
 	year := r.URL.Query().Get("year")
 	optionType := r.URL.Query().Get("type")
 	clientID := r.URL.Query().Get("clientID")
-	client := Clients[clientID]
 
+	ClientsMu.RLock()
+	client, exists := Clients[clientID]
+	ClientsMu.RUnlock()
+
+	if !exists {
+		http.Error(w, "Client not found", http.StatusNotFound)
+		return
+	}
 	request := OptionStreamRequest{
 		Symbol: symbol,
 		Price:  price,
@@ -585,7 +583,7 @@ func StartOptionStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request
 	formattedSymbol := fmt.Sprintf("%-6s", strings.ToUpper(symbol))
     formattedDate := fmt.Sprintf("%02s%02s%02s", year, month, day)
     formattedType := strings.ToUpper(string(optionType[0]))
-    formattedPrice := fmt.Sprintf("%08d", 147000) 
+    formattedPrice := fmt.Sprintf("%08s", price) 
 
     optionID := fmt.Sprintf("%s%s%s%s", formattedSymbol, formattedDate, formattedType, formattedPrice)
 	GlobalSubscriptionHub.Lock()
@@ -601,7 +599,14 @@ func StartStockStream(rdb *redis.Client, w http.ResponseWriter, r *http.Request)
 	symbol := r.URL.Query().Get("symbol")
 	clientID := r.URL.Query().Get("clientID")
 	getOptionData := r.URL.Query().Get("getOptionData")
-	client := Clients[clientID]
+	ClientsMu.RLock()
+	client, exists := Clients[clientID]
+	ClientsMu.RUnlock()
+
+	if !exists {
+		http.Error(w, "Client not found", http.StatusNotFound)
+		return
+	}
 	GlobalCompanyCache.Lock()
 	defer GlobalCompanyCache.Unlock()
 	if stats, ok := GlobalCompanyCache.Stats[symbol]; ok {

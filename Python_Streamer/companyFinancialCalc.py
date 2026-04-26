@@ -144,6 +144,10 @@ class CompanyFinancialCalculator:
         except Exception as e:
             print(f"Error calculating FCF for {ticker}: {str(e)}")
             print(f"Data: {cash_df.head()}, {income_df.head()}, {balance_df.head()}")
+            self.cash_df = cash_df
+            self.income_df = income_df
+            self.balance_df = balance_df
+            return 0, 0, 0, 0
 
         self.cash_df = cash_df
         self.income_df = income_df
@@ -240,6 +244,8 @@ class CompanyFinancialCalculator:
         except Exception as e:
             print(f"Error calculating WACC for {ticker}: {str(e)}")
             print(f"Data: {income_df.head()}, {balance_df.head()}")
+            self.company_overview = company_overview
+            return np.nan
 
         self.company_overview = company_overview
 
@@ -628,6 +634,8 @@ class CompanyFinancialCalculator:
             company_overview["sloanRatio"] = sloan_ratio.round(4)
         except Exception as e:
             print(f"Error calculating Sloan Ratio for {ticker}: {e}")
+            self.company_overview = company_overview
+            return np.nan
         self.company_overview = company_overview
         return sloan_ratio
 

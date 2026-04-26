@@ -6,9 +6,10 @@ import orjson
 from redis import asyncio as aioredis
 import requests
 import datetime
+from backtesting import run_backtest
 from appState import app_state
 import stream_func
-from backtesting import run_backtest
+from dbUtils import get_symbol_id
 from cache import earnings_lookup, max_fiscal_lookup, symbol_cache, last_checked_cache, r, POPULAR_ETFS
 
 stream_started = False
@@ -38,13 +39,15 @@ today_str = today.isoformat()
 
 
 async def date_refresher_task():
-    global today, today_str
+    global today, today_str, is_weekday_business_hours_central, is_market_closed
     while True:
         # Update the globals
         now = datetime.date.today()
         if now != today:
             today = now
             today_str = now.isoformat()
+            is_weekday_business_hours_central = stream_func.is_weekday_business_hours_central()
+            is_market_closed = stream_func.is_market_closed()
 
         await asyncio.sleep(3600)
 
@@ -121,27 +124,6 @@ async def listen_for_messages(alpha_vantage_api_key, rate_api_key):
                     print("Timeout connecting to Schwab API.")
                 except Exception as e:
                     print("Stream handling error:", e)
-
-
-async def get_symbol_id(symbol):
-    """Helper to get ID from cache or DB, creating it if necessary."""
-    if symbol in symbol_cache:
-        return symbol_cache[symbol]
-
-    db = app_state.price_db
-    async with db.execute("SELECT symbol_id FROM Symbols WHERE symbol = ?", (symbol,)) as cursor:
-        row = await cursor.fetchone()
-        if row:
-            symbol_cache[symbol] = row[0]
-            return row[0]
-
-    cursor = await db.execute("INSERT INTO Symbols (symbol) VALUES (?)", (symbol,))
-    new_id = cursor.lastrowid
-
-    await db.commit()
-
-    symbol_cache[symbol] = new_id
-    return new_id
 
 
 async def write_to_db():
@@ -392,12 +374,12 @@ async def update_tickers_from_db(api_manager, rate_api_key):
 
     if not companies:
         return
-    # schwab_tasks = [throttled_get_options_and_initial_quotes(c, get_options="No") for c in companies]
-    # await asyncio.gather(*schwab_tasks, return_exceptions=True)
+    schwab_tasks = [throttled_get_options_and_initial_quotes(c, get_options="No") for c in companies]
+    await asyncio.gather(*schwab_tasks, return_exceptions=True)
 
-    # # Phase 3: Alpha Vantage fundamentals (slow, serialized)
-    # av_tasks = [throttled_handle_company(api_manager, rate_api_key, c) for c in companies]
-    # await asyncio.gather(*av_tasks, return_exceptions=True)
+    # Phase 3: Alpha Vantage fundamentals (slow, serialized)
+    av_tasks = [throttled_handle_company(api_manager, rate_api_key, c) for c in companies]
+    await asyncio.gather(*av_tasks, return_exceptions=True)
 
 
 async def throttled_handle_company(api_manager, rate_api_key, ticker):
