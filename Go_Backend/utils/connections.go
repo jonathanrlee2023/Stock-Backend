@@ -7,6 +7,7 @@ import (
 	"log"
 	"maps"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -52,10 +53,15 @@ func NewHub() *Hub {
 }
 
 func InitRedis() *redis.Client {
+	addr := os.Getenv("REDIS_ADDR")
+	if addr == "" {
+		addr = "localhost:6379"
+	}
+
 	rdb := redis.NewClient(&redis.Options{
-		Addr:     "redis:6379", // Default Redis port
-		Password: "",           // No password set by default
-		DB:       0,            // Use default DB
+		Addr:     addr,
+		Password: "", // No password set by default
+		DB:       0,  // Use default DB
 	})
 
 	// Verify connection

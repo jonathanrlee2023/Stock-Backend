@@ -76,47 +76,50 @@ func main() {
 	go utils.ListenToRedis(context.Background(), rdb, hub, "Global_News_Channel")
 	go utils.ListenToRedis(context.Background(), rdb, hub, "Backtest_Channel")
 
-	// Endpoints for API
-	mux := http.NewServeMux()
-	mux.HandleFunc("/connect", func(w http.ResponseWriter, r *http.Request) {
-		utils.WebsocketConnectHandler(hub, w, r)
-	})
-	mux.HandleFunc("/startOptionStream", func(w http.ResponseWriter, r *http.Request) {
+	protected := http.NewServeMux()
+	protected.HandleFunc("/startOptionStream", func(w http.ResponseWriter, r *http.Request) {
 		utils.StartOptionStream(rdb, w, r)
 	})
-	mux.HandleFunc("/startStockStream", func(w http.ResponseWriter, r *http.Request) {
+	protected.HandleFunc("/startStockStream", func(w http.ResponseWriter, r *http.Request) {
 		utils.StartStockStream(rdb, w, r)
 	})
-	mux.HandleFunc("/newTracker", func(w http.ResponseWriter, r *http.Request) {
+	protected.HandleFunc("/newTracker", func(w http.ResponseWriter, r *http.Request) {
 		utils.NewTrackerHandler(w, r)
 	})
-	mux.HandleFunc("/openPosition", func(w http.ResponseWriter, r *http.Request) {
+	protected.HandleFunc("/openPosition", func(w http.ResponseWriter, r *http.Request) {
 		utils.OpenSharesPositionHandler(w, r)
 	})
-	mux.HandleFunc("/closePosition", func(w http.ResponseWriter, r *http.Request) {
+	protected.HandleFunc("/closePosition", func(w http.ResponseWriter, r *http.Request) {
 		utils.ClosePositionHandler(w, r)
 	})
-	mux.HandleFunc("/closeTracker", func(w http.ResponseWriter, r *http.Request) {
+	protected.HandleFunc("/closeTracker", func(w http.ResponseWriter, r *http.Request) {
 		utils.RemoveTrackerHandler(w, r)
 	})
-	mux.HandleFunc("/newPortfolio", func(w http.ResponseWriter, r *http.Request) {
+	protected.HandleFunc("/newPortfolio", func(w http.ResponseWriter, r *http.Request) {
 		utils.NewPortfolioHandler(w, r)
 	})
-	mux.HandleFunc("/deletePortfolio", func(w http.ResponseWriter, r *http.Request) {
+	protected.HandleFunc("/deletePortfolio", func(w http.ResponseWriter, r *http.Request) {
 		utils.DeletePortfolioHandler(w, r)
 	})
-	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
-		utils.LoginHandler(w, r)
-	})
-	mux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
-		utils.CreateUserHandler(w, r)
-	})
-	mux.HandleFunc("/startBacktest", func(w http.ResponseWriter, r *http.Request) {
+	protected.HandleFunc("/startBacktest", func(w http.ResponseWriter, r *http.Request) {
 		utils.StartBacktest(rdb, w, r)
 	})
 
+	wsHandler := utils.RequireAuthWS(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		utils.WebsocketConnectHandler(hub, w, r)
+	}))
 
-	handler := SecurityHeadersMiddleware(CorsMiddleware(mux))
+	root := http.NewServeMux()
+	root.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
+		utils.LoginHandler(w, r)
+	})
+	root.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
+		utils.CreateUserHandler(w, r)
+	})
+	root.Handle("/connect", wsHandler)
+	root.Handle("/", utils.RequireAuth(protected))
+
+	handler := SecurityHeadersMiddleware(CorsMiddleware(root))
 
 	server := &http.Server{
 		Addr:              ":8080",
