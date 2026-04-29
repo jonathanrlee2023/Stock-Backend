@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 )
 
@@ -436,6 +437,11 @@ type CacheLimit struct {
 type Credentials struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+}
+
+type AuthClaims struct {
+	UserID int `json:"user_id"`
+	jwt.RegisteredClaims
 }
 
 type UserID struct {

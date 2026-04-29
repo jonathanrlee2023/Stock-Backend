@@ -132,6 +132,8 @@ func TestRemoveTrackerHandler_ValidRequest(t *testing.T) {
 
 
 func TestLoginHandler_ValidCredentials(t *testing.T) {
+    t.Setenv("JWT_SECRET", "test-secret")
+
     db := setupTestDB(t)
     GlobalDatabasePool.BalanceDB = db
 

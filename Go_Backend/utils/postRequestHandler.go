@@ -500,12 +500,19 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
         return
     }
 
+	token, err := GenerateJWT(userID)
+	if err != nil {
+		http.Error(w, "Failed to generate auth token", http.StatusInternalServerError)
+		return
+	}
+
     w.Header().Set("Content-Type", "application/json")
     w.WriteHeader(http.StatusOK)
 
     response := map[string]interface{}{
         "user_id": userID,
         "message": "Login successful",
+		"access_token": token,
     }
 
     json.NewEncoder(w).Encode(response)
