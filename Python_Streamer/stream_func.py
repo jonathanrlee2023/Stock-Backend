@@ -15,12 +15,20 @@ option_ids = []
 
 async def start_options_stream(ticker, price, day, month, year, type):
     ticker = str(ticker).strip().replace("\xa0", "")
+    t = str(type).strip().upper()
+    # Accept either "C"/"P" or "Call"/"Put" from DB parsing / UI.
+    if t.startswith("C"):
+        t = "C"
+    elif t.startswith("P"):
+        t = "P"
+    else:
+        raise ValueError(f"Invalid option type: {type}")
     yy = str(year)[-2:]
     strike_int = int(float(price) * 1000)
     strike_str = str(strike_int).zfill(8)
     month_filled = month.zfill(2)
     day_filled = day.zfill(2)
-    option_id = f"{yy}{month_filled}{day_filled}{type.upper()}{strike_str}"
+    option_id = f"{yy}{month_filled}{day_filled}{t}{strike_str}"
     full_symbol = f"{ticker.ljust(6)}{option_id}"
     option_ids.append(full_symbol)
     file_names.append(full_symbol)
@@ -59,6 +67,7 @@ def receive_data(response):
 
 
 def parse_option(symbol):
+    symbol = re.sub(r"\s+", "_", str(symbol).strip())
     # Pattern: (Ticker)_(YY)(MM)(DD)(Type)(Strike)
     pattern = r"([A-Z]+)_(\d{2})(\d{2})(\d{2})([CP])(\d{8})"
     match = re.match(pattern, symbol)

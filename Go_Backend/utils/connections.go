@@ -470,7 +470,9 @@ func HandleRedisRead(msg redis.Message) {
 	for symbol, quote := range quotes {
 		sepIdx := strings.IndexByte(symbol, ' ')
         var underlying string
-        isOption := quote.IV != nil && sepIdx != -1
+        // Treat as option if it looks like an option symbol AND has any option fields.
+        // Some upstream payloads omit IV/etc temporarily; avoid misclassifying and nil-dereferencing equity sizes.
+        isOption := sepIdx != -1 && (quote.IV != nil || quote.HighPrice != nil || quote.Delta != nil || quote.Gamma != nil || quote.Theta != nil || quote.Vega != nil || (quote.BidSize == nil && quote.AskSize == nil))
         if isOption {
             underlying = symbol[:sepIdx]
         }
@@ -493,6 +495,14 @@ func HandleRedisRead(msg redis.Message) {
             continue
         }
 		if !isOption {
+            bidSize := 0
+            askSize := 0
+            if quote.BidSize != nil {
+                bidSize = *quote.BidSize
+            }
+            if quote.AskSize != nil {
+                askSize = *quote.AskSize
+            }
 			stockQuote := StockPriceData{
 				Symbol:    symbol,
 				Timestamp: now,
@@ -500,14 +510,38 @@ func HandleRedisRead(msg redis.Message) {
 				BidPrice:  quote.BidPrice,
 				AskPrice:  quote.AskPrice,
 				LastPrice: quote.LastPrice,
-				BidSize:   *quote.BidSize,
-				AskSize:   *quote.AskSize,
+				BidSize:   bidSize,
+				AskSize:   askSize,
 			}
 			for _, c := range targets {
                 if batches[c] == nil { batches[c] = &clientBatch{} }
                 batches[c].Stocks = append(batches[c].Stocks, stockQuote)
             }
 		} else {
+            high := 0.0
+            iv := 0.0
+            delta := 0.0
+            gamma := 0.0
+            theta := 0.0
+            vega := 0.0
+            if quote.HighPrice != nil {
+                high = *quote.HighPrice
+            }
+            if quote.IV != nil {
+                iv = *quote.IV
+            }
+            if quote.Delta != nil {
+                delta = *quote.Delta
+            }
+            if quote.Gamma != nil {
+                gamma = *quote.Gamma
+            }
+            if quote.Theta != nil {
+                theta = *quote.Theta
+            }
+            if quote.Vega != nil {
+                vega = *quote.Vega
+            }
 			optionQuote := OptionPriceData{
 				Symbol:    symbol,
 				Timestamp: now,
@@ -515,12 +549,12 @@ func HandleRedisRead(msg redis.Message) {
 				Ask:       quote.AskPrice,
 				Mark:      quote.Mark,
 				Last:      quote.LastPrice,
-				High:      *quote.HighPrice,
-				IV:        *quote.IV,
-				Delta:     *quote.Delta,
-				Gamma:     *quote.Gamma,
-				Theta:     *quote.Theta,
-				Vega:      *quote.Vega,
+				High:      high,
+				IV:        iv,
+				Delta:     delta,
+				Gamma:     gamma,
+				Theta:     theta,
+				Vega:      vega,
 			}
 			for _, c := range targets {
                 if batches[c] == nil { batches[c] = &clientBatch{} }

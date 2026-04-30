@@ -405,26 +405,9 @@ func DeletePortfolioHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unable to parse id", http.StatusBadRequest)
 		return
 	}
-	ClientsMu.RLock()
-	client, clientExists := Clients[clientID]
-    ClientsMu.RUnlock()
-
-	if !clientExists {
-		http.Error(w, "Client not found", http.StatusNotFound)
-		return
-	}
-	client.Mu.Lock()
-	defer client.Mu.Unlock()
-	userID := client.UserID
-	
-	client.PortfolioIDs.Lock()
-	defer client.PortfolioIDs.Unlock()
-	client.OpenPositions.Lock()
-	defer client.OpenPositions.Unlock()
-	client.Balance.Lock()
-	defer client.Balance.Unlock()
-	if _, ok := client.PortfolioIDs.IDs[id]; !ok {
-		http.Error(w, "Portfolio not found", http.StatusNotFound)
+	userID, ok := r.Context().Value(UserIDKey).(int)
+	if !ok || userID <= 0 {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
@@ -443,10 +426,27 @@ func DeletePortfolioHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to delete portfolio", http.StatusInternalServerError)
 		return
 	}
-	
-	delete(client.PortfolioIDs.IDs, id)
-	delete(client.OpenPositions.Positions, id)
-	delete(client.Balance.Balances, id)
+
+	if clientID != "" {
+		ClientsMu.RLock()
+		client, clientExists := Clients[clientID]
+		ClientsMu.RUnlock()
+		if clientExists {
+			client.Mu.Lock()
+			client.PortfolioIDs.Lock()
+			delete(client.PortfolioIDs.IDs, id)
+			client.PortfolioIDs.Unlock()
+
+			client.OpenPositions.Lock()
+			delete(client.OpenPositions.Positions, id)
+			client.OpenPositions.Unlock()
+
+			client.Balance.Lock()
+			delete(client.Balance.Balances, id)
+			client.Balance.Unlock()
+			client.Mu.Unlock()
+		}
+	}
 }
 
 

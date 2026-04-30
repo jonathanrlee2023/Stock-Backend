@@ -349,6 +349,7 @@ async def update_tickers_from_db(api_manager, rate_api_key):
     for ticker in ticker_list:
         if len(ticker) > 8:
             parsed = stream_func.parse_option(ticker)
+            print(parsed)
             if parsed:
                 tasks.append(
                     stream_func.start_options_stream(
