@@ -141,7 +141,7 @@ func InitSchemas(openDB, balanceDB, closeDB, trackerDB *sql.DB) {
 		db  *sql.DB
 		sql string
 	}{
-		{openDB, `CREATE TABLE IF NOT EXISTS OpenPositions_new (id TEXT, price REAL, amount REAL, portfolio_id INTEGER, user_id INTEGER, PRIMARY KEY (id, portfolio_id, user_id));`},
+		{openDB, `CREATE TABLE IF NOT EXISTS OpenPositions_New (id TEXT, price REAL, amount REAL, portfolio_id INTEGER, user_id INTEGER, timestamp INTEGER, PRIMARY KEY (id, portfolio_id, user_id));`},
 		{balanceDB, `CREATE TABLE IF NOT EXISTS Balance (timestamp INTEGER, balance REAL, cash REAL, portfolio_id INTEGER, user_id INTEGER, PRIMARY KEY (timestamp, portfolio_id, user_id));`},
 		{balanceDB, `CREATE TABLE IF NOT EXISTS Users (
 			user_id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -155,7 +155,7 @@ func InitSchemas(openDB, balanceDB, closeDB, trackerDB *sql.DB) {
 			name TEXT, 
 			PRIMARY KEY (portfolio_id, user_id)
 		);`},
-		{closeDB, `CREATE TABLE IF NOT EXISTS ClosePositions_new (order_number INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT, price REAL, amount REAL, pl REAL, portfolio_id INTEGER, user_id INTEGER);`},
+		{closeDB, `CREATE TABLE IF NOT EXISTS ClosePositions_New (order_number INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT, price REAL, amount REAL, pl REAL, portfolio_id INTEGER, user_id INTEGER, timestamp INTEGER);`},
 		{trackerDB, `CREATE TABLE IF NOT EXISTS Tracker (id TEXT PRIMARY KEY);`},
 	}
 
@@ -181,10 +181,10 @@ func MigrateDB(openDB, closeDB *sql.DB) error {
 	}
 
 	openSteps := []string{
-		`INSERT INTO OpenPositions_new (id, price, amount, portfolio_id, user_id)
-		 SELECT id, price, amount, portfolio_id, 1 FROM OpenPositions;`,
+		`INSERT INTO OpenPositions_New (id, price, amount, portfolio_id, user_id, timestamp)
+		 SELECT id, price, amount, portfolio_id, user_id, strftime('%s','now') FROM OpenPositions;`,
 		`DROP TABLE OpenPositions;`,
-		`ALTER TABLE OpenPositions_new RENAME TO OpenPositions;`,
+		`ALTER TABLE OpenPositions_New RENAME TO OpenPositions;`,
 	}
 
 	for _, q := range openSteps {
@@ -204,10 +204,10 @@ func MigrateDB(openDB, closeDB *sql.DB) error {
 	}
 
 	closeSteps := []string{
-		`INSERT INTO ClosePositions_new (order_number, id, price, amount, pl, portfolio_id, user_id)
-		 SELECT order_number, id, price, amount, pl, portfolio_id, 1 FROM ClosePositions;`,
+		`INSERT INTO ClosePositions_New (order_number, id, price, amount, pl, portfolio_id, user_id, timestamp)
+		 SELECT order_number, id, price, amount, pl, portfolio_id, user_id, strftime('%s','now') FROM ClosePositions;`,
 		`DROP TABLE ClosePositions;`,
-		`ALTER TABLE ClosePositions_new RENAME TO ClosePositions;`,
+		`ALTER TABLE ClosePositions_New RENAME TO ClosePositions;`,
 	}
 
 	for _, q := range closeSteps {

@@ -389,6 +389,7 @@ type Position struct {
 type Portfolio struct {
 	ID int `json:"id"`
 	Name string `json:"name"`
+	ClientID string `json:"clientID"`
 	Positions []Position `json:"positions"`
 }
 

@@ -137,7 +137,7 @@ func OpenSharesPositionHandler(w http.ResponseWriter, r *http.Request) {
 			Amount: updatedAmount,
 		}
 	} else {
-		_, err = GlobalDatabasePool.OpenDB.Exec("INSERT INTO OpenPositions (id, price, amount, portfolio_id, user_id) VALUES (?, ?, ?, ?, ?)", newPosition.ID, newPosition.Price, newPosition.Amount, newPosition.PortfolioID, userID)
+		_, err = GlobalDatabasePool.OpenDB.Exec("INSERT INTO OpenPositions (id, price, amount, portfolio_id, user_id, timestamp) VALUES (?, ?, ?, ?, ?, ?)", newPosition.ID, newPosition.Price, newPosition.Amount, newPosition.PortfolioID, userID, time.Now().Unix())
 		client.OpenPositions.Positions[newPosition.PortfolioID][newPosition.ID] = OpenPositionDetails{
 			Price:  newPosition.Price,
 			Amount: newPosition.Amount,
@@ -224,8 +224,7 @@ func ClosePositionHandler(w http.ResponseWriter, r *http.Request) {
 	pl = math.Round(pl*100) / 100
 	remaining := amount - closePosition.Amount
 	if remaining != 0 {
-		insertData := `INSERT OR REPLACE INTO OpenPositions (id, price, amount, portfolio_id, user_id) VALUES (?, ?, ?, ?, ?)`
-		_, err := GlobalDatabasePool.OpenDB.Exec(insertData, closePosition.ID, price, remaining, closePosition.PortfolioID, userID)
+		_, err := GlobalDatabasePool.OpenDB.Exec("UPDATE OpenPositions SET amount = ? WHERE id = ? AND portfolio_id = ? AND user_id = ?", remaining, closePosition.ID, closePosition.PortfolioID, userID)
 		if err != nil {
 			log.Printf("Failed to write to table: %v", err)
 		}
@@ -245,8 +244,8 @@ func ClosePositionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	client.OpenPositions.Unlock()
 
-	insertData := `INSERT INTO ClosePositions (id, price, amount, pl, portfolio_id, user_id) VALUES (?, ?, ?, ?, ?, ?)`
-	_, err := GlobalDatabasePool.CloseDB.Exec(insertData, closePosition.ID, closePosition.Price, closePosition.Amount, pl, closePosition.PortfolioID, userID)
+	insertData := `INSERT INTO ClosePositions (id, price, amount, pl, portfolio_id, user_id, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)`
+	_, err := GlobalDatabasePool.CloseDB.Exec(insertData, closePosition.ID, closePosition.Price, closePosition.Amount, pl, closePosition.PortfolioID, userID, time.Now().Unix())
 	if err != nil {
 		log.Printf("Failed to write to table: %v", err)
 	}
@@ -282,10 +281,17 @@ func NewPortfolioHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	var balance, cash float64
 	id := newPortfolio.ID
+	clientID := newPortfolio.ClientID
+	if clientID == "" && len(newPortfolio.Positions) > 0 {
+		clientID = newPortfolio.Positions[0].ClientID
+	}
+	if clientID == "" {
+		http.Error(w, "client_id is required when positions is empty", http.StatusBadRequest)
+		return
+	}
 	ClientsMu.RLock()
-	client, clientExists := Clients[newPortfolio.Positions[0].ClientID]
-    ClientsMu.RUnlock()
-
+	client, clientExists := Clients[clientID]
+	ClientsMu.RUnlock()
 	if !clientExists {
 		http.Error(w, "Client not found", http.StatusBadRequest)
 		return
@@ -310,6 +316,10 @@ func NewPortfolioHandler(w http.ResponseWriter, r *http.Request) {
 	defer GlobalPrices.RUnlock()
 	client.OpenPositions.Lock()
 	defer client.OpenPositions.Unlock()
+
+	if client.OpenPositions.Positions[id] == nil {
+		client.OpenPositions.Positions[id] = make(map[string]OpenPositionDetails)
+	}
 	
 
 	if portfolioExists {
@@ -320,7 +330,6 @@ func NewPortfolioHandler(w http.ResponseWriter, r *http.Request) {
 			cash = 10000.0
 		}
 	} else {
-		client.OpenPositions.Positions[id] = make(map[string]OpenPositionDetails)
 		balance = 10000.0
 		cash = 10000.0
 	}
@@ -331,8 +340,8 @@ func NewPortfolioHandler(w http.ResponseWriter, r *http.Request) {
 		return 
 	}
 	stmt, err := batch.Prepare(`
-		INSERT OR IGNORE INTO OpenPositions (id, price, amount, portfolio_id, user_id) 
-		VALUES (?, ?, ?, ?, ?)
+		INSERT OR IGNORE INTO OpenPositions (id, price, amount, portfolio_id, user_id, timestamp) 
+		VALUES (?, ?, ?, ?, ?, ?)
 	`)
 	defer batch.Rollback()
 
@@ -343,20 +352,25 @@ func NewPortfolioHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer stmt.Close()
 
-	for _, position := range newPortfolio.Positions {
-		price := GlobalPrices.Prices[position.ID].Mark
-		amount := position.Amount
-		tradeCost := price * amount
-		cash -= tradeCost
-		client.OpenPositions.Positions[position.PortfolioID][position.ID] = OpenPositionDetails{
-			Price:  price,
-			Amount: amount,
-		}
-		_, err := stmt.Exec(position.ID, price, amount, position.PortfolioID, userID)
-		if err != nil {
-			batch.Rollback() // Cancel everything if one insert fails
-			log.Printf("Failed to insert open position: %v", err)
-			return
+	if len(newPortfolio.Positions) > 0 {
+		for _, position := range newPortfolio.Positions {
+			if _, ok := GlobalPrices.Prices[position.ID]; !ok {
+				continue
+			}
+			price := GlobalPrices.Prices[position.ID].Mark
+			amount := position.Amount
+			tradeCost := price * amount
+			cash -= tradeCost
+			client.OpenPositions.Positions[id][position.ID] = OpenPositionDetails{
+				Price:  price,
+				Amount: amount,
+			}
+			_, err := stmt.Exec(position.ID, price, amount, id, userID, time.Now().Unix())
+			if err != nil {
+				batch.Rollback() // Cancel everything if one insert fails
+				log.Printf("Failed to insert open position: %v", err)
+				return
+			}
 		}
 	}
 

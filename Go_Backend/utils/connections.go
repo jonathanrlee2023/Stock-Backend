@@ -470,8 +470,6 @@ func HandleRedisRead(msg redis.Message) {
 	for symbol, quote := range quotes {
 		sepIdx := strings.IndexByte(symbol, ' ')
         var underlying string
-        // Treat as option if it looks like an option symbol AND has any option fields.
-        // Some upstream payloads omit IV/etc temporarily; avoid misclassifying and nil-dereferencing equity sizes.
         isOption := sepIdx != -1 && (quote.IV != nil || quote.HighPrice != nil || quote.Delta != nil || quote.Gamma != nil || quote.Theta != nil || quote.Vega != nil || (quote.BidSize == nil && quote.AskSize == nil))
         if isOption {
             underlying = symbol[:sepIdx]
