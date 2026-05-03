@@ -386,6 +386,20 @@ type Position struct {
 	ClientID string `json:"client_id"`
 }
 
+type ClosePosition struct {
+	ID string `json:"id"`
+	Price float64 `json:"price"`
+	Amount float64 `json:"amount"`
+	PL float64 `json:"pl"`
+	PortfolioID int `json:"portfolio_id"`
+	UserID int `json:"user_id"`
+	Timestamp int64 `json:"timestamp"`
+}
+
+type ClosePositionHistory struct {
+	ClosePositions []ClosePosition `json:"ClosePositions"`
+}
+
 type Portfolio struct {
 	ID int `json:"id"`
 	Name string `json:"name"`

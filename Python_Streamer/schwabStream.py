@@ -1,4 +1,5 @@
 from concurrent.futures import ProcessPoolExecutor
+from abc import ABC, abstractmethod
 
 import httpx
 import finnhub
@@ -12,6 +13,7 @@ import asyncio
 import asyncFunc
 import startupFunc
 from appState import app_state
+from pprint import pprint
 from sqlalchemy.ext.asyncio import create_async_engine
 
 
@@ -82,6 +84,72 @@ async def verify_db_conn():
         return
 
 
+class StackFactory(ABC):
+    @abstractmethod
+    async def build(
+        self,
+        *,
+        db_dir,
+        app_key,
+        app_secret,
+        finnhub_api_key,
+        schwab_tokens_db,
+    ):
+        raise NotImplementedError
+
+
+class ProductionStackFactory(StackFactory):
+    async def build(
+        self,
+        *,
+        db_dir,
+        app_key,
+        app_secret,
+        finnhub_api_key,
+        schwab_tokens_db,
+    ):
+        await init_app_state(db_dir)
+        schwab_client = schwabdev.Client(
+            app_key=app_key,
+            app_secret=app_secret,
+            tokens_db=schwab_tokens_db,
+        )
+        app_state.schwab_client = schwab_client
+        app_state.streamer = schwabdev.Stream(app_state.schwab_client)
+        app_state.httpx_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(5.0),
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+        )
+        app_state.finnhub_client = finnhub.Client(api_key=finnhub_api_key)
+        app_state.data_loader = DataLoader(schwab_client)
+        app_state.market_news = MarketNews()
+
+
+class TestStackFactory(StackFactory):
+    def __init__(self, *, httpx_client=None, finnhub_client=None, data_loader=None, market_news=None):
+        self.httpx_client = httpx_client
+        self.finnhub_client = finnhub_client
+        self.data_loader = data_loader
+        self.market_news = market_news
+
+    async def build(
+        self,
+        *,
+        db_dir,
+        app_key,
+        app_secret,
+        finnhub_api_key,
+        schwab_tokens_db,
+    ):
+        await init_app_state(db_dir)
+        app_state.schwab_client = None
+        app_state.streamer = None
+        app_state.httpx_client = self.httpx_client
+        app_state.finnhub_client = self.finnhub_client
+        app_state.data_loader = self.data_loader
+        app_state.market_news = self.market_news
+
+
 async def main():
     global tasks_started
     if tasks_started:
@@ -94,22 +162,17 @@ async def main():
     rate_api_key = os.getenv("ExchangeRateKey")
     db_dir = os.getenv("DB_DIR", "../Database")
     finnhub_api_key = os.getenv("FinnhubApiKey")
+    schwab_tokens_db = os.getenv("SCHWAB_TOKENS_DB", "/app/Database/tokens.json")
 
     api_manager = SecureAPIKey(alpha_vantage_api_key)
-    schwab_client = schwabdev.Client(app_key=appKey, app_secret=appSecret, tokens_db="/app/Database/tokens.json")
-    await init_app_state(db_dir)
-    app_state.cpu_executor = ProcessPoolExecutor(max_workers=4)
-    app_state.schwab_client = schwab_client
-    app_state.streamer = schwabdev.Stream(app_state.schwab_client)
-    app_state.httpx_client = httpx.AsyncClient(
-        timeout=httpx.Timeout(5.0), limits=httpx.Limits(max_connections=20, max_keepalive_connections=10)
+    stack_factory = ProductionStackFactory()
+    await stack_factory.build(
+        db_dir=db_dir,
+        app_key=appKey,
+        app_secret=appSecret,
+        finnhub_api_key=finnhub_api_key,
+        schwab_tokens_db=schwab_tokens_db,
     )
-    finnhub_client = finnhub.Client(api_key=finnhub_api_key)
-
-    app_state.finnhub_client = finnhub_client
-    app_state.data_loader = DataLoader(schwab_client)
-
-    app_state.market_news = MarketNews()
 
     await verify_db_conn()
 
@@ -146,7 +209,6 @@ async def main():
         app_state.schwab_client.close()
         app_state.streamer.close()
         app_state.httpx_client.close()
-        app_state.cpu_executor.shutdown()
 
         # Cancel all remaining tasks
         current_tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]

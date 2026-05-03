@@ -349,7 +349,6 @@ async def update_tickers_from_db(api_manager, rate_api_key):
     for ticker in ticker_list:
         if len(ticker) > 8:
             parsed = stream_func.parse_option(ticker)
-            print(parsed)
             if parsed:
                 tasks.append(
                     stream_func.start_options_stream(
@@ -378,7 +377,6 @@ async def update_tickers_from_db(api_manager, rate_api_key):
     schwab_tasks = [throttled_get_options_and_initial_quotes(c, get_options="No") for c in companies]
     await asyncio.gather(*schwab_tasks, return_exceptions=True)
 
-    # Phase 3: Alpha Vantage fundamentals (slow, serialized)
     av_tasks = [throttled_handle_company(api_manager, rate_api_key, c) for c in companies]
     await asyncio.gather(*av_tasks, return_exceptions=True)
 

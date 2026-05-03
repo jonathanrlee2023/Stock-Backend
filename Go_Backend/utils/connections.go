@@ -32,6 +32,16 @@ var (
 
 var ctx = context.Background()
 
+type RedisChannelHandler func(redis.Message)
+
+var redisChannelHandlers = map[string]RedisChannelHandler{
+	"Stream_Channel":        HandleRedisRead,
+	"Company_Channel":       HandleCompanyRead,
+	"One_Time_Data_Channel": HandleOptionRead,
+	"Global_News_Channel":   HandleGlobalNewsRead,
+	"Backtest_Channel":      HandleBacktestRead,
+}
+
 type Hub struct {
 	// Registered clients.
 	Clients map[*websocket.Conn]bool
@@ -74,30 +84,17 @@ func InitRedis() *redis.Client {
 }
 
 func ListenToRedis(ctx context.Context, rdb *redis.Client, hub *Hub, channel string) {
+	_ = hub
 	pubsub := rdb.Subscribe(ctx, channel)
 	ch := pubsub.Channel()
-	switch channel {
-	case "Stream_Channel":
-		for msg := range ch {
-			HandleRedisRead(*msg)
-		}
-	case "Company_Channel":
-		for msg := range ch {
-			HandleCompanyRead(*msg)
-		}
+	handler, ok := redisChannelHandlers[channel]
+	if !ok {
+		log.Printf("No Redis handler registered for channel: %s", channel)
+		return
+	}
 
-	case "One_Time_Data_Channel":
-		for msg := range ch {
-			HandleOptionRead(*msg)
-		}
-	case "Global_News_Channel":
-		for msg := range ch {
-			HandleGlobalNewsRead(*msg)
-		}
-	case "Backtest_Channel":
-		for msg := range ch {
-			HandleBacktestRead(*msg)
-		}
+	for msg := range ch {
+		handler(*msg)
 	}
 }
 

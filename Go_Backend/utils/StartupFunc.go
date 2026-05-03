@@ -7,8 +7,6 @@ import (
 	"log"
 	"strings"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 // Sends open position and previous balance
@@ -106,12 +104,54 @@ func SendOpenPositions(targetClient *Client, userID int) {
         return
     }
 
-    err = SendToClient(targetClient, jsonData) 
-    if err != nil {
-        _ = targetClient.SafeWrite(websocket.TextMessage, jsonData) 
-    }
+	targetClient.EnqueueMessage(jsonData)
     
     ProcessWrite(time.Now(), targetClient)
+}
+
+func SendCloseHistory(targetClient *Client, userID int) {
+	rows, err := GlobalDatabasePool.CloseDB.Query("SELECT * FROM ClosePositions WHERE user_id = ?", userID)
+	if err == sql.ErrNoRows {
+		fmt.Println("No Close Positions Yet")
+		return
+	} else if err != nil {
+		log.Printf("Query failed process write closeDB: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	var closePositions []ClosePosition
+
+	for rows.Next() {
+		var id string
+		var price float64
+		var amount float64
+		var pl float64
+		var portfolio_id int
+		var user_id int
+		var timestamp int64
+
+		err := rows.Scan(&id, &price, &amount, &pl, &portfolio_id, &user_id, &timestamp)
+		if err != nil {
+			log.Println("Scan failed:", err)
+			continue
+		}
+		closePositions = append(closePositions, ClosePosition{ID: id, Price: price, Amount: amount, PL: pl, PortfolioID: portfolio_id, UserID: user_id, Timestamp: timestamp})
+	}
+
+	closeHistory := ClosePositionHistory{
+		ClosePositions: closePositions,
+	}
+	jsonData, err := json.Marshal(closeHistory)
+	if err != nil {
+		log.Println("Failed to marshal close positions:", err)
+		return
+	}
+	if targetClient == nil {
+		log.Println("Cannot send: target client is nil")
+		return
+	}
+	targetClient.EnqueueMessage(jsonData)
 }
 
 func InitDB(path string) (*sql.DB, error) {

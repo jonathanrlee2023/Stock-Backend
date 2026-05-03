@@ -28,155 +28,7 @@ class Company:
     @classmethod
     async def create(cls, ticker, api_key, rate_api_key):
         """Asynchronous factory to create and fully initialize the instance."""
-        self = cls(ticker, api_key, rate_api_key)
-        self.symbol_id = await get_symbol_id(self.ticker)
-
-        db_handler = CompanyDBHandler(app_state.engines, self.symbol_id, ticker, data=self.data)
-
-        await db_handler.load_all_from_dbs()
-
-        self.data = db_handler.data
-
-        categories = ["income", "balance", "cash", "earnings"]
-
-        api_handler = CompanyDataFetcher(ticker, self.symbol_id, api_key, rate_api_key, data=self.data, client=app_state.httpx_client)
-
-        for cat in categories:
-            if self.data[cat]["annual"].empty:
-                print(f"--- {cat.capitalize()} data missing for {ticker}. Fetching from API... ---")
-                await api_handler.fetch_fundamentals(category=cat)
-                
-                self.data[cat] = api_handler.data[cat]
-
-        if self.data["overview"].empty:
-            print(f"--- Overview missing for {ticker}. Fetching from API... ---")
-            await api_handler.fetch_fundamentals(category="overview")
-            self.data["overview"] = api_handler.data["overview"]
-
-        await api_handler.replace_with_usd()
-
-        self.reorder_data()
-
-        if self.data["overview"].empty or self.data["income"]["annual"].empty:
-            print(f"--- Initialization Aborted for {ticker}: No data available ---")
-            return None
-        await self.get_current_price()
-
-        financial_calculator = CompanyFinancialCalculator(self.ticker, self.data, price_at_report=self.price_at_report)
-        self.valuation_results = financial_calculator.run_valuation()
-        if self.valuation_results is None:
-            print(f"--- Aborting {ticker}: Valuation math failed and returned None ---")
-            return None
-
-        self.income_df = self.data["income"]["annual"]
-        self.quarterly_income_df = self.data["income"]["quarterly"]
-        self.quarterly_balance_df = self.data["balance"]["quarterly"]
-        self.quarterly_cash_df = self.data["cash"]["quarterly"]
-        self.balance_df = self.data["balance"]["annual"]
-        self.cash_df = self.data["cash"]["annual"]
-        self.earnings_df = self.data["earnings"]["annual"]
-        self.quarterly_earnings_df = self.data["earnings"]["quarterly"]
-        self.company_overview = self.data["overview"]
-        
-
-        self.market_cap = self.company_overview["MarketCapitalization"].values[0]
-        self.fcf, self.fcff, self.fcf_per_share, self.nwc = self.valuation_results.fcf, self.valuation_results.fcff, self.valuation_results.fcf_per_share, self.valuation_results.delta_nwc
-        self.wacc = self.valuation_results.wacc
-        self.intrinsic_price = self.valuation_results.intrinsic_price
-        self.dividend_price = self.valuation_results.dividend_price
-        self.peg = self.company_overview["PEGRatio"].iloc[0]
-        self.return_on_invested_capital = financial_calculator.roic()
-        self.sloan = financial_calculator.sloan_ratio()
-        self.hist_growth, self.forecasted_growth, self.trailing_peg, self.forward_peg = financial_calculator.analyze_peg()
-
-        if self.peg is None:
-            try:
-                self.eps_growth = financial_calculator.calc_eps_growth()
-                if self.eps_growth <= 0:
-                    self.eps_growth = 0.0
-                else:
-                    self.peg = financial_calculator.trailing_pe / self.eps_growth
-            except Exception as e:
-                print("Exception in setting PEG: ", e)
-
-        self.sector = self.company_overview["Sector"].values[0]
-        self.industry = self.company_overview["Industry"].values[0]
-
-        self.earnings_date = get_furthest_date_for_stock(symbol_id=self.symbol_id)
-
-        # Extract values from the loaded overview
-        self._setup_analyst_ratings()
-
-        self.grade = self.grade_stock()
-
-        await db_handler.save_all_to_db()
-
-        def safe_float(val):
-            try:
-                if val is None or pd.isna(val):
-                    return None
-                return float(val)
-            except Exception as e:
-                print("Exception in converting to float: ", e)
-                return None
-
-        def safe_int(val):
-            try:
-                if val is None or pd.isna(val):
-                    return None
-                return int(val)
-            except Exception as e:
-                print("Exception in converting to int: ", e)
-                return None
-
-        annual_income = self.prepare_df_for_go(self.income_df)
-        annual_balance = self.prepare_df_for_go(self.balance_df)
-        annual_cash = self.prepare_df_for_go(self.cash_df)
-        annual_earnings = self.prepare_df_for_go(self.earnings_df)
-        quarterly_income = self.prepare_df_for_go(self.quarterly_income_df)
-        quarterly_balance = self.prepare_df_for_go(self.quarterly_balance_df)
-        quarterly_cash = self.prepare_df_for_go(self.quarterly_cash_df)
-        quarterly_earnings = self.prepare_df_for_go(self.quarterly_earnings_df)
-
-        self.final_report = {
-            "Symbol": str(self.ticker),
-            "MarketCap": safe_int(self.market_cap),
-            "PEG": safe_float(self.peg),
-            "Sloan": safe_float(self.sloan),
-            "ROIC": safe_float(self.return_on_invested_capital),
-            "HistGrowth": safe_float(self.hist_growth),
-            "ForecastedGrowth": safe_float(self.forecasted_growth),
-            "TrailingPEG": safe_float(self.trailing_peg),
-            "ForwardPEG": safe_float(self.forward_peg),
-            "IntrinsicPrice": safe_float(self.intrinsic_price),
-            "DividendPrice": safe_float(self.dividend_price),
-            "PriceAtReport": safe_float(self.price_at_report),
-            "WACC": safe_float(self.wacc),
-            "FCFF": safe_float(self.fcff),
-            "FCF": safe_float(self.fcf),
-            "FCFPerShare": safe_float(self.fcf_per_share),
-            "NWC": safe_float(self.nwc),
-            "PriceTarget": safe_float(self.price_target),
-            "StrongBuy": safe_int(self.strong_buy),
-            "Buy": safe_int(self.buy),
-            "Hold": safe_int(self.hold),
-            "StrongSell": safe_int(self.strong_sell),
-            "Sell": safe_int(self.sell),
-            "EarningsDate": self.earnings_date,
-            "Grade": self.grade,
-            "Sector": self.sector,
-            "Industry": self.industry,
-            "AnnualIncome": annual_income,
-            "AnnualBalance": annual_balance,
-            "AnnualCash": annual_cash,
-            "AnnualEarnings": annual_earnings,
-            "QuarterlyIncome": quarterly_income,
-            "QuarterlyBalance": quarterly_balance,
-            "QuarterlyCash": quarterly_cash,
-            "QuarterlyEarnings": quarterly_earnings,
-        }
-
-        return self
+        return await CompanyBuilder(ticker, api_key, rate_api_key).build()
     
     def reorder_data(self):
         """
@@ -449,5 +301,202 @@ class Company:
             )
             df = pd.DataFrame(result.fetchall(), columns=result.keys())
         return df
+
+
+class CompanyBuilder:
+    def __init__(self, ticker, api_key, rate_api_key):
+        self.ticker = ticker
+        self.api_key = api_key
+        self.rate_api_key = rate_api_key
+        self.company = None
+        self.db_handler = None
+        self.financial_calculator = None
+
+    async def build(self):
+        await self.initialize_company()
+        await self.load_from_db()
+        await self.fetch_missing_fundamentals()
+        if not self.has_required_data():
+            return None
+        await self.run_valuation()
+        if self.company.valuation_results is None:
+            return None
+        self.populate_derived_fields()
+        await self.persist()
+        self.finalize_report()
+        return self.company
+
+    async def initialize_company(self):
+        self.company = Company(self.ticker, self.api_key, self.rate_api_key)
+        self.company.symbol_id = await get_symbol_id(self.company.ticker)
+        self.db_handler = CompanyDBHandler(app_state.engines, self.company.symbol_id, self.ticker, data=self.company.data)
+        return self
+
+    async def load_from_db(self):
+        await self.db_handler.load_all_from_dbs()
+        self.company.data = self.db_handler.data
+        return self
+
+    async def fetch_missing_fundamentals(self):
+        categories = ["income", "balance", "cash", "earnings"]
+        api_handler = CompanyDataFetcher(
+            self.ticker,
+            self.company.symbol_id,
+            self.api_key,
+            self.rate_api_key,
+            data=self.company.data,
+            client=app_state.httpx_client,
+        )
+
+        for cat in categories:
+            if self.company.data[cat]["annual"].empty:
+                print(f"--- {cat.capitalize()} data missing for {self.ticker}. Fetching from API... ---")
+                await api_handler.fetch_fundamentals(category=cat)
+                self.company.data[cat] = api_handler.data[cat]
+
+        if self.company.data["overview"].empty:
+            print(f"--- Overview missing for {self.ticker}. Fetching from API... ---")
+            await api_handler.fetch_fundamentals(category="overview")
+            self.company.data["overview"] = api_handler.data["overview"]
+
+        await api_handler.replace_with_usd()
+        self.company.reorder_data()
+        return self
+
+    def has_required_data(self):
+        if self.company.data["overview"].empty or self.company.data["income"]["annual"].empty:
+            print(f"--- Initialization Aborted for {self.ticker}: No data available ---")
+            return False
+        return True
+
+    async def run_valuation(self):
+        await self.company.get_current_price()
+        self.financial_calculator = CompanyFinancialCalculator(
+            self.company.ticker,
+            self.company.data,
+            price_at_report=self.company.price_at_report,
+        )
+        self.company.valuation_results = self.financial_calculator.run_valuation()
+        if self.company.valuation_results is None:
+            print(f"--- Aborting {self.ticker}: Valuation math failed and returned None ---")
+        return self
+
+    def populate_derived_fields(self):
+        company = self.company
+        financial_calculator = self.financial_calculator
+
+        company.income_df = company.data["income"]["annual"]
+        company.quarterly_income_df = company.data["income"]["quarterly"]
+        company.quarterly_balance_df = company.data["balance"]["quarterly"]
+        company.quarterly_cash_df = company.data["cash"]["quarterly"]
+        company.balance_df = company.data["balance"]["annual"]
+        company.cash_df = company.data["cash"]["annual"]
+        company.earnings_df = company.data["earnings"]["annual"]
+        company.quarterly_earnings_df = company.data["earnings"]["quarterly"]
+        company.company_overview = company.data["overview"]
+
+        company.market_cap = company.company_overview["MarketCapitalization"].values[0]
+        company.fcf = company.valuation_results.fcf
+        company.fcff = company.valuation_results.fcff
+        company.fcf_per_share = company.valuation_results.fcf_per_share
+        company.nwc = company.valuation_results.delta_nwc
+        company.wacc = company.valuation_results.wacc
+        company.intrinsic_price = company.valuation_results.intrinsic_price
+        company.dividend_price = company.valuation_results.dividend_price
+        company.peg = company.company_overview["PEGRatio"].iloc[0]
+        company.return_on_invested_capital = financial_calculator.roic()
+        company.sloan = financial_calculator.sloan_ratio()
+        company.hist_growth, company.forecasted_growth, company.trailing_peg, company.forward_peg = financial_calculator.analyze_peg()
+
+        if company.peg is None:
+            try:
+                company.eps_growth = financial_calculator.calc_eps_growth()
+                if company.eps_growth <= 0:
+                    company.eps_growth = 0.0
+                else:
+                    company.peg = financial_calculator.trailing_pe / company.eps_growth
+            except Exception as e:
+                print("Exception in setting PEG: ", e)
+
+        company.sector = company.company_overview["Sector"].values[0]
+        company.industry = company.company_overview["Industry"].values[0]
+        company.earnings_date = get_furthest_date_for_stock(symbol_id=company.symbol_id)
+        company._setup_analyst_ratings()
+        company.grade = company.grade_stock()
+        return self
+
+    async def persist(self):
+        await self.db_handler.save_all_to_db()
+        return self
+
+    @staticmethod
+    def _safe_float(val):
+        try:
+            if val is None or pd.isna(val):
+                return None
+            return float(val)
+        except Exception as e:
+            print("Exception in converting to float: ", e)
+            return None
+
+    @staticmethod
+    def _safe_int(val):
+        try:
+            if val is None or pd.isna(val):
+                return None
+            return int(val)
+        except Exception as e:
+            print("Exception in converting to int: ", e)
+            return None
+
+    def finalize_report(self):
+        company = self.company
+        annual_income = company.prepare_df_for_go(company.income_df)
+        annual_balance = company.prepare_df_for_go(company.balance_df)
+        annual_cash = company.prepare_df_for_go(company.cash_df)
+        annual_earnings = company.prepare_df_for_go(company.earnings_df)
+        quarterly_income = company.prepare_df_for_go(company.quarterly_income_df)
+        quarterly_balance = company.prepare_df_for_go(company.quarterly_balance_df)
+        quarterly_cash = company.prepare_df_for_go(company.quarterly_cash_df)
+        quarterly_earnings = company.prepare_df_for_go(company.quarterly_earnings_df)
+
+        company.final_report = {
+            "Symbol": str(company.ticker),
+            "MarketCap": self._safe_int(company.market_cap),
+            "PEG": self._safe_float(company.peg),
+            "Sloan": self._safe_float(company.sloan),
+            "ROIC": self._safe_float(company.return_on_invested_capital),
+            "HistGrowth": self._safe_float(company.hist_growth),
+            "ForecastedGrowth": self._safe_float(company.forecasted_growth),
+            "TrailingPEG": self._safe_float(company.trailing_peg),
+            "ForwardPEG": self._safe_float(company.forward_peg),
+            "IntrinsicPrice": self._safe_float(company.intrinsic_price),
+            "DividendPrice": self._safe_float(company.dividend_price),
+            "PriceAtReport": self._safe_float(company.price_at_report),
+            "WACC": self._safe_float(company.wacc),
+            "FCFF": self._safe_float(company.fcff),
+            "FCF": self._safe_float(company.fcf),
+            "FCFPerShare": self._safe_float(company.fcf_per_share),
+            "NWC": self._safe_float(company.nwc),
+            "PriceTarget": self._safe_float(company.price_target),
+            "StrongBuy": self._safe_int(company.strong_buy),
+            "Buy": self._safe_int(company.buy),
+            "Hold": self._safe_int(company.hold),
+            "StrongSell": self._safe_int(company.strong_sell),
+            "Sell": self._safe_int(company.sell),
+            "EarningsDate": company.earnings_date,
+            "Grade": company.grade,
+            "Sector": company.sector,
+            "Industry": company.industry,
+            "AnnualIncome": annual_income,
+            "AnnualBalance": annual_balance,
+            "AnnualCash": annual_cash,
+            "AnnualEarnings": annual_earnings,
+            "QuarterlyIncome": quarterly_income,
+            "QuarterlyBalance": quarterly_balance,
+            "QuarterlyCash": quarterly_cash,
+            "QuarterlyEarnings": quarterly_earnings,
+        }
+        return self
 
     

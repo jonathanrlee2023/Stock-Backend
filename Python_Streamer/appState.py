@@ -5,7 +5,6 @@ class AppState:
         self.earnings_db = None
         self.tracker_db = None
         self.last_checked_db = None
-        self.cpu_executer = None
         self.client = None
         self.streamer = None
         self.httpx_client = None

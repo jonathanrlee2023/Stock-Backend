@@ -1,6 +1,8 @@
+from abc import ABC, abstractmethod
 from attr import dataclass
 import numpy as np
 import pandas as pd
+from valuationStrategy import DefaultValuationStrategy, ValuationStrategy
 
 
 RISK_FREE_RATE = 0.0375
@@ -38,8 +40,10 @@ class ValuationResults:
     fcff: float
     fcf_per_share: float
     delta_nwc: float
+
+
 class CompanyFinancialCalculator:
-    def __init__(self, ticker, data, price_at_report=None):
+    def __init__(self, ticker, data, price_at_report=None, valuation_strategy: ValuationStrategy | None = None):
         self.ticker = ticker
         self.income_df = data["income"]["annual"]
         self.balance_df = data["balance"]["annual"]
@@ -47,33 +51,12 @@ class CompanyFinancialCalculator:
         self.earnings_df = data["earnings"]["annual"]
         self.company_overview = data["overview"]
         self.price_at_report = price_at_report
+        self.valuation_strategy = valuation_strategy or DefaultValuationStrategy()
 
     def run_valuation(self) -> ValuationResults:
-        """The 'Orchestrator' that returns a clean object."""
-        fcf, fcff, fcf_per_share, delta_nwc = self.calc_fcf()
-        self.calc_forecast_metrics()
-        wacc = self.calc_wacc()
-        roic = self.roic()
-        intrinsic, div_price = self.fcff_forecast()
+        """Delegates valuation orchestration to the selected strategy."""
+        return self.valuation_strategy.run(self)
 
-        self.company_overview["ROIC"] = roic
-        self.company_overview["WACC"] = wacc
-        self.company_overview["IntrinsicPrice"] = intrinsic
-        self.company_overview["DividendPrice"] = div_price
-        
-        return ValuationResults(
-            intrinsic_price=intrinsic,
-            dividend_price=div_price,
-            wacc=wacc,
-            roic=roic,
-            fcf=fcf,
-            fcff=fcff,
-            fcf_per_share=fcf_per_share,
-            delta_nwc=delta_nwc
-        )
-    
-    
-    
     def calc_fcf(self) -> tuple[float, float, float, float]:
         """
         Calculate the Free Cash Flow (FCF) and Free Cash Flow to the Firm (FCFF) for a given ticker.
@@ -302,6 +285,182 @@ class CompanyFinancialCalculator:
 
         return
 
+    def roic(self):
+        """
+        Calculate the Return on Invested Capital (ROIC) for a given ticker.
+
+        The ROIC is calculated as the Net Operating Profit After Tax (NOPAT) divided by the Invested Capital.
+
+        The Invested Capital is calculated as the Debt + Equity - Cash.
+
+        The NOPAT is calculated as the EBIT times (1 - effective tax rate).
+
+        Parameters
+        ----------
+        ticker : str
+            Ticker symbol
+
+        Returns
+        -------
+        float
+            ROIC value
+        """
+        ticker = self.ticker
+        balance_df = self.balance_df
+        income_df = self.income_df
+
+        try:
+            if "ROIC" in income_df.columns:
+                if income_df["ROIC"].iloc[-1] > 0:
+                    Roic = income_df["ROIC"].iloc[-1]
+                    return Roic
+            # Calculate Invested Capital (Debt + Equity - Cash)
+            # Note: You need to decide if you use 'Total Assets - Current Liabilities' or the financing approach below
+            invested_capital = (
+                balance_df["totalShareholderEquity"]
+                + balance_df["shortLongTermDebtTotal"].fillna(0)
+                - balance_df["cashAndCashEquivalentsAtCarryingValue"]
+            )
+
+            # Calculate NOPAT
+            nopat = income_df["ebit"] * (1 - income_df["effectiveTaxRate"])
+
+            # ROIC
+            income_df["ROIC"] = (nopat / invested_capital).round(4)
+        except Exception as e:
+            print(f"Error calculating ROIC for {ticker}: {e}")
+        self.income_df = income_df
+        return income_df["ROIC"].iloc[-1]
+
+    def calc_eps_growth(self) -> float:
+        income_df = self.income_df
+        company_overview = self.company_overview
+        if len(income_df) < 4:
+            return 0.0
+
+        eps_series = income_df["netIncome"] / company_overview["SharesOutstanding"].values[0]
+
+        current_eps = eps_series.iloc[-1]
+        initial_eps = eps_series.iloc[-4]
+
+        if current_eps <= 0 or initial_eps <= 0:
+            return 0.0
+
+        try:
+            cagr = (current_eps / initial_eps) ** (1 / 3) - 1
+            return cagr * 100
+        except Exception:
+            return 0.0
+
+    def sloan_ratio(self):
+        """
+        Calculate the Sloan Ratio for a given ticker.
+
+        The Sloan Ratio is calculated as (Net Income - Free Cash Flow) / Total Assets.
+
+        Parameters
+        ----------
+        ticker : str
+            The ticker symbol of the company.
+
+        Returns
+        -------
+        float
+            The Sloan Ratio for the given ticker.
+        """
+        ticker = self.ticker
+        company_overview = self.company_overview
+        try:
+            if "sloanRatio" in company_overview.columns:
+                val = company_overview["sloanRatio"].iloc[0]
+                if pd.notna(val):  # This handles None, NaN, and Null
+                    if val > 0:
+                        return val
+            income_df = self.income_df
+            balance_df = self.balance_df
+            cash_df = self.cash_df
+
+            net_income = income_df["netIncome"].iloc[-1]
+            fcf = cash_df["FCF"].iloc[-1]
+            total_assets = balance_df["totalAssets"].iloc[-1]
+
+            sloan_ratio = (net_income - fcf) / total_assets
+
+            company_overview["sloanRatio"] = sloan_ratio.round(4)
+        except Exception as e:
+            print(f"Error calculating Sloan Ratio for {ticker}: {e}")
+            self.company_overview = company_overview
+            return np.nan
+        self.company_overview = company_overview
+        return sloan_ratio
+
+    def analyze_peg(self) -> tuple[float, float, float | None, float | None]:
+        """
+        Analyze the PEG ratio for a given ticker.
+
+        The PEG ratio is a measure of the value of a company in terms of earnings growth. It is calculated as the price/earnings ratio divided by the earnings growth rate.
+
+        This method will calculate the historical growth rate, projected growth rate, trailing PEG, and forward PEG for the given ticker.
+
+        Parameters
+        ----------
+        ticker : str
+            The ticker symbol of the company.
+
+        Returns
+        -------
+        tuple[float, float, float | None, float | None]
+            A tuple containing the historical growth rate, projected growth rate, trailing PEG, and forward PEG. If the projected growth rate is less than 0%, the forward PEG will be None.
+
+        """
+        company_overview = self.company_overview
+        income_df = self.income_df
+        cash_df = self.cash_df
+
+        # 0. Get the Growth Ratios
+        try:
+            historical_growth = income_df["revGrowth"].tail(10).mean(skipna=True)
+            if pd.isna(cash_df["dividendPayout"].iloc[-1]):
+                retention_ratio = 1
+            else:
+                dividend_payout_ratio = cash_df["dividendPayout"].iloc[-1] / income_df["netIncome"].iloc[-1]
+                retention_ratio = 1 - dividend_payout_ratio
+            projected_growth = retention_ratio * income_df["ROIC"].iloc[-1]
+        except (ValueError, IndexError):
+            print("--- PEG Analysis Failed: Missing Growth Data ---")
+            return
+        # 1. Get the P/E Ratios
+        try:
+            trailing_pe = float(company_overview["TrailingPE"].values[0])
+            forward_pe = float(company_overview["ForwardPE"].values[0])
+        except Exception as e:
+            print("--- PEG Analysis Failed: Missing P/E Data ---", e)
+            total_net_income = income_df["netIncome"].tail(4).sum()
+            shares_outstanding = company_overview["SharesOutstanding"].values[0]
+
+            trailing_eps = total_net_income / shares_outstanding
+            self.trailing_pe = self.price_at_report / trailing_eps
+            trailing_pe = self.trailing_pe
+            forward_pe = None
+
+        try:
+            hist_g_int = historical_growth * 100
+            proj_g_int = projected_growth * 100
+            if hist_g_int > 0 and trailing_pe is not None:
+                trailing_peg = trailing_pe / hist_g_int
+            else:
+                trailing_peg = None
+
+            if proj_g_int > 0 and forward_pe is not None:
+                forward_peg = forward_pe / proj_g_int
+            else:
+                forward_peg = None
+                print("--- Forward PEG Analysis Failed: Projected Growth is less than 0% or no Forward P/E ---")
+
+        except (ValueError, IndexError):
+            return
+        return historical_growth, projected_growth, trailing_peg, forward_peg
+
     def dividend_model(self):
         company_overview = self.company_overview
         terminal_growth = self.terminal_growth
@@ -479,28 +638,7 @@ class CompanyFinancialCalculator:
             terminal_fcff = forecast_df["FCFF"].iloc[-1] * (1 + terminal_growth)
             terminal_fcff = max(terminal_fcff, revenue * 0.05)  # Floor at 5% of Rev
 
-            # Choice of Valuation Method
-            # Switch to Multiple for Growth/Tech
-            if start_growth > 0.12:
-                # High growth companies: exit multiple scales with growth rate
-                if start_growth >= 0.25:
-                    target_multiple = 25.0
-                elif start_growth >= 0.18:
-                    target_multiple = 22.0
-                else:
-                    target_multiple = 18.0
-                terminal_value = terminal_fcff * target_multiple
-            elif sector == "TECHNOLOGY" and start_growth > 0.06:
-                # Mature tech: modest premium over Gordon Growth, not full hyper-growth multiple
-                spread = max(wacc - terminal_growth, wacc * 0.2)
-                gordon_value = terminal_fcff / spread
-                terminal_value = gordon_value * 1.15  # 15% premium for tech moat
-            else:
-                spread = wacc - terminal_growth
-                if spread < wacc * 0.2:
-                    terminal_value = terminal_fcff * 15.0
-                else:
-                    terminal_value = terminal_fcff / spread
+            terminal_value = self.select_terminal_value_strategy(sector, start_growth).calculate(terminal_fcff, wacc, terminal_growth)
 
             # Final Calculation
             pv_terminal = terminal_value / ((1 + wacc) ** years)
@@ -530,178 +668,36 @@ class CompanyFinancialCalculator:
 
         return intrinsic_price, dividend_price
 
-    def roic(self):
-        """
-        Calculate the Return on Invested Capital (ROIC) for a given ticker.
+    class TerminalValueStrategy(ABC):
+        @abstractmethod
+        def calculate(self, terminal_fcff, wacc, terminal_growth) -> float: pass
 
-        The ROIC is calculated as the Net Operating Profit After Tax (NOPAT) divided by the Invested Capital.
+    class GordonGrowthStrategy(TerminalValueStrategy):
+        def calculate(self, terminal_fcff, wacc, terminal_growth) -> float:
+            spread = max(wacc - terminal_growth, wacc * 0.2)
+            gordon_value = terminal_fcff / spread
+            return gordon_value * 1.15  # 15% premium for tech moat
+    
+    class ExitMultipleStrategy(TerminalValueStrategy):
+        def __init__(self, multiple: float):
+            self.multiple = multiple
 
-        The Invested Capital is calculated as the Debt + Equity - Cash.
+        def calculate(self, terminal_fcff, wacc, terminal_growth) -> float:
+            return terminal_fcff * self.multiple
 
-        The NOPAT is calculated as the EBIT times (1 - effective tax rate).
+    class TechPremiumStrategy(TerminalValueStrategy):
+        def calculate(self, terminal_fcff, wacc, terminal_growth):
+            spread = max(wacc - terminal_growth, wacc * 0.2)
+            return (terminal_fcff / spread) * 1.15
 
-        Parameters
-        ----------
-        ticker : str
-            Ticker symbol
-
-        Returns
-        -------
-        float
-            ROIC value
-        """
-        ticker = self.ticker
-        balance_df = self.balance_df
-        income_df = self.income_df
-
-        try:
-            if "ROIC" in income_df.columns:
-                if income_df["ROIC"].iloc[-1] > 0:
-                    Roic = income_df["ROIC"].iloc[-1]
-                    return Roic
-            # Calculate Invested Capital (Debt + Equity - Cash)
-            # Note: You need to decide if you use 'Total Assets - Current Liabilities' or the financing approach below
-            invested_capital = (
-                balance_df["totalShareholderEquity"]
-                + balance_df["shortLongTermDebtTotal"].fillna(0)
-                - balance_df["cashAndCashEquivalentsAtCarryingValue"]
-            )
-
-            # Calculate NOPAT
-            nopat = income_df["ebit"] * (1 - income_df["effectiveTaxRate"])
-
-            # ROIC
-            income_df["ROIC"] = (nopat / invested_capital).round(4)
-        except Exception as e:
-            print(f"Error calculating ROIC for {ticker}: {e}")
-        self.income_df = income_df
-        return income_df["ROIC"].iloc[-1]
-
-    def calc_eps_growth(self) -> float:
-        income_df = self.income_df
-        company_overview = self.company_overview
-        if len(income_df) < 4:
-            return 0.0
-
-        eps_series = income_df["netIncome"] / company_overview["SharesOutstanding"].values[0]
-
-        current_eps = eps_series.iloc[-1]
-        initial_eps = eps_series.iloc[-4]
-
-        if current_eps <= 0 or initial_eps <= 0:
-            return 0.0
-
-        try:
-            cagr = (current_eps / initial_eps) ** (1 / 3) - 1
-            return cagr * 100
-        except Exception:
-            return 0.0
-
-    def sloan_ratio(self):
-        """
-        Calculate the Sloan Ratio for a given ticker.
-
-        The Sloan Ratio is calculated as (Net Income - Free Cash Flow) / Total Assets.
-
-        Parameters
-        ----------
-        ticker : str
-            The ticker symbol of the company.
-
-        Returns
-        -------
-        float
-            The Sloan Ratio for the given ticker.
-        """
-        ticker = self.ticker
-        company_overview = self.company_overview
-        try:
-            if "sloanRatio" in company_overview.columns:
-                val = company_overview["sloanRatio"].iloc[0]
-                if pd.notna(val):  # This handles None, NaN, and Null
-                    if val > 0:
-                        return val
-            income_df = self.income_df
-            balance_df = self.balance_df
-            cash_df = self.cash_df
-
-            net_income = income_df["netIncome"].iloc[-1]
-            fcf = cash_df["FCF"].iloc[-1]
-            total_assets = balance_df["totalAssets"].iloc[-1]
-
-            sloan_ratio = (net_income - fcf) / total_assets
-
-            company_overview["sloanRatio"] = sloan_ratio.round(4)
-        except Exception as e:
-            print(f"Error calculating Sloan Ratio for {ticker}: {e}")
-            self.company_overview = company_overview
-            return np.nan
-        self.company_overview = company_overview
-        return sloan_ratio
-
-    def analyze_peg(self) -> tuple[float, float, float | None, float | None]:
-        """
-        Analyze the PEG ratio for a given ticker.
-
-        The PEG ratio is a measure of the value of a company in terms of earnings growth. It is calculated as the price/earnings ratio divided by the earnings growth rate.
-
-        This method will calculate the historical growth rate, projected growth rate, trailing PEG, and forward PEG for the given ticker.
-
-        Parameters
-        ----------
-        ticker : str
-            The ticker symbol of the company.
-
-        Returns
-        -------
-        tuple[float, float, float | None, float | None]
-            A tuple containing the historical growth rate, projected growth rate, trailing PEG, and forward PEG. If the projected growth rate is less than 0%, the forward PEG will be None.
-
-        """
-        company_overview = self.company_overview
-        income_df = self.income_df
-        cash_df = self.cash_df
-
-        # 0. Get the Growth Ratios
-        try:
-            historical_growth = income_df["revGrowth"].tail(10).mean(skipna=True)
-            if pd.isna(cash_df["dividendPayout"].iloc[-1]):
-                retention_ratio = 1
-            else:
-                dividend_payout_ratio = cash_df["dividendPayout"].iloc[-1] / income_df["netIncome"].iloc[-1]
-                retention_ratio = 1 - dividend_payout_ratio
-            projected_growth = retention_ratio * income_df["ROIC"].iloc[-1]
-        except (ValueError, IndexError):
-            print("--- PEG Analysis Failed: Missing Growth Data ---")
-            return
-        # 1. Get the P/E Ratios
-        try:
-            trailing_pe = float(company_overview["TrailingPE"].values[0])
-            forward_pe = float(company_overview["ForwardPE"].values[0])
-        except Exception as e:
-            print("--- PEG Analysis Failed: Missing P/E Data ---", e)
-            total_net_income = income_df["netIncome"].tail(4).sum()
-            shares_outstanding = company_overview["SharesOutstanding"].values[0]
-
-            trailing_eps = total_net_income / shares_outstanding
-            self.trailing_pe = self.price_at_report / trailing_eps
-            trailing_pe = self.trailing_pe
-            forward_pe = None
-
-        try:
-            hist_g_int = historical_growth * 100
-            proj_g_int = projected_growth * 100
-            if hist_g_int > 0 and trailing_pe is not None:
-                trailing_peg = trailing_pe / hist_g_int
-            else:
-                trailing_peg = None
-
-            if proj_g_int > 0 and forward_pe is not None:
-                forward_peg = forward_pe / proj_g_int
-            else:
-                forward_peg = None
-                print("--- Forward PEG Analysis Failed: Projected Growth is less than 0% or no Forward P/E ---")
-
-        except (ValueError, IndexError):
-            return
-        return historical_growth, projected_growth, trailing_peg, forward_peg
+    @classmethod
+    def select_terminal_value_strategy(cls, sector, start_growth) -> "TerminalValueStrategy":
+        if start_growth >= 0.25:
+            return cls.ExitMultipleStrategy(25.0)
+        if start_growth >= 0.18:
+            return cls.ExitMultipleStrategy(22.0)
+        if start_growth > 0.12:
+            return cls.ExitMultipleStrategy(18.0)
+        if sector == "TECHNOLOGY" and start_growth > 0.06:
+            return cls.TechPremiumStrategy()
+        return cls.GordonGrowthStrategy()

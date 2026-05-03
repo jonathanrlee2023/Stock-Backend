@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -25,48 +24,22 @@ func main() {
 	godotenv.Load("../.env")
 	dbDir := os.Getenv("DB_DIR")
 	if dbDir == "" {
-		dbDir = "../Database" // Safe fallback for local dev
+		dbDir = "../Database"
 	}
 
-	balanceDBPath := filepath.Join(dbDir, "Balance.db")
-	openDBPath := filepath.Join(dbDir, "Open.db")
-	closeDBPath := filepath.Join(dbDir, "Close.db")
-	trackerDBPath := filepath.Join(dbDir, "Tracker.db")
-
-	
-	openDB, err := utils.InitDB(openDBPath)
+	factory := utils.ProductionStackFactory{}
+	dataStack, err := factory.BuildDataStores(ctx, dbDir)
 	if err != nil {
-		log.Printf("Error initializing database: %v", err)
+		log.Fatalf("Failed to build data stack: %v", err)
 	}
-	balanceDB, err := utils.InitDB(balanceDBPath)
+	utils.GlobalDatabasePool = dataStack.Pool
+
+	realtimeStack, err := factory.BuildRealtime(ctx)
 	if err != nil {
-		log.Printf("Error initializing database: %v", err)
+		log.Fatalf("Failed to build realtime stack: %v", err)
 	}
-	closeDB, err := utils.InitDB(closeDBPath)
-	if err != nil {
-		log.Printf("Error initializing database: %v", err)
-	}
-	trackerDB, err := utils.InitDB(trackerDBPath)
-
-	if err != nil {
-		log.Printf("Error initializing database: %v", err)
-	}
-	utils.InitSchemas(openDB, balanceDB, closeDB, trackerDB)
-
-	utils.GlobalDatabasePool = &utils.DatabasePool{OpenDB: openDB, BalanceDB: balanceDB, CloseDB: closeDB, TrackerDB: trackerDB}
-
-	// 2. INITIALIZE CLIENT
-	rdb := utils.InitRedis()
-
-	// SAFETY CHECK: Wait for Redis to actually be ready
-	// Sometimes the container is "Up" but the database inside is still booting
-	pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
-	defer pingCancel()
-	if err := rdb.Ping(pingCtx).Err(); err != nil {
-		log.Printf("Redis started but not responding: %v", err)
-	}
-
-	hub := utils.NewHub()
+	rdb := realtimeStack.Redis
+	hub := realtimeStack.Hub
 
 	// Start Background Services
 	go hub.Run()
@@ -76,50 +49,15 @@ func main() {
 	go utils.ListenToRedis(context.Background(), rdb, hub, "Global_News_Channel")
 	go utils.ListenToRedis(context.Background(), rdb, hub, "Backtest_Channel")
 
-	protected := http.NewServeMux()
-	protected.HandleFunc("/startOptionStream", func(w http.ResponseWriter, r *http.Request) {
-		utils.StartOptionStream(rdb, w, r)
+	httpStack, err := factory.BuildHTTP(ctx, utils.ServerStack{
+		Data:     dataStack,
+		Realtime: realtimeStack,
 	})
-	protected.HandleFunc("/startStockStream", func(w http.ResponseWriter, r *http.Request) {
-		utils.StartStockStream(rdb, w, r)
-	})
-	protected.HandleFunc("/newTracker", func(w http.ResponseWriter, r *http.Request) {
-		utils.NewTrackerHandler(w, r)
-	})
-	protected.HandleFunc("/openPosition", func(w http.ResponseWriter, r *http.Request) {
-		utils.OpenSharesPositionHandler(w, r)
-	})
-	protected.HandleFunc("/closePosition", func(w http.ResponseWriter, r *http.Request) {
-		utils.ClosePositionHandler(w, r)
-	})
-	protected.HandleFunc("/closeTracker", func(w http.ResponseWriter, r *http.Request) {
-		utils.RemoveTrackerHandler(w, r)
-	})
-	protected.HandleFunc("/newPortfolio", func(w http.ResponseWriter, r *http.Request) {
-		utils.NewPortfolioHandler(w, r)
-	})
-	protected.HandleFunc("/deletePortfolio", func(w http.ResponseWriter, r *http.Request) {
-		utils.DeletePortfolioHandler(w, r)
-	})
-	protected.HandleFunc("/startBacktest", func(w http.ResponseWriter, r *http.Request) {
-		utils.StartBacktest(rdb, w, r)
-	})
+	if err != nil {
+		log.Fatalf("Failed to build HTTP stack: %v", err)
+	}
 
-	wsHandler := utils.RequireAuthWS(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		utils.WebsocketConnectHandler(hub, w, r)
-	}))
-
-	root := http.NewServeMux()
-	root.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
-		utils.LoginHandler(w, r)
-	})
-	root.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
-		utils.CreateUserHandler(w, r)
-	})
-	root.Handle("/connect", wsHandler)
-	root.Handle("/", utils.RequireAuth(protected))
-
-	handler := SecurityHeadersMiddleware(CorsMiddleware(root))
+	handler := SecurityHeadersMiddleware(CorsMiddleware(httpStack.Root))
 
 	server := &http.Server{
 		Addr:              ":8080",
@@ -140,10 +78,10 @@ func main() {
 
 	<-ctx.Done()
 
-	defer openDB.Close()
-	defer balanceDB.Close()
-	defer closeDB.Close()
-	defer trackerDB.Close()
+	defer dataStack.OpenDB.Close()
+	defer dataStack.BalanceDB.Close()
+	defer dataStack.CloseDB.Close()
+	defer dataStack.TrackerDB.Close()
 
 	totalShutdown(server)
 }
