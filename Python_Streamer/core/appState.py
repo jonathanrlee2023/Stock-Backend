@@ -1,0 +1,17 @@
+class AppState:
+    def __init__(self):
+        self.engines = {}
+        self.price_db = None
+        self.earnings_db = None
+        self.tracker_db = None
+        self.last_checked_db = None
+        self.client = None
+        self.streamer = None
+        self.httpx_client = None
+        self.finnhub_client = None
+        self.data_loader = None
+        self.market_news = None
+
+
+# Instantiate it once
+app_state = AppState()

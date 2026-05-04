@@ -1,0 +1,386 @@
+import asyncio
+from datetime import datetime, timedelta
+
+import pandas as pd
+from core.cache import latest_quote
+import time
+import schwabdev
+import os
+from dotenv import load_dotenv
+from core.appState import app_state
+from core.cache import last_checked_cache
+
+HOLIDAYS = {
+    "2026-01-01",
+    "2026-01-19",
+    "2026-02-16",
+    "2026-04-03",
+    "2026-05-25",
+    "2026-06-19",
+    "2026-07-03",
+    "2026-09-07",
+    "2026-11-26",
+    "2026-12-25",
+}
+
+
+class DataLoader:
+    def __init__(self, connection):
+        if connection is not None:
+            self.connection = connection
+        else:
+            self.connection = self.establish_connection()
+
+    def establish_connection(self):
+        load_dotenv()  # loads variables from .env into environment
+
+        appKey = os.getenv("appKey")
+        appSecret = os.getenv("appSecret")
+        if not appKey or not appSecret:
+            raise ValueError("appKey and appSecret must be set in the environment variables.")
+
+        client = schwabdev.Client(app_key=appKey, app_secret=appSecret)
+        return client
+
+    async def load_data(self, ticker, symbol_id, fiscalDate):
+        db = app_state.price_db
+        try:
+            if fiscalDate is None:
+                return None
+            start_ms = int(fiscalDate * 1000)
+            end_ms = start_ms + (7 * 86400 * 1000)
+            async with db.execute(
+                "SELECT close FROM HistoricalStocks WHERE symbol_id = ? AND timestamp BETWEEN ? AND ? ORDER BY timestamp ASC LIMIT 1",
+                (symbol_id, start_ms, end_ms),
+            ) as cursor:
+                rows = await cursor.fetchall()
+            if rows:
+                return rows[0][0]
+
+            def fetch_api():
+                return self.connection.price_history(
+                    symbol=ticker, periodType="year", frequencyType="daily", startDate=start_ms, endDate=end_ms
+                )
+
+            response = await asyncio.to_thread(fetch_api)
+
+            if response.status_code == 200:
+                quote = response.json()
+                if "candles" in quote and quote["candles"]:
+                    return quote["candles"][0]["close"]
+        except Exception as e:
+            print(f"Schwab API Error: {e}")
+        return None
+
+    async def get_price_history(self, s_id, ticker):
+        priceDB = app_state.price_db
+        try:
+            async with priceDB.execute(
+                "SELECT timestamp, open, high, low, close, volume FROM HistoricalStocks WHERE symbol_id = ? ORDER BY timestamp ASC",
+                (s_id,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+
+            if rows:
+                price_history = [
+                    {"timestamp": r[0], "open": r[1], "high": r[2], "low": r[3], "close": r[4], "volume": r[5]}
+                    for r in rows
+                ]
+                return price_history
+        except Exception as e:
+            print(f"Price Database Error: {e}")
+        try:
+            start_ms = self.get_unix_timestamp_5_years_ago()
+            # One year ago in milliseconds
+            one_year_ago_ms = int((time.time() - (365 * 24 * 60 * 60)) * 1000)
+
+            response = await asyncio.to_thread(
+                self.connection.price_history,
+                symbol=ticker,
+                periodType="year",
+                frequencyType="daily",
+                startDate=start_ms,
+            )
+
+            if response.status_code != 200:
+                return None
+
+            quote = response.json()
+            raw_candles = quote.get("candles", [])
+
+            if not raw_candles:
+                return None
+
+            filtered_candles = []
+            # We use a counter for the "every 5th" logic
+            skip_counter = 0
+
+            # Iterate through candles (Schwab returns them Chronological: Oldest -> Newest)
+            for candle in raw_candles:
+                if "datetime" in candle:
+                    candle["timestamp"] = candle.pop("datetime")
+
+                if candle["timestamp"] >= one_year_ago_ms:
+                    filtered_candles.append(candle)
+                else:
+                    # OLD: Only keep every 5th candle
+                    if skip_counter % 5 == 0:
+                        filtered_candles.append(candle)
+                    skip_counter += 1
+
+            return filtered_candles
+
+        except Exception as e:
+            print(f"Schwab API Error: {e}")
+        return None
+
+    async def get_recent_price_history(self, s_id, ticker):
+        global latest_quote
+        start_ms = 0
+        today_ms = int(time.time() * 1000)
+        raw_candles = []
+        needs_update = False
+
+        priceDB = app_state.price_db
+        start_ms = latest_quote.get(s_id, 0)
+        if start_ms == 0:
+            result = await priceDB.execute(
+                "SELECT timestamp, symbol_id FROM HistoricalStocks WHERE symbol_id = ? ORDER BY timestamp DESC LIMIT 1",
+                (s_id,),
+            )
+
+            # 2. Extract the row
+            row = await result.fetchone()
+            if row:
+                start_ms = row[0]
+            else:
+                raw_candles = await self.get_price_history(s_id, ticker)
+        date_start = datetime.fromtimestamp(start_ms / 1000.0).date()
+        date_today = datetime.fromtimestamp(today_ms / 1000.0).date()
+
+        if date_start == date_today:
+            raw_candles = await self.get_price_history(s_id, ticker)
+        else:
+            start_ms += 86400000
+            if self.is_data_fresh(start_ms, s_id):
+                return await self.get_price_history(s_id, ticker)
+            print(f"Updating {ticker} history from {date_start} to {date_today}")
+            needs_update = True
+
+        try:
+            if needs_update:
+                response = self.connection.price_history(
+                    symbol=ticker,
+                    periodType="year",
+                    frequencyType="daily",
+                    startDate=start_ms,
+                )
+
+                if response.status_code != 200:
+                    print(f"API Error: Status {response.status_code} {response.content}")
+                    return await self.get_price_history(s_id, ticker)
+
+                quotes = response.json()
+                new_candles = quotes.get("candles", [])
+                latest_quote[s_id] = quotes.get("previousCloseDate", 0)
+                if not new_candles:
+                    return await self.get_price_history(s_id, ticker)
+
+                raw_candles.extend(new_candles)
+
+        except Exception as e:
+            print(f"Schwab API Error: {e}")
+        try:
+            history_records = [
+                (
+                    item.get("timestamp") or item.get("datetime"),
+                    s_id,
+                    item["open"],
+                    item["high"],
+                    item["low"],
+                    item["close"],
+                    item["volume"],
+                )
+                for item in raw_candles
+            ]
+            await priceDB.executemany(
+                "INSERT OR IGNORE INTO HistoricalStocks VALUES (?, ?, ?, ?, ?, ?, ?)", history_records
+            )
+            await priceDB.commit()
+            print(f"Saved {ticker} history to DB")
+
+        except Exception as e:
+            print(f"Price Database Error: {e}")
+        return await self.get_price_history(s_id, ticker)
+
+    def get_last_trading_day(self, target_date):
+        """Finds the most recent day the market should have been open."""
+        if isinstance(target_date, str):
+            check_date = datetime.fromisoformat(target_date).date()
+        else:
+            check_date = target_date
+        # If it's early Monday morning, start looking from yesterday (Sunday)
+        if datetime.now().hour < 10 and check_date.weekday() == 0:
+            check_date -= timedelta(days=1)
+
+        while True:
+            # If it's a weekend (Sat=5, Sun=6) or a holiday, keep looking back
+            if check_date.weekday() >= 5 or check_date.isoformat() in HOLIDAYS:
+                check_date -= timedelta(days=1)
+            else:
+                return check_date
+
+    def is_data_fresh(self, last_db_ts, s_id):
+        if not last_db_ts:
+            return False
+
+        global last_checked_cache
+        now = datetime.now()
+        today = now.date()
+
+        if s_id in last_checked_cache:
+            last_checked_date = last_checked_cache[s_id]
+            if isinstance(last_checked_date, str):
+                last_checked_date = datetime.fromisoformat(last_checked_date).date()
+            else:
+                last_checked_date = last_checked_date
+            if (today - last_checked_date).days < 3:
+                return True
+
+        last_stored_date = datetime.fromtimestamp(last_db_ts / 1000.0).date()
+        expected_latest_date = self.get_last_trading_day(today)
+
+        if last_stored_date >= expected_latest_date:
+            # print(f"✅ {s_id} is fresh. Last trading day was {expected_latest_date}")
+            return True
+
+        return False
+
+    def get_quote(self, ticker):
+        response = self.connection.quote(ticker).json()
+        return response.get(ticker, {}).get("quote", {})
+
+    def get_option_expirations(self, ticker):
+        fromDate = datetime.now()
+        toDate = fromDate + timedelta(days=7)
+
+        response = self.connection.option_chains(
+            symbol=ticker, strikeCount=5, optionType="ALL", toDate=toDate
+        ).json()
+
+        def extract_symbols(exp_map):
+            symbols = []
+            for date_map in exp_map.values():
+                for strike_list in date_map.values():
+                    if strike_list:
+                        symbols.append(strike_list[0]["symbol"])
+            return symbols
+
+        call_ids = extract_symbols(response.get("callExpDateMap", {}))
+        put_ids = extract_symbols(response.get("putExpDateMap", {}))
+
+        return call_ids, put_ids
+
+    def get_unix_timestamp_5_years_ago(self):
+        now = datetime.now()
+
+        try:
+            # Subtract 5 years from the current year
+            five_years_ago = now.replace(year=now.year - 5)
+        except ValueError:
+            # This handles the edge case of February 29th.
+            # If today is Feb 29 and 5 years ago wasn't a leap year,
+            # we fall back to Feb 28th.
+            five_years_ago = now.replace(year=now.year - 5, day=now.day - 1)
+
+        # Convert to Unix timestamp (integer)
+        return int(time.mktime(five_years_ago.timetuple()))
+
+    async def load_backtesting_data(self, ticker, s_id, days_ago):
+        cutoff_ts = self.time_ago(days_ago)
+        db = app_state.price_db
+        df = None
+        try:
+            async with db.execute(
+                "SELECT timestamp, close FROM HistoricalStocks WHERE symbol_id = ? AND timestamp >= ? ORDER BY timestamp ASC",
+                (s_id, cutoff_ts),
+            ) as cursor:
+                rows = await cursor.fetchall()
+
+            if rows:
+                df = pd.DataFrame(rows, columns=['timestamp', 'close'])
+        except Exception as e:
+            print(f"Price Database Error: {e}")
+        try:
+            if df is None or df.empty:
+                response = await asyncio.to_thread(
+                    self.connection.price_history,
+                    symbol=ticker,
+                    periodType="year",
+                    frequencyType="daily",
+                    period=1,
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    candles = data.get("candles", [])
+                    
+                    if candles:
+                        # Create DataFrame immediately from the API response list
+                        df = pd.DataFrame(candles)
+                        
+                        # Filter only columns we need to save memory
+                        new_df = df[['datetime', 'close']].copy()
+                        new_df.rename(columns={'datetime': 'timestamp'}, inplace=True)
+
+                    await self.save_to_db(df, s_id)
+        except Exception as e:
+            print(f"Schwab API Error: {e}")
+
+        if df is not None and not df.empty:
+            # Vectorized Date Conversion
+            # TDA/Schwab timestamps are usually milliseconds
+            try:
+                if 'datetime' in df.columns and 'timestamp' not in df.columns:
+                    df = df.rename(columns={'datetime': 'timestamp'})
+
+                # 2. Safety Check: If we still don't have 'timestamp', we can't proceed
+                if 'timestamp' not in df.columns:
+                    raise KeyError(f"Expected 'timestamp' column but found: {df.columns.tolist()}")
+                df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True).dt.date
+                
+                # Filter by cutoff (if the DB had older data than requested)
+                cutoff_date = datetime.fromtimestamp(cutoff_ts).date()
+                df = df[df['datetime'] >= cutoff_date]
+                
+                return df[['datetime', 'close']].reset_index(drop=True)
+            except Exception as e:
+                print(f"Date Conversion Error: {e}")
+        
+        return None
+
+    def time_ago(self, days_ago):
+        seconds_to_subtract = days_ago * 86400
+        return int(time.time() - seconds_to_subtract)
+    
+    async def save_to_db(self, df, s_id):
+        db_conn = app_state.price_db
+        
+        # Prepare the records for bulk insertion
+        # Ensure we use 'timestamp' and 'close' as columns
+        records = []
+        try:
+            for _, row in df.iterrows():
+                # Using .get() or specific keys ensures we don't hit KeyErrors
+                records.append((row.get('datetime'), row.get('open'), row.get('high'), row.get('low'), row.get('close'), row.get('volume'), s_id))
+
+            query = """
+                INSERT OR IGNORE INTO HistoricalStocks (timestamp, open, high, low, close, volume, symbol_id) 
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """
+        
+            # Use executemany for high-performance async batching
+            await db_conn.executemany(query, records)
+            await db_conn.commit()
+        except Exception as e:
+            print(f"Price Database Bulk Insert Error: {e}")

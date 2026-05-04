@@ -1,6 +1,14 @@
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent.parent
+for _pkg in ("core", "company", "streaming", "backtest"):
+    _d = _ROOT / _pkg
+    if str(_d) not in sys.path:
+        sys.path.insert(0, str(_d))
+
 import pytest
 from unittest.mock import MagicMock
-import sys
 
 
 @pytest.fixture(autouse=True)

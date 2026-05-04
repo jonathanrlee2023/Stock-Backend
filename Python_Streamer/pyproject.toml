@@ -1,3 +1,7 @@
+[tool.pyright]
+# Match schwabStream.py / conftest.py sys.path so local modules resolve (backtesting, appState, cache, …).
+extraPaths = ["backtest", "core", "company", "streaming"]
+
 [tool.ruff]
 # Increase line length to 120 (standard is 88)
 line-length = 120
@@ -14,4 +18,6 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 # Be even lazier in the tests folder
-"tests/*" = ["F841", "E501"]
+"tests/*" = ["F841", "E501", "E402"]
+# sys.path must be adjusted before local package imports
+"schwabStream.py" = ["E402"]

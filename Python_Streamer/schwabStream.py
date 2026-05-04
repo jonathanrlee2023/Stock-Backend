@@ -1,18 +1,27 @@
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent
+for _pkg in ("core", "company", "streaming", "backtest"):
+    _d = _ROOT / _pkg
+    if str(_d) not in sys.path:
+        sys.path.insert(0, str(_d))
+
 from concurrent.futures import ProcessPoolExecutor
 from abc import ABC, abstractmethod
 
 import httpx
 import finnhub
-from marketNewsClass import MarketNews
-from dataloader import DataLoader
-from secureAPIKey import SecureAPIKey
+from streaming.marketNewsClass import MarketNews
+from streaming.dataloader import DataLoader
+from core.secureAPIKey import SecureAPIKey
 import schwabdev
 from dotenv import load_dotenv
 import os
 import asyncio
-import asyncFunc
-import startupFunc
-from appState import app_state
+import streaming.asyncFunc as asyncFunc
+import streaming.startupFunc as startupFunc
+from core.appState import app_state
 from pprint import pprint
 from sqlalchemy.ext.asyncio import create_async_engine
 
