@@ -374,11 +374,11 @@ async def update_tickers_from_db(api_manager, rate_api_key):
 
     if not companies:
         return
-    # schwab_tasks = [throttled_get_options_and_initial_quotes(c, get_options="No") for c in companies]
-    # await asyncio.gather(*schwab_tasks, return_exceptions=True)
+    schwab_tasks = [throttled_get_options_and_initial_quotes(c, get_options="No") for c in companies]
+    await asyncio.gather(*schwab_tasks, return_exceptions=True)
 
-    # av_tasks = [throttled_handle_company(api_manager, rate_api_key, c) for c in companies]
-    # await asyncio.gather(*av_tasks, return_exceptions=True)
+    av_tasks = [throttled_handle_company(api_manager, rate_api_key, c) for c in companies]
+    await asyncio.gather(*av_tasks, return_exceptions=True)
 
 
 async def throttled_handle_company(api_manager, rate_api_key, ticker):
