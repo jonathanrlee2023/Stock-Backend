@@ -110,7 +110,7 @@ func SendOpenPositions(targetClient *Client, userID int) {
 }
 
 func SendCloseHistory(targetClient *Client, userID int) {
-	rows, err := GlobalDatabasePool.CloseDB.Query("SELECT * FROM ClosePositions WHERE user_id = ?", userID)
+	rows, err := GlobalDatabasePool.CloseDB.Query("SELECT id, price, amount, pl, portfolio_id, user_id, timestamp FROM ClosePositions WHERE user_id = ?", userID)
 	if err == sql.ErrNoRows {
 		fmt.Println("No Close Positions Yet")
 		return
@@ -120,28 +120,22 @@ func SendCloseHistory(targetClient *Client, userID int) {
 	}
 	defer rows.Close()
 
-	var closePositions []ClosePosition
-
+	closePositions := make(map[int][]ClosePosition)
 	for rows.Next() {
-		var id string
-		var price float64
-		var amount float64
-		var pl float64
-		var portfolio_id int
-		var user_id int
-		var timestamp int64
+		var closePosition ClosePosition
 
-		err := rows.Scan(&id, &price, &amount, &pl, &portfolio_id, &user_id, &timestamp)
+		err := rows.Scan(&closePosition.ID, &closePosition.Price, &closePosition.Amount, &closePosition.PL, &closePosition.PortfolioID, &closePosition.UserID, &closePosition.Timestamp)
 		if err != nil {
 			log.Println("Scan failed:", err)
 			continue
 		}
-		closePositions = append(closePositions, ClosePosition{ID: id, Price: price, Amount: amount, PL: pl, PortfolioID: portfolio_id, UserID: user_id, Timestamp: timestamp})
+		closePositions[closePosition.PortfolioID] = append(closePositions[closePosition.PortfolioID], closePosition)
 	}
 
 	closeHistory := ClosePositionHistory{
 		ClosePositions: closePositions,
 	}
+	fmt.Println("closePositions", closePositions)
 	jsonData, err := json.Marshal(closeHistory)
 	if err != nil {
 		log.Println("Failed to marshal close positions:", err)

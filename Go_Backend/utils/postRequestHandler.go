@@ -249,6 +249,7 @@ func ClosePositionHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("Failed to write to table: %v", err)
 	}
+	
 	client.Balance.Lock()
 	balance := client.Balance.Balances[closePosition.PortfolioID].Balance
 	cash := client.Balance.Balances[closePosition.PortfolioID].Cash
@@ -265,7 +266,25 @@ func ClosePositionHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "Failed to write balance", http.StatusInternalServerError)
 	}
+	
+	closePositionData := ClosePosition{
+		ID: closePosition.ID,
+		Price: closePosition.Price,
+		Amount: closePosition.Amount,
+		PL: pl,
+		PortfolioID: closePosition.PortfolioID,
+		UserID: userID,
+		Timestamp: time.Now().Unix(),
+	}
+	jsonData, err := json.Marshal(closePositionData)
+	if err != nil {
+		log.Printf("Failed to marshal close position history: %v", err)
+		return
+	}
+	client.EnqueueMessage(jsonData)
 	client.Mu.Unlock()
+
+	
 	ProcessWrite(time.Now(), client)
 }
 

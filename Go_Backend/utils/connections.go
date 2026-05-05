@@ -240,6 +240,7 @@ func WebsocketConnectHandler(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	var clientFormat = regexp.MustCompile(`^STOCK_CLIENT_\d+$`)
 	if clientFormat.MatchString(clientID) {
 		SendOpenPositions(newClient, UserID)
+		SendCloseHistory(newClient, UserID)
 		SendAllCached(clientID)
 	}
 

@@ -397,7 +397,7 @@ type ClosePosition struct {
 }
 
 type ClosePositionHistory struct {
-	ClosePositions []ClosePosition `json:"ClosePositions"`
+	ClosePositions map[int][]ClosePosition `json:"ClosePositions"`
 }
 
 type Portfolio struct {
